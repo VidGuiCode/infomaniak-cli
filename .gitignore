@@ -25,3 +25,9 @@ Thumbs.db
 
 # Private working context
 context/
+
+# Local agent instructions / tool-specific context
+AGENTS.md
+CLAUDE.md
+.agents/
+.claude/
