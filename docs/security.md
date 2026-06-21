@@ -50,9 +50,9 @@ Allowed early:
 
 - whoami
 - doctor
-- account/product/service discovery
-- mailbox list
-- alias list
+- account/product/service discovery through `ik account ...`
+- profile/default-service discovery through `ik bootstrap`
+- service-level mailbox list for the selected user/mailbox when available
 - unread/search/read email
 - kDrive list/search/download
 - kChat channel list
@@ -62,6 +62,7 @@ Protected by confirmation:
 - send email
 - post to kChat
 - upload to kDrive
+- true company-admin inventory/actions under `ik admin ...` unless explicitly read-only
 - change mailbox settings
 
 Avoid until later:
@@ -133,3 +134,10 @@ Continue? [y/N]
 ```
 
 `--yes` should be allowed only for specific scripted workflows and should still require explicit `--profile`.
+
+
+## Discovery is not admin
+
+`ik account ...` and `ik bootstrap` describe what the logged-in profile can access. These commands are suitable for normal user/environment discovery.
+
+`ik admin ...` is reserved for true Informaniak Manager / company-admin operations. Admin commands should assume elevated responsibility, show active profile/account context, and avoid writes until explicit confirmation flows exist.

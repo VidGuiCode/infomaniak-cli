@@ -39,7 +39,8 @@ infomaniak-cli/
     api.py              # REST API client
     profiles.py         # profile management
     services/
-      admin.py          # accounts, products, users, mailboxes
+      account.py        # user-accessible accounts, products, services
+      admin.py          # true Manager admin later: users, permissions, aliases, domains
       mail.py           # IMAP/SMTP and/or mail API helpers
       drive.py          # kDrive files/search/download/upload
       chat.py           # kChat channels/messages/files
@@ -54,8 +55,8 @@ infomaniak-cli/
 
 | Service | First connector | Why |
 |---|---|---|
-| Account/profile/product discovery | Informaniak REST API | Needed for bootstrap and profile setup |
-| Mailbox/admin management | Informaniak REST API | APIs exist for mail hostings, mailboxes, aliases, forwarding, filters, accesses |
+| Account/profile/product discovery | Informaniak REST API | User-accessible environment discovery for bootstrap and profile setup |
+| True Manager/admin management | Informaniak REST API | Only for profiles with admin rights: users, mail hostings, aliases, permissions, domains |
 | Actual email content | IMAP/SMTP | More reliable for reading/sending real mailbox messages |
 | kDrive | Informaniak REST API | APIs exist for drives, files, download, upload, search, access, trash, activities |
 | kChat | kChat API | API exists for users, teams, channels, posts, files, webhooks, etc. |
@@ -66,7 +67,7 @@ infomaniak-cli/
 
 ## MVP philosophy
 
-Start read-only and admin-focused.
+Start read-only and discovery-focused.
 
 The first version should help answer:
 
@@ -87,7 +88,7 @@ Hermes can use the CLI immediately through terminal commands:
 ```bash
 ik --profile cylro mail unread
 ik --profile cylro drive search "RCS"
-ik --profile cylro admin mailboxes
+ik --profile cylro account services
 ```
 
 Later, the project can expose one MCP server that wraps the same modules:
@@ -107,4 +108,17 @@ Potential MCP tool names:
 - `informaniak_drive_search`
 - `informaniak_drive_download`
 - `informaniak_chat_post`
-- `informaniak_admin_mailboxes`
+- `informaniak_account_services`
+- `informaniak_admin_mailboxes` later for true Manager/admin use
+
+
+## Discovery vs admin boundary
+
+The CLI has two different layers that must stay separate:
+
+```text
+account/bootstrap discovery = what the logged-in user can access
+admin/manager = real company-account administration requiring admin rights
+```
+
+So account/product/service discovery should live under `ik account ...`, while `ik admin ...` is reserved for true Informaniak Manager actions such as users, permissions, aliases, domains, and all-company mailbox administration.

@@ -153,6 +153,20 @@ It should attempt to find:
 
 If multiple choices exist, ask the user to choose from a list rather than requiring manual ID hunting.
 
+## Discovery vs admin naming
+
+Bootstrap/discovery is about the logged-in user's accessible environment. It must not assume the profile has company-admin rights.
+
+Use neutral account commands for user-accessible inventory:
+
+```bash
+ik account list
+ik account products
+ik account services
+```
+
+Reserve `ik admin ...` for true Informaniak Manager / company-admin operations only, such as users, permissions, aliases, domains, and all-company mailbox administration. A normal employee should be able to use `ik setup`, `ik bootstrap`, `ik account ...`, and service commands without touching `ik admin ...`.
+
 ## Stored profile example
 
 ```yaml

@@ -12,9 +12,10 @@ Build one CLI first:
 ik setup
 ik whoami
 ik doctor
+ik account list
+ik account services
 ik mail unread
 ik drive search "invoice"
-ik admin mailboxes
 ik chat post --channel admin "Reminder: VAT task due"
 ```
 
@@ -79,17 +80,18 @@ Some user-data services may need standard protocols instead of the REST API:
 
 ## Initial MVP
 
-The first useful version should focus on read-first, safe company administration:
+The first useful version should focus on read-first discovery and safe service usage.
+
+User/profile environment discovery belongs under `account`, not `admin`:
 
 ```bash
 ik setup
 ik whoami
 ik doctor
 
-ik admin accounts
-ik admin products
-ik admin mailboxes
-ik admin aliases
+ik account list
+ik account products
+ik account services
 
 ik mail unread
 ik mail search "query"
@@ -103,7 +105,7 @@ ik chat channels
 ik chat post --channel <id> "message"
 ```
 
-Writes/sends/deletes should be explicit and protected by confirmations.
+`admin` is reserved for true Informaniak Manager / company-admin actions later, such as users, aliases, permissions, domains, or all-company mailbox administration. Writes/sends/deletes should be explicit and protected by confirmations.
 
 ## Current development baseline
 

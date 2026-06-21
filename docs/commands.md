@@ -2,6 +2,22 @@
 
 The installed command should be `ik`.
 
+## Command taxonomy
+
+Use these command layers consistently:
+
+- `setup` / `bootstrap` / `whoami` / `doctor`: configure and diagnose the local profile.
+- `account`: discover the logged-in user's accessible Informaniak environment.
+- `mail`, `drive`, `chat`, `meet`, `calendar`, `contacts`: use a service as the selected profile.
+- `admin`: true Informaniak Manager / company-admin operations only, and only when the profile has those rights.
+
+Important naming rule:
+
+```text
+Discovery of what the current user can access is not admin.
+Admin means real company/account administration.
+```
+
 ## Setup and diagnostics
 
 ```bash
@@ -47,20 +63,42 @@ ik auth refresh
 
 `auth login` should route to setup if needed.
 
-## Admin / discovery
+## Account / environment discovery
+
+These commands describe what the authenticated user/profile can access. An employee could run these if their Informaniak rights allow it.
 
 ```bash
-ik admin accounts
-ik admin products
-ik admin services
+ik account list
+ik account products
+ik account products --account-id <id>
+ik account services
+ik account services --account-id <id>
+```
+
+Read-only at first. These replace the earlier misleading `ik admin accounts/products/services` names.
+
+## Admin / Informaniak Manager
+
+Reserve `admin` for true company/account administration — the things normally done by an Informaniak Manager admin, not normal employee service usage.
+
+Future read-only/admin commands may include:
+
+```bash
 ik admin users
-ik admin teams
+ik admin permissions
 ik admin mail-hostings
 ik admin mailboxes
 ik admin aliases
+ik admin domains
 ```
 
-Read-only at first.
+Rules:
+
+- start read-only;
+- require actual account/admin rights;
+- clearly show active profile and selected account;
+- protect all writes with confirmation;
+- do not use `admin` for generic bootstrap/discovery commands.
 
 ## Mail
 
