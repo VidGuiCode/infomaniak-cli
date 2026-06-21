@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Local config/secrets
+.env
+*.token.json
+secrets.json
+config.local.yaml
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
