@@ -11,7 +11,7 @@ from .auth import TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
-from .services.admin import list_accounts, list_products, list_services
+from .services.account import list_accounts, list_products, list_services
 
 
 def print_json(data: Any) -> None:
@@ -213,7 +213,7 @@ def _display_item(item: Mapping[str, Any]) -> str:
     return f"{item_id}\t{name}"
 
 
-def cmd_admin_accounts(args: argparse.Namespace) -> int:
+def cmd_account_list(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile)
     accounts = list_accounts(client)
     if args.json:
@@ -227,7 +227,7 @@ def cmd_admin_accounts(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_admin_products(args: argparse.Namespace) -> int:
+def cmd_account_products(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile)
     account_id = _account_id_or_error(args, profile)
     products = list_products(client, account_id)
@@ -243,7 +243,7 @@ def cmd_admin_products(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_admin_services(args: argparse.Namespace) -> int:
+def cmd_account_services(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile)
     account_id = _account_id_or_error(args, profile)
     services = list_services(client, account_id)
@@ -283,19 +283,19 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--json", action="store_true")
     bootstrap.set_defaults(func=cmd_bootstrap)
 
-    admin = sub.add_parser("admin", help="Read-only admin inventory")
-    admin_sub = admin.add_subparsers(dest="admin_command", required=True)
-    admin_accounts = admin_sub.add_parser("accounts", help="List accessible accounts")
-    admin_accounts.add_argument("--json", action="store_true")
-    admin_accounts.set_defaults(func=cmd_admin_accounts)
-    admin_products = admin_sub.add_parser("products", help="List products for an account")
-    admin_products.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
-    admin_products.add_argument("--json", action="store_true")
-    admin_products.set_defaults(func=cmd_admin_products)
-    admin_services = admin_sub.add_parser("services", help="List services for an account")
-    admin_services.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
-    admin_services.add_argument("--json", action="store_true")
-    admin_services.set_defaults(func=cmd_admin_services)
+    account = sub.add_parser("account", help="Discover accessible accounts, products, and services")
+    account_sub = account.add_subparsers(dest="account_command", required=True)
+    account_list = account_sub.add_parser("list", help="List accessible accounts")
+    account_list.add_argument("--json", action="store_true")
+    account_list.set_defaults(func=cmd_account_list)
+    account_products = account_sub.add_parser("products", help="List products for an account")
+    account_products.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
+    account_products.add_argument("--json", action="store_true")
+    account_products.set_defaults(func=cmd_account_products)
+    account_services = account_sub.add_parser("services", help="List services for an account")
+    account_services.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
+    account_services.add_argument("--json", action="store_true")
+    account_services.set_defaults(func=cmd_account_services)
 
     version = sub.add_parser("version", help="Show CLI version")
     version.set_defaults(func=cmd_version)
