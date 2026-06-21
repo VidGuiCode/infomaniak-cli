@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .api import InformaniakAPIClient, InformaniakAPIError
@@ -11,6 +11,7 @@ from .auth import TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
+from .services.admin import list_accounts, list_products, list_services
 
 
 def print_json(data: Any) -> None:
@@ -183,6 +184,81 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     return 0
 
 
+def _profile_and_client(profile_name: str | None = None) -> tuple[Any, InformaniakAPIClient]:
+    manager = ProfileManager()
+    name = profile_name or manager.get_current_name()
+    if not name:
+        raise ValueError("No profile selected. Run `ik setup --profile <name>` first.")
+
+    profile = manager.get(name)
+    token_store = TokenStore()
+    if not token_store.has_token(name):
+        raise ValueError(f"No token configured for profile: {name}. Run `ik --profile {name} auth token` first.")
+
+    return profile, InformaniakAPIClient(token_store.load_token(name))
+
+
+def _account_id_or_error(args: argparse.Namespace, profile: Any) -> str:
+    account_id = args.account_id or profile.account_id
+    if not account_id:
+        raise ValueError(
+            f"No account selected for profile: {profile.name}. Run `ik bootstrap` or rerun with --account-id <id>."
+        )
+    return str(account_id)
+
+
+def _display_item(item: Mapping[str, Any]) -> str:
+    item_id = item.get("id") or item.get("account_id") or item.get("service_id") or item.get("product_id") or "-"
+    name = item.get("name") or item.get("display_name") or item.get("label") or item.get("title") or "unnamed"
+    return f"{item_id}\t{name}"
+
+
+def cmd_admin_accounts(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile)
+    accounts = list_accounts(client)
+    if args.json:
+        print_json({"profile": profile.name, "accounts": accounts})
+    else:
+        print(f"Profile: {profile.name}")
+        if not accounts:
+            print("No accounts found.")
+        for account in accounts:
+            print(_display_item(account))
+    return 0
+
+
+def cmd_admin_products(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile)
+    account_id = _account_id_or_error(args, profile)
+    products = list_products(client, account_id)
+    if args.json:
+        print_json({"profile": profile.name, "account_id": account_id, "products": products})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Account ID: {account_id}")
+        if not products:
+            print("No products found.")
+        for product in products:
+            print(_display_item(product))
+    return 0
+
+
+def cmd_admin_services(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile)
+    account_id = _account_id_or_error(args, profile)
+    services = list_services(client, account_id)
+    if args.json:
+        print_json({"profile": profile.name, "account_id": account_id, "services": services})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Account ID: {account_id}")
+        if not services:
+            print("No services found.")
+        for service in services:
+            print(_display_item(service))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ik", description="Informaniak/kSuite CLI bridge")
     parser.add_argument("--profile", help="Profile to use for this command")
@@ -206,6 +282,20 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--non-interactive", action="store_true", help="Fail instead of prompting")
     bootstrap.add_argument("--json", action="store_true")
     bootstrap.set_defaults(func=cmd_bootstrap)
+
+    admin = sub.add_parser("admin", help="Read-only admin inventory")
+    admin_sub = admin.add_subparsers(dest="admin_command", required=True)
+    admin_accounts = admin_sub.add_parser("accounts", help="List accessible accounts")
+    admin_accounts.add_argument("--json", action="store_true")
+    admin_accounts.set_defaults(func=cmd_admin_accounts)
+    admin_products = admin_sub.add_parser("products", help="List products for an account")
+    admin_products.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
+    admin_products.add_argument("--json", action="store_true")
+    admin_products.set_defaults(func=cmd_admin_products)
+    admin_services = admin_sub.add_parser("services", help="List services for an account")
+    admin_services.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
+    admin_services.add_argument("--json", action="store_true")
+    admin_services.set_defaults(func=cmd_admin_services)
 
     version = sub.add_parser("version", help="Show CLI version")
     version.set_defaults(func=cmd_version)
