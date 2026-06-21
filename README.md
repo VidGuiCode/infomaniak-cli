@@ -139,4 +139,3 @@ See:
 - [`docs/setup-and-profiles.md`](docs/setup-and-profiles.md) — setup/auth/profile flow
 - [`docs/commands.md`](docs/commands.md) — proposed CLI commands
 - [`docs/security.md`](docs/security.md) — safety, secrets, profile separation
-- [`docs/implementation-plan.md`](docs/implementation-plan.md) — build plan
