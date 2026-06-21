@@ -13,6 +13,7 @@ from .debug import probe_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
 from .services.account import list_accounts, list_products, list_services, slim_accounts
+from .services.drive import list_files, slim_files
 
 
 def print_json(data: Any) -> None:
@@ -279,6 +280,16 @@ def _account_id_or_error(args: argparse.Namespace, profile: Any) -> str:
     return str(account_id)
 
 
+def _drive_id_or_error(args: argparse.Namespace, profile: Any) -> str:
+    drive_id = args.drive_id or profile.default_drive_id
+    if not drive_id:
+        raise ValueError(
+            f"No default kDrive selected for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} bootstrap` or rerun with --drive-id <id>."
+        )
+    return str(drive_id)
+
+
 def _display_item(item: Mapping[str, Any]) -> str:
     item_id = item.get("id") or item.get("account_id") or item.get("service_id") or item.get("product_id") or "-"
     name = item.get("name") or item.get("display_name") or item.get("label") or item.get("title") or "unnamed"
@@ -329,6 +340,35 @@ def cmd_account_services(args: argparse.Namespace) -> int:
             print("No services found.")
         for service in services:
             print(_display_item(service))
+    return 0
+
+
+def cmd_drive_list(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    try:
+        files = list_files(client, drive_id, parent_id=args.parent_id, limit=args.limit)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            path = f"/2/drive/{drive_id}/files"
+            raise ValueError(
+                f"kDrive files endpoint returned 404 for {path}; saved kDrive id may be wrong. "
+                "Rerun bootstrap or capture this failing path."
+            ) from exc
+        raise
+
+    if args.json:
+        output_files = files if args.raw else slim_files(files)
+        print_json({"profile": profile.name, "drive_id": drive_id, "parent_id": args.parent_id, "files": output_files})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        if args.parent_id:
+            print(f"Parent ID: {args.parent_id}")
+        if not files:
+            print("No files found.")
+        for file_item in files:
+            print(_display_item(file_item))
     return 0
 
 
@@ -391,6 +431,16 @@ def build_parser() -> argparse.ArgumentParser:
     account_services.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
     account_services.add_argument("--json", action="store_true")
     account_services.set_defaults(func=cmd_account_services)
+
+    drive = sub.add_parser("drive", help="Use kDrive as the selected profile")
+    drive_sub = drive.add_subparsers(dest="drive_command", required=True)
+    drive_list = drive_sub.add_parser("list", help="List kDrive files and folders")
+    drive_list.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_list.add_argument("--parent", "--path", dest="parent_id", help="Folder/parent ID to list.")
+    drive_list.add_argument("--limit", type=int, help="Maximum number of files to request.")
+    drive_list.add_argument("--json", action="store_true")
+    drive_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
+    drive_list.set_defaults(func=cmd_drive_list)
 
     debug = sub.add_parser("debug", help="Advanced read-only diagnostics")
     debug_sub = debug.add_subparsers(dest="debug_command", required=True)
