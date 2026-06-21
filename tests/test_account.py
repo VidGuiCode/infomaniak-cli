@@ -7,7 +7,7 @@ from infomaniak_cli import cli
 from infomaniak_cli.api import DEFAULT_BASE_URL
 from infomaniak_cli.auth import TokenStore
 from infomaniak_cli.profiles import ProfileManager
-from infomaniak_cli.services.account import list_accounts, list_products, list_services
+from infomaniak_cli.services.account import list_accounts, list_products, list_services, slim_account
 
 
 class FakeAPI:
@@ -52,11 +52,45 @@ def test_account_service_lists_accounts_products_and_services():
     ]
 
 
+def test_slim_account_projects_useful_fields_only():
+    raw = {
+        "id": 42,
+        "name": "Cylro SARL-S",
+        "type": "owner",
+        "legal_entity_type": "company",
+        "phone": "+0000000000",
+        "website": "https://cylro.com/",
+        "billing": True,
+    }
+
+    assert slim_account(raw) == {
+        "id": 42,
+        "name": "Cylro SARL-S",
+        "type": "owner",
+        "legal_entity_type": "company",
+    }
+
+
 def test_cli_account_list_json_uses_profile_token(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("cylro", make_default=True)
     TokenStore().save_token("cylro", "secret-token")
-    fake_api = FakeAPI({"/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]}})
+    fake_api = FakeAPI(
+        {
+            "/1/accounts": {
+                "result": "success",
+                "data": [
+                    {
+                        "id": 42,
+                        "name": "Cylro SARL-S",
+                        "type": "owner",
+                        "legal_entity_type": "company",
+                        "phone": "+0000000000",
+                    }
+                ],
+            }
+        }
+    )
     seen_clients = []
     monkeypatch.setattr(
         cli,
@@ -67,9 +101,33 @@ def test_cli_account_list_json_uses_profile_token(tmp_path, monkeypatch, capsys)
     assert cli.main(["account", "list", "--json"]) == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output == {"profile": "cylro", "accounts": [{"id": 42, "name": "Cylro SARL-S"}]}
+    assert output == {
+        "profile": "cylro",
+        "accounts": [{"id": 42, "name": "Cylro SARL-S", "type": "owner", "legal_entity_type": "company"}],
+    }
+    assert "phone" not in output["accounts"][0]
     assert seen_clients == [("secret-token", DEFAULT_BASE_URL)]
     assert fake_api.calls == [("/1/accounts", None)]
+
+
+def test_cli_account_list_json_raw_emits_full_payload(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("cylro", make_default=True)
+    TokenStore().save_token("cylro", "secret-token")
+    raw_account = {
+        "id": 42,
+        "name": "Cylro SARL-S",
+        "type": "owner",
+        "phone": "+0000000000",
+        "website": "https://cylro.com/",
+    }
+    fake_api = FakeAPI({"/1/accounts": {"result": "success", "data": [raw_account]}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["account", "list", "--json", "--raw"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"profile": "cylro", "accounts": [raw_account]}
 
 
 def test_cli_account_products_json_prefers_profile_account_id(tmp_path, monkeypatch, capsys):

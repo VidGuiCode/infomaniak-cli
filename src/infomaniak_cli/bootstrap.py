@@ -33,10 +33,10 @@ def bootstrap_profile(
     services = _as_items(_unwrap(api.get(f"/1/accounts/{selected_account_id}/services")))
     my_ksuite = _optional_get(api, "/1/my_ksuite/current")
 
-    mail_hosting = _find_item([*products, *services], "mail_hosting", "mail hosting", "mail")
+    mail_hosting = _find_item([*products, *services], "mail_hosting", "email_hosting", "mail hosting", "mail")
     mailboxes = _discover_mailboxes(api, mail_hosting)
-    drives = _as_items(_optional_get(api, "/2/drive"))
-    kchat_teams = _as_items(_optional_get(api, "/api/v4/teams"))
+    drives = _discover_drives(api, selected_account_id)
+    kchat_teams = _discover_kchat_teams(api, products)
 
     drive = _first_item(drives)
     kchat = _first_item(kchat_teams)
@@ -81,9 +81,11 @@ def _unwrap(payload: Any) -> Any:
     return payload
 
 
-def _optional_get(api: Any, path: str) -> Any:
+def _optional_get(api: Any, path: str, params: Mapping[str, Any] | None = None, *, raw: bool = False) -> Any:
     try:
-        return _unwrap(api.get(path))
+        if raw and hasattr(api, "get_raw"):
+            return api.get_raw(path, params=params)
+        return _unwrap(api.get(path, params=params))
     except (InformaniakAPIError, KeyError):
         return None
 
@@ -95,11 +97,44 @@ def _discover_mailboxes(api: Any, mail_hosting: Mapping[str, Any] | None) -> lis
     return _as_items(_optional_get(api, f"/1/mail_hostings/{mail_hosting_id}/mailboxes"))
 
 
+def _discover_drives(api: Any, account_id: str) -> list[Mapping[str, Any]]:
+    data = _optional_get(api, "/2/drive", params={"account_id": account_id})
+    if data is not None:
+        return _as_items(data)
+    return _as_items(_optional_get(api, "/2/drive"))
+
+
+def _discover_kchat_teams(api: Any, products: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    kchat_product = _find_item(products, "kchat")
+    kchat_host_id = _item_field(kchat_product, "internal_name")
+    candidate_paths = []
+    if kchat_host_id:
+        host = f"https://{kchat_host_id}.kchat.infomaniak.com"
+        candidate_paths.extend(
+            [
+                (f"{host}/api/v4/users/me/teams", True),
+                (f"{host}/api/v4/teams", True),
+            ]
+        )
+    candidate_paths.extend(
+        [
+            ("/api/v4/users/me/teams", False),
+            ("/api/v4/teams", False),
+        ]
+    )
+
+    for path, raw in candidate_paths:
+        data = _optional_get(api, path, raw=raw)
+        if data is not None:
+            return _as_items(data)
+    return []
+
+
 def _as_items(data: Any) -> list[Mapping[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, Mapping)]
     if isinstance(data, Mapping):
-        for key in ("data", "items", "results"):
+        for key in ("data", "items", "results", "drives", "teams"):
             value = data.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, Mapping)]
@@ -167,6 +202,15 @@ def _item_name(item: Mapping[str, Any] | None) -> str | None:
         value = item.get(key)
         if value:
             return str(value)
+    return None
+
+
+def _item_field(item: Mapping[str, Any] | None, key: str) -> str | None:
+    if not item:
+        return None
+    value = item.get(key)
+    if value:
+        return str(value)
     return None
 
 

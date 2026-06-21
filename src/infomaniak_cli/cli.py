@@ -11,7 +11,7 @@ from .auth import TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
-from .services.account import list_accounts, list_products, list_services
+from .services.account import list_accounts, list_products, list_services, slim_accounts
 
 
 def print_json(data: Any) -> None:
@@ -288,7 +288,8 @@ def cmd_account_list(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     accounts = list_accounts(client)
     if args.json:
-        print_json({"profile": profile.name, "accounts": accounts})
+        output_accounts = accounts if args.raw else slim_accounts(accounts)
+        print_json({"profile": profile.name, "accounts": output_accounts})
     else:
         print(f"Profile: {profile.name}")
         if not accounts:
@@ -363,6 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_sub = account.add_subparsers(dest="account_command", required=True)
     account_list = account_sub.add_parser("list", help="List accessible accounts")
     account_list.add_argument("--json", action="store_true")
+    account_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw account payload.")
     account_list.set_defaults(func=cmd_account_list)
     account_products = account_sub.add_parser("products", help="List products for an account")
     account_products.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")

@@ -108,6 +108,9 @@ class InformaniakAPIClient:
     def get(self, path: str, params: Mapping[str, Any] | None = None) -> Any:
         return self.request("GET", path, params=params)
 
+    def get_raw(self, path: str, params: Mapping[str, Any] | None = None) -> Any:
+        return self.request("GET", path, params=params, validate_envelope=False)
+
     def post(self, path: str, json: Any | None = None) -> Any:
         return self.request("POST", path, json=json)
 
@@ -118,6 +121,7 @@ class InformaniakAPIClient:
         *,
         params: Mapping[str, Any] | None = None,
         json: Any | None = None,
+        validate_envelope: bool = True,
     ) -> Any:
         method = method.upper()
         headers = {
@@ -157,7 +161,8 @@ class InformaniakAPIClient:
                 secrets=[self.token],
             )
 
-        self._validate_success_envelope(method, path, response.status_code, payload)
+        if validate_envelope:
+            self._validate_success_envelope(method, path, response.status_code, payload)
 
         return payload
 

@@ -7,6 +7,15 @@ def list_accounts(api: Any) -> list[Mapping[str, Any]]:
     return _as_items(_unwrap(api.get("/1/accounts")))
 
 
+def slim_account(account: Mapping[str, Any]) -> dict[str, Any]:
+    fields = ("id", "name", "type", "legal_entity_type")
+    return {field: account[field] for field in fields if field in account and account[field] is not None}
+
+
+def slim_accounts(accounts: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [slim_account(account) for account in accounts]
+
+
 def list_products(api: Any, account_id: str) -> list[Mapping[str, Any]]:
     return _as_items(_unwrap(api.get(f"/1/accounts/{account_id}/products")))
 
