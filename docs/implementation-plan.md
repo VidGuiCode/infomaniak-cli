@@ -215,7 +215,7 @@ Use mocked HTTP responses in tests.
 
 ```bash
 ik auth status
-ik auth token --profile cylro
+ik --profile cylro auth token
 ik auth logout
 ```
 

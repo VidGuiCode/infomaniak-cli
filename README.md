@@ -105,6 +105,32 @@ ik chat post --channel <id> "message"
 
 Writes/sends/deletes should be explicit and protected by confirmations.
 
+## Current development baseline
+
+A minimal Python/uv foundation is in place:
+
+- console command: `ik`
+- setup-created profiles: `ik setup --profile cylro --non-interactive`
+- local diagnostics: `ik whoami`, `ik doctor`
+- profile management: `ik profile list/show/use`
+- token placeholder commands: `ik auth status/token`
+- pytest coverage for config paths, profiles, auth token storage, redaction, and CLI smoke
+
+Run tests on this Windows/Git-Bash environment with a repo-local temp folder:
+
+```bash
+mkdir -p .tmp
+TMPDIR="$PWD/.tmp" TEMP="$PWD/.tmp" TMP="$PWD/.tmp" uv run pytest -q
+```
+
+Smoke test:
+
+```bash
+IK_CONFIG_DIR="$PWD/.tmp/manual-config" uv run ik setup --profile cylro --non-interactive
+IK_CONFIG_DIR="$PWD/.tmp/manual-config" uv run ik whoami --json
+IK_CONFIG_DIR="$PWD/.tmp/manual-config" uv run ik doctor --json
+```
+
 ## Documentation
 
 See:
