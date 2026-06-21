@@ -32,3 +32,13 @@ def test_cli_setup_whoami_and_doctor_json(tmp_path):
     checks = json.loads(doctor.stdout)["checks"]
     assert checks["profile_configured"] is True
     assert checks["token_configured"] is False
+
+
+def test_cli_bootstrap_requires_token(tmp_path):
+    setup = run_ik(tmp_path, "setup", "--profile", "cylro", "--non-interactive")
+    assert setup.returncode == 0, setup.stderr
+
+    bootstrap = run_ik(tmp_path, "bootstrap", "--non-interactive")
+
+    assert bootstrap.returncode == 1
+    assert "No token configured for profile: cylro" in bootstrap.stderr

@@ -6,7 +6,9 @@ import sys
 from typing import Any
 
 from . import __version__
+from .api import InformaniakAPIClient, InformaniakAPIError
 from .auth import TokenStore
+from .bootstrap import BootstrapError, bootstrap_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
 
@@ -149,6 +151,38 @@ def cmd_auth_token(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bootstrap(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        print("No profile selected. Run `ik setup --profile <name>` first.", file=sys.stderr)
+        return 1
+
+    token_store = TokenStore()
+    if not token_store.has_token(name):
+        print(f"No token configured for profile: {name}. Run `ik --profile {name} auth token` first.", file=sys.stderr)
+        return 1
+
+    client = InformaniakAPIClient(token_store.load_token(name))
+    result = bootstrap_profile(
+        name,
+        client,
+        manager=manager,
+        account_id=args.account_id,
+        non_interactive=args.non_interactive,
+    )
+    if args.json:
+        print_json(result)
+    else:
+        print(f"Profile bootstrapped: {result['profile']}")
+        print(f"Informaniak user: {result['informaniak_user'] or 'not found'}")
+        account = result["account"]
+        print(f"Account: {account['name'] or account['id'] or 'not selected'}")
+        drive = result["default_drive"]
+        print(f"Default kDrive: {drive['name'] or drive['id'] or 'not selected'}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ik", description="Informaniak/kSuite CLI bridge")
     parser.add_argument("--profile", help="Profile to use for this command")
@@ -166,6 +200,12 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Run local configuration diagnostics")
     doctor.add_argument("--json", action="store_true")
     doctor.set_defaults(func=cmd_doctor)
+
+    bootstrap = sub.add_parser("bootstrap", help="Discover account/service IDs for a profile")
+    bootstrap.add_argument("--account-id", help="Account ID to select when multiple accounts are available")
+    bootstrap.add_argument("--non-interactive", action="store_true", help="Fail instead of prompting")
+    bootstrap.add_argument("--json", action="store_true")
+    bootstrap.set_defaults(func=cmd_bootstrap)
 
     version = sub.add_parser("version", help="Show CLI version")
     version.set_defaults(func=cmd_version)
@@ -200,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (KeyError, ValueError) as exc:
+    except (BootstrapError, InformaniakAPIError, KeyError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
