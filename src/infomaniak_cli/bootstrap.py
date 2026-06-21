@@ -10,6 +10,23 @@ class BootstrapError(RuntimeError):
     pass
 
 
+_CATALOG_KEYS = {
+    "service_id",
+    "service_name",
+    "product_id",
+    "parent_id",
+    "parent_service_id",
+    "parent_service_name",
+    "customer_name",
+    "unique_id",
+    "expired_at",
+    "is_free",
+    "is_trial",
+    "is_zero_price",
+    "rights",
+}
+
+
 def bootstrap_profile(
     profile_name: str,
     api: Any,
@@ -99,9 +116,10 @@ def _discover_mailboxes(api: Any, mail_hosting: Mapping[str, Any] | None) -> lis
 
 def _discover_drives(api: Any, account_id: str) -> list[Mapping[str, Any]]:
     data = _optional_get(api, "/2/drive", params={"account_id": account_id})
-    if data is not None:
-        return _as_items(data)
-    return _as_items(_optional_get(api, "/2/drive"))
+    drives = _drive_resources(data)
+    if drives:
+        return drives
+    return _drive_resources(_optional_get(api, "/2/drive"))
 
 
 def _discover_kchat_teams(api: Any, products: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -125,8 +143,9 @@ def _discover_kchat_teams(api: Any, products: list[Mapping[str, Any]]) -> list[M
 
     for path, raw in candidate_paths:
         data = _optional_get(api, path, raw=raw)
-        if data is not None:
-            return _as_items(data)
+        teams = _team_resources(data)
+        if teams:
+            return teams
     return []
 
 
@@ -143,6 +162,26 @@ def _as_items(data: Any) -> list[Mapping[str, Any]]:
 
 def _first_item(items: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     return items[0] if items else None
+
+
+def _drive_resources(data: Any) -> list[Mapping[str, Any]]:
+    return [item for item in _as_items(data) if _is_drive_resource(item)]
+
+
+def _team_resources(data: Any) -> list[Mapping[str, Any]]:
+    return [item for item in _as_items(data) if _is_team_resource(item)]
+
+
+def _is_drive_resource(item: Mapping[str, Any]) -> bool:
+    return _item_id(item) is not None and _item_name(item) is not None and not _looks_like_catalog_item(item)
+
+
+def _is_team_resource(item: Mapping[str, Any]) -> bool:
+    return _item_id(item) is not None and not _looks_like_catalog_item(item)
+
+
+def _looks_like_catalog_item(item: Mapping[str, Any]) -> bool:
+    return bool(_CATALOG_KEYS.intersection(item.keys()))
 
 
 def _select_account(

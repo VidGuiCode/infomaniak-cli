@@ -9,6 +9,7 @@ from . import __version__
 from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError
 from .auth import TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
+from .debug import probe_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
 from .services.account import list_accounts, list_products, list_services, slim_accounts
@@ -331,6 +332,22 @@ def cmd_account_services(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_debug_probe(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    result = probe_profile(profile.name, profile.account_id, client)
+    if args.json:
+        print_json(result)
+    else:
+        print(f"Profile: {result['profile']}")
+        print(f"Account ID: {result['account_id'] or 'not selected'}")
+        for note in result["notes"]:
+            print(f"Note: {note}")
+        for item in result["results"]:
+            params = f" params={item['params']}" if item.get("params") else ""
+            print(f"{item['group']}\t{item['status_code']}\t{item['path']}{params}\t{item['shape']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ik", description="Informaniak/kSuite CLI bridge")
     parser.add_argument("--profile", help="Profile to use for this command")
@@ -374,6 +391,12 @@ def build_parser() -> argparse.ArgumentParser:
     account_services.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
     account_services.add_argument("--json", action="store_true")
     account_services.set_defaults(func=cmd_account_services)
+
+    debug = sub.add_parser("debug", help="Advanced read-only diagnostics")
+    debug_sub = debug.add_subparsers(dest="debug_command", required=True)
+    debug_probe = debug_sub.add_parser("probe", help="Probe candidate read-only API endpoints")
+    debug_probe.add_argument("--json", action="store_true")
+    debug_probe.set_defaults(func=cmd_debug_probe)
 
     version = sub.add_parser("version", help="Show CLI version")
     version.set_defaults(func=cmd_version)

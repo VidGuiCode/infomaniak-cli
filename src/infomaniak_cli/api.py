@@ -111,6 +111,22 @@ class InformaniakAPIClient:
     def get_raw(self, path: str, params: Mapping[str, Any] | None = None) -> Any:
         return self.request("GET", path, params=params, validate_envelope=False)
 
+    def probe_get(self, path: str, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.token}",
+        }
+        try:
+            response = self.transport.request("GET", self._url(path), headers=headers, params=params, json=None)
+        except InformaniakAPIError as exc:
+            return {"status_code": exc.status_code, "json": None, "error": str(exc)}
+
+        try:
+            payload = json_module.loads(response.text)
+        except json_module.JSONDecodeError:
+            return {"status_code": response.status_code, "json": None, "error": "non-json response"}
+        return {"status_code": response.status_code, "json": payload}
+
     def post(self, path: str, json: Any | None = None) -> Any:
         return self.request("POST", path, json=json)
 

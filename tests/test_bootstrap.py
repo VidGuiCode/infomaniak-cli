@@ -165,7 +165,7 @@ def test_bootstrap_keeps_drive_null_when_drive_endpoint_is_empty(tmp_path):
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
             "/1/accounts/42/products": {
                 "result": "success",
-                "data": [{"id": 3099794, "service_id": 40, "service_name": "drive"}],
+                "data": [{"id": 3000001, "service_id": 40, "service_name": "drive"}],
             },
             "/1/accounts/42/services": {
                 "result": "success",
@@ -173,6 +173,42 @@ def test_bootstrap_keeps_drive_null_when_drive_endpoint_is_empty(tmp_path):
             },
             "/1/my_ksuite/current": {"result": "success", "data": {}},
             "/2/drive": {"result": "success", "data": []},
+        }
+    )
+
+    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+
+    assert result["default_drive"] == {"id": None, "name": None}
+    profile = manager.get("cylro")
+    assert profile.default_drive_id is None
+    assert profile.default_drive_name is None
+
+
+def test_bootstrap_rejects_product_shaped_drive_endpoint_response(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update(
+        "cylro",
+        default_drive_id="3000001",
+        default_drive_name="example.com",
+        make_default=True,
+    )
+    api = FakeAPI(
+        {
+            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts/42/products": {
+                "result": "success",
+                "data": [{"id": 3000001, "service_id": 40, "service_name": "drive", "customer_name": "example.com"}],
+            },
+            "/1/accounts/42/services": {
+                "result": "success",
+                "data": [{"id": 40, "name": "drive", "count": 1}],
+            },
+            "/1/my_ksuite/current": {"result": "success", "data": {}},
+            "/2/drive": {
+                "result": "success",
+                "data": [{"id": 3000001, "service_id": 40, "service_name": "drive", "customer_name": "example.com"}],
+            },
         }
     )
 
@@ -195,7 +231,7 @@ def test_bootstrap_finds_kchat_team_with_product_uuid_host(tmp_path):
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
             "/1/accounts/42/products": {
                 "result": "success",
-                "data": [{"id": 312891, "service_id": 54, "service_name": "kchat", "internal_name": kchat_uuid}],
+                "data": [{"id": 3000002, "service_id": 54, "service_name": "kchat", "internal_name": kchat_uuid}],
             },
             "/1/accounts/42/services": {
                 "result": "success",
@@ -213,6 +249,35 @@ def test_bootstrap_finds_kchat_team_with_product_uuid_host(tmp_path):
     assert manager.get("cylro").kchat_team_id == "team-1"
 
 
+def test_bootstrap_rejects_product_shaped_kchat_endpoint_response(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("cylro", kchat_team_id="3000002", make_default=True)
+    api = FakeAPI(
+        {
+            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts/42/products": {
+                "result": "success",
+                "data": [{"id": 3000002, "service_id": 54, "service_name": "kchat", "customer_name": "example.com"}],
+            },
+            "/1/accounts/42/services": {
+                "result": "success",
+                "data": [{"id": 54, "name": "kchat", "count": 1}],
+            },
+            "/1/my_ksuite/current": {"result": "success", "data": {}},
+            "/api/v4/teams": {
+                "result": "success",
+                "data": [{"id": 3000002, "service_id": 54, "service_name": "kchat", "customer_name": "example.com"}],
+            },
+        }
+    )
+
+    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+
+    assert result["kchat_team_id"] is None
+    assert manager.get("cylro").kchat_team_id is None
+
+
 def test_bootstrap_keeps_kchat_team_null_when_team_endpoint_missing(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update("cylro", kchat_team_id="54", make_default=True)
@@ -222,7 +287,7 @@ def test_bootstrap_keeps_kchat_team_null_when_team_endpoint_missing(tmp_path):
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
             "/1/accounts/42/products": {
                 "result": "success",
-                "data": [{"id": 312891, "service_id": 54, "service_name": "kchat"}],
+                "data": [{"id": 3000002, "service_id": 54, "service_name": "kchat"}],
             },
             "/1/accounts/42/services": {
                 "result": "success",
@@ -284,9 +349,9 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
             "/1/accounts/1988835/products": {
                 "result": "success",
                 "data": [
-                    {"id": 3099794, "service_id": 40, "service_name": "drive", "customer_name": "cylro.com"},
-                    {"id": 312891, "service_id": 54, "service_name": "kchat", "customer_name": "cylro.com"},
-                    {"id": 1009330, "service_id": 23, "service_name": "email_hosting", "customer_name": "cylro.com"},
+                    {"id": 3000001, "service_id": 40, "service_name": "drive", "customer_name": "example.com"},
+                    {"id": 3000002, "service_id": 54, "service_name": "kchat", "customer_name": "example.com"},
+                    {"id": 3000003, "service_id": 23, "service_name": "email_hosting", "customer_name": "example.com"},
                 ],
             },
             "/1/accounts/1988835/services": {
@@ -298,7 +363,7 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
                 ],
             },
             "/1/my_ksuite/current": {"result": "success", "data": {}},
-            "/1/mail_hostings/1009330/mailboxes": {
+            "/1/mail_hostings/3000003/mailboxes": {
                 "result": "success",
                 "data": [{"id": "mbox-1", "email": "gui@example.com"}],
             },
@@ -307,7 +372,7 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
 
     result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
 
-    assert result["mail_hosting_id"] == "1009330"
+    assert result["mail_hosting_id"] == "3000003"
     assert result["default_mailbox"] == "gui@example.com"
     assert result["default_drive"] == {"id": None, "name": None}
     assert result["kchat_team_id"] is None
