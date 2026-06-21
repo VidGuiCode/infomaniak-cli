@@ -13,17 +13,16 @@ class BootstrapError(RuntimeError):
 _CATALOG_KEYS = {
     "service_id",
     "service_name",
-    "product_id",
     "parent_id",
     "parent_service_id",
     "parent_service_name",
     "customer_name",
     "unique_id",
-    "expired_at",
     "is_free",
     "is_trial",
     "is_zero_price",
     "rights",
+    "count",
 }
 
 
@@ -48,27 +47,25 @@ def bootstrap_profile(
 
     products = _as_items(_unwrap(api.get(f"/1/accounts/{selected_account_id}/products")))
     services = _as_items(_unwrap(api.get(f"/1/accounts/{selected_account_id}/services")))
-    my_ksuite = _optional_get(api, "/1/my_ksuite/current")
 
     mail_hosting = _find_item([*products, *services], "mail_hosting", "email_hosting", "mail hosting", "mail")
     mailboxes = _discover_mailboxes(api, mail_hosting)
     drives = _discover_drives(api, selected_account_id)
-    kchat_teams = _discover_kchat_teams(api, products)
 
+    # TODO: prompt/select among multiple drives once drive UX exists.
     drive = _first_item(drives)
-    kchat = _first_item(kchat_teams)
     default_mailbox = _mailbox_address(_first_item(mailboxes))
 
     metadata = {
         "informaniak_user": _profile_user(profile_data),
         "account_id": selected_account_id,
         "account_name": _item_name(account),
-        "ksuite_id": _item_id(my_ksuite) if isinstance(my_ksuite, Mapping) else None,
+        "ksuite_id": None,
         "mail_hosting_id": _item_id(mail_hosting) if mail_hosting else None,
         "default_mailbox": default_mailbox,
-        "default_drive_id": _item_id(drive) if drive else None,
+        "default_drive_id": _drive_id(drive) if drive else None,
         "default_drive_name": _item_name(drive) if drive else None,
-        "kchat_team_id": _item_id(kchat) if kchat else None,
+        "kchat_team_id": None,
     }
     profile = manager.replace_metadata(profile_name, make_default=True, **metadata)
 
@@ -87,7 +84,7 @@ def bootstrap_profile(
             "services": len(services),
             "mailboxes": len(mailboxes),
             "drives": len(drives),
-            "kchat_teams": len(kchat_teams),
+            "kchat_teams": 0,
         },
     }
 
@@ -116,37 +113,7 @@ def _discover_mailboxes(api: Any, mail_hosting: Mapping[str, Any] | None) -> lis
 
 def _discover_drives(api: Any, account_id: str) -> list[Mapping[str, Any]]:
     data = _optional_get(api, "/2/drive", params={"account_id": account_id})
-    drives = _drive_resources(data)
-    if drives:
-        return drives
-    return _drive_resources(_optional_get(api, "/2/drive"))
-
-
-def _discover_kchat_teams(api: Any, products: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    kchat_product = _find_item(products, "kchat")
-    kchat_host_id = _item_field(kchat_product, "internal_name")
-    candidate_paths = []
-    if kchat_host_id:
-        host = f"https://{kchat_host_id}.kchat.infomaniak.com"
-        candidate_paths.extend(
-            [
-                (f"{host}/api/v4/users/me/teams", True),
-                (f"{host}/api/v4/teams", True),
-            ]
-        )
-    candidate_paths.extend(
-        [
-            ("/api/v4/users/me/teams", False),
-            ("/api/v4/teams", False),
-        ]
-    )
-
-    for path, raw in candidate_paths:
-        data = _optional_get(api, path, raw=raw)
-        teams = _team_resources(data)
-        if teams:
-            return teams
-    return []
+    return _drive_resources(data)
 
 
 def _as_items(data: Any) -> list[Mapping[str, Any]]:
@@ -168,16 +135,8 @@ def _drive_resources(data: Any) -> list[Mapping[str, Any]]:
     return [item for item in _as_items(data) if _is_drive_resource(item)]
 
 
-def _team_resources(data: Any) -> list[Mapping[str, Any]]:
-    return [item for item in _as_items(data) if _is_team_resource(item)]
-
-
 def _is_drive_resource(item: Mapping[str, Any]) -> bool:
-    return _item_id(item) is not None and _item_name(item) is not None and not _looks_like_catalog_item(item)
-
-
-def _is_team_resource(item: Mapping[str, Any]) -> bool:
-    return _item_id(item) is not None and not _looks_like_catalog_item(item)
+    return _drive_id(item) is not None and _item_name(item) is not None and not _looks_like_catalog_item(item)
 
 
 def _looks_like_catalog_item(item: Mapping[str, Any]) -> bool:
@@ -244,11 +203,11 @@ def _item_name(item: Mapping[str, Any] | None) -> str | None:
     return None
 
 
-def _item_field(item: Mapping[str, Any] | None, key: str) -> str | None:
+def _drive_id(item: Mapping[str, Any] | None) -> str | None:
     if not item:
         return None
-    value = item.get(key)
-    if value:
+    value = item.get("id")
+    if value is not None:
         return str(value)
     return None
 
