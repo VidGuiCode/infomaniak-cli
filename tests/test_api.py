@@ -29,6 +29,16 @@ def test_redact_secret_removes_bearer_tokens():
     assert redact_secret(message) == expected
 
 
+def test_redact_secret_removes_common_token_fields_and_known_secret():
+    message = 'token="secret-token" access_token=abc123 refresh_token: "refresh123"'
+
+    redacted = redact_secret(message, secrets=["secret-token"])
+
+    assert "secret-token" not in redacted
+    assert "abc123" not in redacted
+    assert "refresh123" not in redacted
+
+
 def test_api_client_get_builds_url_headers_and_parses_json():
     transport = FakeTransport(TransportResponse(status_code=200, text='{"result":"success","data":{"id":123}}'))
     client = InformaniakAPIClient(token="secret-token", base_url="https://api.example.test", transport=transport)
@@ -81,6 +91,48 @@ def test_api_client_error_exposes_status_and_redacts_token():
     assert exc_info.value.status_code == 403
     assert "Bearer ***" in str(exc_info.value)
     assert token not in str(exc_info.value)
+
+
+def test_api_client_401_has_auth_scope_message_and_redacts_known_token():
+    token = "very-secret-token"
+    response = TransportResponse(
+        status_code=401,
+        text='{"result":"error","error":{"message":"token very-secret-token expired"}}',
+    )
+    client = InformaniakAPIClient(token=token, base_url="https://api.example.test", transport=FakeTransport(response))
+
+    with pytest.raises(InformaniakAPIError) as exc_info:
+        client.get("/2/profile")
+
+    assert exc_info.value.status_code == 401
+    assert "authentication failed or insufficient scope" in str(exc_info.value)
+    assert token not in str(exc_info.value)
+
+
+def test_api_client_rejects_missing_response_envelope_with_readable_error():
+    token = "very-secret-token"
+    response = TransportResponse(status_code=200, text='{"id":123,"token":"very-secret-token"}')
+    client = InformaniakAPIClient(token=token, base_url="https://api.example.test", transport=FakeTransport(response))
+
+    with pytest.raises(InformaniakAPIError) as exc_info:
+        client.get("/2/profile")
+
+    message = str(exc_info.value)
+    assert exc_info.value.status_code == 200
+    assert "Unexpected API response envelope" in message
+    assert "missing result" in message
+    assert token not in message
+
+
+def test_api_client_rejects_unexpected_response_envelope_result():
+    response = TransportResponse(status_code=200, text='{"result":"maybe","data":{"id":123}}')
+    client = InformaniakAPIClient(token="secret-token", base_url="https://api.example.test", transport=FakeTransport(response))
+
+    with pytest.raises(InformaniakAPIError) as exc_info:
+        client.get("/2/profile")
+
+    assert exc_info.value.status_code == 200
+    assert "expected result=success" in str(exc_info.value)
 
 
 def test_api_client_rejects_invalid_json_response():

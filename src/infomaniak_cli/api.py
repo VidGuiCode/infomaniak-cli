@@ -3,24 +3,34 @@ from __future__ import annotations
 import json as json_module
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-_BEARER_RE = re.compile(r"Bearer\s+[^\s]+", re.IGNORECASE)
+_BEARER_RE = re.compile(r"Bearer\s+[^\s\"',;}]+", re.IGNORECASE)
+_SECRET_FIELD_RE = re.compile(
+    r"\b(access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|cookie)"
+    r"(\s*[:=]\s*[\"']?)([^\"'\s,;}]+)",
+    re.IGNORECASE,
+)
 DEFAULT_BASE_URL = "https://api.infomaniak.com"
 
 
-def redact_secret(message: str) -> str:
+def redact_secret(message: str, *, secrets: Iterable[str] = ()) -> str:
     """Redact credential-like strings from an error/log message."""
-    return _BEARER_RE.sub("Bearer ***", message)
+    redacted = _BEARER_RE.sub("Bearer ***", str(message))
+    redacted = _SECRET_FIELD_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}***", redacted)
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "***")
+    return redacted
 
 
 class InformaniakAPIError(RuntimeError):
-    def __init__(self, status_code: int, message: str) -> None:
+    def __init__(self, status_code: int, message: str, *, secrets: Iterable[str] = ()) -> None:
         self.status_code = status_code
-        super().__init__(redact_secret(message))
+        super().__init__(redact_secret(message, secrets=secrets))
 
 
 @dataclass(slots=True)
@@ -119,14 +129,35 @@ class InformaniakAPIClient:
 
         url = self._url(path)
         response = self.transport.request(method, url, headers=headers, params=params, json=json)
-        payload = self._parse_json(method, path, response)
+        try:
+            payload = self._parse_json(method, path, response)
+        except InformaniakAPIError as exc:
+            if response.status_code in (401, 403):
+                raise InformaniakAPIError(
+                    response.status_code,
+                    f"{method} {path} failed: authentication failed or insufficient scope ({exc})",
+                    secrets=[self.token],
+                ) from exc
+            raise
 
         if response.status_code >= 400:
             message = self._error_message(payload) if isinstance(payload, dict) else str(payload)
-            raise InformaniakAPIError(response.status_code, f"{method} {path} failed: {message}")
+            if response.status_code in (401, 403):
+                message = f"authentication failed or insufficient scope ({message})"
+            raise InformaniakAPIError(
+                response.status_code,
+                f"{method} {path} failed: {message}",
+                secrets=[self.token],
+            )
 
         if isinstance(payload, dict) and payload.get("result") == "error":
-            raise InformaniakAPIError(response.status_code, f"{method} {path} failed: {self._error_message(payload)}")
+            raise InformaniakAPIError(
+                response.status_code,
+                f"{method} {path} failed: {self._error_message(payload)}",
+                secrets=[self.token],
+            )
+
+        self._validate_success_envelope(method, path, response.status_code, payload)
 
         return payload
 
@@ -136,15 +167,54 @@ class InformaniakAPIClient:
             return clean_path
         return f"{self.base_url}/{clean_path.lstrip('/')}"
 
-    @staticmethod
-    def _parse_json(method: str, path: str, response: TransportResponse) -> Any:
+    def _parse_json(self, method: str, path: str, response: TransportResponse) -> Any:
         try:
             return json_module.loads(response.text)
         except json_module.JSONDecodeError as exc:
             raise InformaniakAPIError(
                 response.status_code,
                 f"Invalid JSON response from {method} {path}: {response.text[:200]}",
+                secrets=[self.token],
             ) from exc
+
+    def _validate_success_envelope(self, method: str, path: str, status_code: int, payload: Any) -> None:
+        if not isinstance(payload, Mapping):
+            raise InformaniakAPIError(
+                status_code,
+                f"Unexpected API response envelope from {method} {path}: expected JSON object with result=success",
+                secrets=[self.token],
+            )
+
+        result = payload.get("result")
+        if result == "success":
+            if "data" not in payload:
+                raise InformaniakAPIError(
+                    status_code,
+                    f"Unexpected API response envelope from {method} {path}: missing data field",
+                    secrets=[self.token],
+                )
+            return
+
+        preview = self._payload_preview(payload)
+        if "result" not in payload:
+            raise InformaniakAPIError(
+                status_code,
+                f"Unexpected API response envelope from {method} {path}: missing result field: {preview}",
+                secrets=[self.token],
+            )
+
+        raise InformaniakAPIError(
+            status_code,
+            f"Unexpected API response envelope from {method} {path}: expected result=success, got {result!r}: {preview}",
+            secrets=[self.token],
+        )
+
+    @staticmethod
+    def _payload_preview(payload: Mapping[str, Any]) -> str:
+        try:
+            return json_module.dumps(dict(payload), sort_keys=True)[:200]
+        except TypeError:
+            return str(payload)[:200]
 
     @staticmethod
     def _error_message(payload: Mapping[str, Any]) -> str:

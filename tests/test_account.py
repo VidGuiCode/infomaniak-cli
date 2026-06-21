@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from infomaniak_cli import cli
+from infomaniak_cli.api import DEFAULT_BASE_URL
 from infomaniak_cli.auth import TokenStore
 from infomaniak_cli.profiles import ProfileManager
 from infomaniak_cli.services.account import list_accounts, list_products, list_services
@@ -56,14 +57,18 @@ def test_cli_account_list_json_uses_profile_token(tmp_path, monkeypatch, capsys)
     ProfileManager().create_or_update("cylro", make_default=True)
     TokenStore().save_token("cylro", "secret-token")
     fake_api = FakeAPI({"/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]}})
-    seen_tokens = []
-    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token: (seen_tokens.append(token) or fake_api))
+    seen_clients = []
+    monkeypatch.setattr(
+        cli,
+        "InformaniakAPIClient",
+        lambda token, *, base_url: (seen_clients.append((token, base_url)) or fake_api),
+    )
 
     assert cli.main(["account", "list", "--json"]) == 0
 
     output = json.loads(capsys.readouterr().out)
     assert output == {"profile": "cylro", "accounts": [{"id": 42, "name": "Cylro SARL-S"}]}
-    assert seen_tokens == ["secret-token"]
+    assert seen_clients == [("secret-token", DEFAULT_BASE_URL)]
     assert fake_api.calls == [("/1/accounts", None)]
 
 
@@ -72,7 +77,7 @@ def test_cli_account_products_json_prefers_profile_account_id(tmp_path, monkeypa
     ProfileManager().create_or_update("cylro", account_id="42", make_default=True)
     TokenStore().save_token("cylro", "secret-token")
     fake_api = FakeAPI({"/1/accounts/42/products": {"result": "success", "data": [{"id": "mail-1"}]}})
-    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token: fake_api)
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
 
     assert cli.main(["account", "products", "--json"]) == 0
 
@@ -86,7 +91,7 @@ def test_cli_account_services_json_allows_explicit_account_id(tmp_path, monkeypa
     ProfileManager().create_or_update("cylro", account_id="42", make_default=True)
     TokenStore().save_token("cylro", "secret-token")
     fake_api = FakeAPI({"/1/accounts/99/services": {"result": "success", "data": [{"id": "drive-1"}]}})
-    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token: fake_api)
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
 
     assert cli.main(["account", "services", "--account-id", "99", "--json"]) == 0
 

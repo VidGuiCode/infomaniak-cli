@@ -6,7 +6,7 @@ import sys
 from typing import Any, Mapping
 
 from . import __version__
-from .api import InformaniakAPIClient, InformaniakAPIError
+from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError
 from .auth import TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .doctor import run_doctor
@@ -16,6 +16,35 @@ from .services.account import list_accounts, list_products, list_services
 
 def print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _make_api_client(token: str, base_url: str) -> InformaniakAPIClient:
+    return InformaniakAPIClient(token, base_url=base_url)
+
+
+def _unwrap_success_data(payload: Any) -> Any:
+    if isinstance(payload, Mapping) and payload.get("result") == "success" and "data" in payload:
+        return payload["data"]
+    return payload
+
+
+def _profile_user(profile_data: Any) -> str | None:
+    if not isinstance(profile_data, Mapping):
+        return None
+    for key in ("email", "login", "username", "display_name", "name"):
+        value = profile_data.get(key)
+        if isinstance(value, str) and value:
+            return value
+    emails = profile_data.get("emails")
+    if isinstance(emails, list):
+        for email in emails:
+            if isinstance(email, str) and email:
+                return email
+            if isinstance(email, Mapping):
+                value = email.get("email") or email.get("address")
+                if value:
+                    return str(value)
+    return None
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -146,9 +175,51 @@ def cmd_auth_token(args: argparse.Namespace) -> int:
     if not name:
         print("No profile selected.", file=sys.stderr)
         return 1
-    token = args.token or input("Informaniak API token: ").strip()
+    if args.stdin and args.token:
+        print("error: use either --token or --stdin, not both", file=sys.stderr)
+        return 2
+    if args.stdin:
+        token = sys.stdin.read().strip()
+    else:
+        token = args.token.strip() if args.token else input("Informaniak API token: ").strip()
     TokenStore().save_token(name, token)
     print(f"Token saved for profile: {name}")
+    return 0
+
+
+def cmd_auth_check(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        print("No profile selected.", file=sys.stderr)
+        return 1
+
+    token_store = TokenStore()
+    if not token_store.has_token(name):
+        print(f"No token configured for profile: {name}. Run `ik --profile {name} auth token` first.", file=sys.stderr)
+        return 1
+
+    client = _make_api_client(token_store.load_token(name), args.base_url)
+    try:
+        profile_data = _unwrap_success_data(client.get("/2/profile"))
+        user = _profile_user(profile_data)
+    except InformaniakAPIError as exc:
+        data = {"ok": False, "profile": name, "user": None, "error": str(exc)}
+        if args.json:
+            print_json(data)
+        else:
+            print("Auth check: failed", file=sys.stderr)
+            print(f"Profile: {name}", file=sys.stderr)
+            print(f"Error: {data['error']}", file=sys.stderr)
+        return 1
+
+    data = {"ok": True, "profile": name, "user": user}
+    if args.json:
+        print_json(data)
+    else:
+        print("Auth check: ok")
+        print(f"Profile: {name}")
+        print(f"Informaniak user: {user or 'not available'}")
     return 0
 
 
@@ -164,7 +235,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         print(f"No token configured for profile: {name}. Run `ik --profile {name} auth token` first.", file=sys.stderr)
         return 1
 
-    client = InformaniakAPIClient(token_store.load_token(name))
+    client = _make_api_client(token_store.load_token(name), args.base_url)
     result = bootstrap_profile(
         name,
         client,
@@ -184,7 +255,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     return 0
 
 
-def _profile_and_client(profile_name: str | None = None) -> tuple[Any, InformaniakAPIClient]:
+def _profile_and_client(profile_name: str | None = None, base_url: str = DEFAULT_BASE_URL) -> tuple[Any, InformaniakAPIClient]:
     manager = ProfileManager()
     name = profile_name or manager.get_current_name()
     if not name:
@@ -195,7 +266,7 @@ def _profile_and_client(profile_name: str | None = None) -> tuple[Any, Informani
     if not token_store.has_token(name):
         raise ValueError(f"No token configured for profile: {name}. Run `ik --profile {name} auth token` first.")
 
-    return profile, InformaniakAPIClient(token_store.load_token(name))
+    return profile, _make_api_client(token_store.load_token(name), base_url)
 
 
 def _account_id_or_error(args: argparse.Namespace, profile: Any) -> str:
@@ -214,7 +285,7 @@ def _display_item(item: Mapping[str, Any]) -> str:
 
 
 def cmd_account_list(args: argparse.Namespace) -> int:
-    profile, client = _profile_and_client(args.profile)
+    profile, client = _profile_and_client(args.profile, args.base_url)
     accounts = list_accounts(client)
     if args.json:
         print_json({"profile": profile.name, "accounts": accounts})
@@ -228,7 +299,7 @@ def cmd_account_list(args: argparse.Namespace) -> int:
 
 
 def cmd_account_products(args: argparse.Namespace) -> int:
-    profile, client = _profile_and_client(args.profile)
+    profile, client = _profile_and_client(args.profile, args.base_url)
     account_id = _account_id_or_error(args, profile)
     products = list_products(client, account_id)
     if args.json:
@@ -244,7 +315,7 @@ def cmd_account_products(args: argparse.Namespace) -> int:
 
 
 def cmd_account_services(args: argparse.Namespace) -> int:
-    profile, client = _profile_and_client(args.profile)
+    profile, client = _profile_and_client(args.profile, args.base_url)
     account_id = _account_id_or_error(args, profile)
     services = list_services(client, account_id)
     if args.json:
@@ -262,6 +333,11 @@ def cmd_account_services(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ik", description="Informaniak/kSuite CLI bridge")
     parser.add_argument("--profile", help="Profile to use for this command")
+    parser.add_argument(
+        "--base-url",
+        default=DEFAULT_BASE_URL,
+        help=f"Informaniak API base URL. Defaults to {DEFAULT_BASE_URL}",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     setup = sub.add_parser("setup", help="Create/update a ready-to-configure profile")
@@ -320,7 +396,11 @@ def build_parser() -> argparse.ArgumentParser:
     auth_status.set_defaults(func=cmd_auth_status)
     auth_token = auth_sub.add_parser("token")
     auth_token.add_argument("--token", help="Token value. Omit to prompt.")
+    auth_token.add_argument("--stdin", action="store_true", help="Read the token from standard input.")
     auth_token.set_defaults(func=cmd_auth_token)
+    auth_check = auth_sub.add_parser("check", help="Make one read-only authenticated profile request")
+    auth_check.add_argument("--json", action="store_true")
+    auth_check.set_defaults(func=cmd_auth_check)
 
     return parser
 

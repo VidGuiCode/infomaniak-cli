@@ -17,10 +17,11 @@ class TokenStore:
         self.tokens_dir = get_tokens_dir(self.config_dir)
 
     def save_token(self, profile: str, token: str) -> None:
-        if not token:
+        clean_token = token.strip()
+        if not clean_token:
             raise ValueError("Token is required")
         self.tokens_dir.mkdir(parents=True, exist_ok=True)
-        self._token_path(profile).write_text(token, encoding="utf-8")
+        self._token_path(profile).write_text(clean_token, encoding="utf-8")
 
     def load_token(self, profile: str) -> str:
         return self._token_path(profile).read_text(encoding="utf-8").strip()
