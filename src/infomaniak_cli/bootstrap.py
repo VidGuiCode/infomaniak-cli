@@ -34,8 +34,13 @@ def bootstrap_profile(
     my_ksuite = _optional_get(api, "/1/my_ksuite/current")
 
     mail_hosting = _find_item([*products, *services], "mail_hosting", "mail hosting", "mail")
-    drive = _find_item([*services, *products], "kdrive", "drive")
-    kchat = _find_item([*services, *products], "kchat", "chat")
+    mailboxes = _discover_mailboxes(api, mail_hosting)
+    drives = _as_items(_optional_get(api, "/2/drive"))
+    kchat_teams = _as_items(_optional_get(api, "/api/v4/teams"))
+
+    drive = _first_item(drives) or _find_item([*services, *products], "kdrive", "drive")
+    kchat = _first_item(kchat_teams) or _find_item([*services, *products], "kchat", "chat")
+    default_mailbox = _mailbox_address(_first_item(mailboxes))
 
     metadata = {
         "informaniak_user": _profile_user(profile_data),
@@ -43,6 +48,7 @@ def bootstrap_profile(
         "account_name": _item_name(account),
         "ksuite_id": _item_id(my_ksuite) if isinstance(my_ksuite, Mapping) else None,
         "mail_hosting_id": _item_id(mail_hosting) if mail_hosting else None,
+        "default_mailbox": default_mailbox,
         "default_drive_id": _item_id(drive) if drive else None,
         "default_drive_name": _item_name(drive) if drive else None,
         "kchat_team_id": _item_id(kchat) if kchat else None,
@@ -55,12 +61,16 @@ def bootstrap_profile(
         "account": {"id": profile.account_id, "name": profile.account_name},
         "ksuite_id": profile.ksuite_id,
         "mail_hosting_id": profile.mail_hosting_id,
+        "default_mailbox": profile.default_mailbox,
         "default_drive": {"id": profile.default_drive_id, "name": profile.default_drive_name},
         "kchat_team_id": profile.kchat_team_id,
         "counts": {
             "accounts": len(accounts),
             "products": len(products),
             "services": len(services),
+            "mailboxes": len(mailboxes),
+            "drives": len(drives),
+            "kchat_teams": len(kchat_teams),
         },
     }
 
@@ -78,6 +88,13 @@ def _optional_get(api: Any, path: str) -> Any:
         return None
 
 
+def _discover_mailboxes(api: Any, mail_hosting: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+    mail_hosting_id = _item_id(mail_hosting)
+    if not mail_hosting_id:
+        return []
+    return _as_items(_optional_get(api, f"/1/mail_hostings/{mail_hosting_id}/mailboxes"))
+
+
 def _as_items(data: Any) -> list[Mapping[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, Mapping)]
@@ -87,6 +104,10 @@ def _as_items(data: Any) -> list[Mapping[str, Any]]:
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, Mapping)]
     return []
+
+
+def _first_item(items: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    return items[0] if items else None
 
 
 def _select_account(
@@ -143,6 +164,16 @@ def _item_name(item: Mapping[str, Any] | None) -> str | None:
     if not item:
         return None
     for key in ("name", "display_name", "label", "title", "description", "company_name"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _mailbox_address(item: Mapping[str, Any] | None) -> str | None:
+    if not item:
+        return None
+    for key in ("email", "mailbox", "mailbox_name", "address", "name", "login"):
         value = item.get(key)
         if value:
             return str(value)
