@@ -1,143 +1,129 @@
 # infomaniak-cli
 
-`infomaniak-cli` is planned as a unified command-line bridge for Informaniak and kSuite, with a short executable command named `ik`.
+![version](https://img.shields.io/badge/version-0.1.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
-The goal is to give Gui and Hermes one clean interface for company and personal Informaniak accounts without building one separate MCP integration per service.
+**Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
-## Short vision
+Built for personal and company Informaniak accounts. Token-based auth — no browser session required.
 
-Build one CLI first:
+> ⚠️ **Unofficial project** — this is not an official Informaniak product. It is a community tool built independently.
+>
+> 🤖 **AI-assisted development** — this project was built with AI assistance (Claude, Codex, Hermes). Architecture, tooling decisions, and implementation were developed through human-AI collaboration. The code works and the design is intentional, but it was not written line by line without AI involvement. Contributions are welcome regardless of how they are written.
 
-```bash
-ik setup
-ik whoami
-ik doctor
-ik account list
-ik account services
-ik mail unread
-ik drive search "invoice"
-ik chat post --channel admin "Reminder: VAT task due"
-```
+## Install
 
-Then, once the CLI is stable, optionally expose the same functionality through one MCP server:
-
-```text
-Informaniak APIs / IMAP / SMTP / CalDAV / CardDAV
-              ↓
-      infomaniak-cli Python library
-              ↓
-          CLI command: ik
-              ↓
-        optional MCP wrapper
-```
-
-## Why CLI-first, MCP-later
-
-MCP is useful, but the hard part is authentication, account selection, service discovery, and safe actions. A CLI-first design is easier to debug, script, test, and use outside Hermes. The MCP server can later call the same internal code.
-
-Benefits:
-
-- one authentication/config system;
-- works in Hermes through terminal commands immediately;
-- works in cron jobs and scripts;
-- easier debugging than MCP-only;
-- one future MCP server instead of one MCP per kSuite service.
-
-## Project naming
-
-- Repository/folder name: `infomaniak-cli`
-- Installed command name: `ik`
-
-This keeps the repo descriptive while the command stays short.
-
-## kSuite / Informaniak scope
-
-Based on the current product/API review, kSuite includes or relates to:
-
-- Mail
-- kDrive
-- kChat
-- kMeet
-- SwissTransfer
-- online office/collaboration with Microsoft Office or OnlyOffice
-- privacy/security features
-- kSuite Pro AI features such as editorial assistant, scheduled send, event planning, smart reminders, OCR search, audio transcription, and automatic translation
-
-Informaniak developer APIs cover useful areas including:
-
-- Core resources / profile / accounts / products / kSuite
-- Mail services and mailbox administration
-- kDrive
-- kChat
-- kMeet
-- domains/DNS
-
-Some user-data services may need standard protocols instead of the REST API:
-
-- actual email reading/sending: IMAP/SMTP
-- calendar: CalDAV
-- contacts: CardDAV
-
-## Initial MVP
-
-The first useful version should focus on read-first discovery and safe service usage.
-
-User/profile environment discovery belongs under `account`, not `admin`:
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-ik setup
+git clone https://github.com/VidGuiCode/infomaniak-cli.git
+cd infomaniak-cli
+uv sync
+```
+
+Or install directly:
+
+```bash
+pip install git+https://github.com/VidGuiCode/infomaniak-cli.git
+```
+
+## Quick start
+
+```bash
+ik setup --profile cylro
+ik auth token
+# paste your Informaniak Manager personal API token
+
 ik whoami
 ik doctor
+ik bootstrap
 
 ik account list
 ik account products
 ik account services
 
-ik mail unread
-ik mail search "query"
-ik mail read <message_id>
-
 ik drive list
-ik drive search "query"
-ik drive download <file_id>
-
-ik chat channels
-ik chat post --channel <id> "message"
+ik drive list --json
+ik drive list --json --raw
 ```
 
-`admin` is reserved for true Informaniak Manager / company-admin actions later, such as users, aliases, permissions, domains, or all-company mailbox administration. Writes/sends/deletes should be explicit and protected by confirmations.
+Context (profile, account, drive) is sticky — set it once and every command uses it. Use `--profile` to override for a single command.
 
-## Current development baseline
+## Commands
 
-A minimal Python/uv foundation is in place:
+| Area | Commands |
+|------|----------|
+| Setup | `setup`, `whoami`, `doctor` |
+| Auth | `auth token`, `auth check`, `auth status` |
+| Profile | `profile list`, `show`, `use`, `rename`, `delete` |
+| Discovery | `account list`, `products`, `services` |
+| kDrive | `drive list` |
+| Debug | `debug probe` |
 
-- console command: `ik`
-- setup-created profiles: `ik setup --profile cylro --non-interactive`
-- local diagnostics: `ik whoami`, `ik doctor`
-- profile management: `ik profile list/show/use`
-- token placeholder commands: `ik auth status/token`
-- pytest coverage for config paths, profiles, auth token storage, redaction, and CLI smoke
+Run `ik <command> --help` for full options on any command.
 
-Run tests on this Windows/Git-Bash environment with a repo-local temp folder:
+## Using with AI agents
+
+Any AI agent that can run shell commands (Claude Code, Cursor, Copilot, Hermes, CLI scripts) can use `infomaniak-cli` directly — no MCP server, no protocol, no setup.
+
+### Recommended workflow
 
 ```bash
-mkdir -p .tmp
-TMPDIR="$PWD/.tmp" TEMP="$PWD/.tmp" TMP="$PWD/.tmp" uv run pytest -q
+# 1. Orient
+ik whoami --json
+ik doctor --json
+
+# 2. Discover
+ik account list --json
+ik account products --json
+ik account services --json
+
+# 3. Use services
+ik drive list --json
+ik drive list --json --raw
 ```
 
-Smoke test:
+Use `--json` for structured output. Use `--raw` for full API payloads. Use `--profile` to target a specific account.
+
+## Configuration
+
+Login state is stored in your platform's app-data folder:
+
+- **Windows:** `C:\Users\<user>\AppData\Roaming\infomaniak-cli\`
+- **macOS:** `~/Library/Application Support/infomaniak-cli/`
+- **Linux:** `~/.config/infomaniak-cli/`
+
+This directory contains your profile config and API token. Treat it as a secret and do not share or commit it.
+
+`ik auth logout` removes saved auth data. To remove the installed CLI itself, uninstall with pip:
 
 ```bash
-IK_CONFIG_DIR="$PWD/.tmp/manual-config" uv run ik setup --profile cylro --non-interactive
-IK_CONFIG_DIR="$PWD/.tmp/manual-config" uv run ik whoami --json
-IK_CONFIG_DIR="$PWD/.tmp/manual-config" uv run ik doctor --json
+pip uninstall infomaniak-cli
 ```
 
-## Documentation
+## How this differs from other tools
 
-See:
+- **Official Informaniak Manager** is the web dashboard. `infomaniak-cli` talks to the API on behalf of a user — no web browser required.
+- **One MCP per service** would mean separate integrations for Mail, kDrive, kChat, etc. `infomaniak-cli` is one unified CLI for all kSuite services, with an optional future MCP wrapper.
+
+## Development
+
+```bash
+uv sync
+uv run pytest -q
+uv run ik --help
+```
+
+Tests use pytest. See `tests/` for coverage of the API client, config paths, profiles, auth, bootstrap, account discovery, and CLI smoke tests.
+
+## Roadmap
+
+See [`context/ROADMAP.md`](context/ROADMAP.md) (private working context) for planned features. Public docs:
 
 - [`docs/vision.md`](docs/vision.md) — full product vision and service mapping
 - [`docs/setup-and-profiles.md`](docs/setup-and-profiles.md) — setup/auth/profile flow
-- [`docs/commands.md`](docs/commands.md) — proposed CLI commands
+- [`docs/commands.md`](docs/commands.md) — CLI commands reference
 - [`docs/security.md`](docs/security.md) — safety, secrets, profile separation
+
+## License
+
+[MIT](LICENSE)
