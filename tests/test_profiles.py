@@ -27,3 +27,28 @@ def test_profile_metadata_can_store_discovered_defaults(tmp_path):
     assert profile.account_name == "Cylro SARL-S"
     assert profile.default_mailbox == "contact@cylro.com"
     assert profile.default_drive_name == "Cylro Documents"
+
+
+def test_profile_metadata_can_replace_discovered_defaults_with_none(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update(
+        "cylro",
+        account_name="Cylro SARL-S",
+        default_drive_id="40",
+        default_drive_name="drive",
+        kchat_team_id="54",
+        make_default=True,
+    )
+
+    profile = manager.replace_metadata(
+        "cylro",
+        account_name="Cylro SARL-S",
+        default_drive_id=None,
+        default_drive_name=None,
+        kchat_team_id=None,
+    )
+
+    assert profile.account_name == "Cylro SARL-S"
+    assert profile.default_drive_id is None
+    assert profile.default_drive_name is None
+    assert profile.kchat_team_id is None

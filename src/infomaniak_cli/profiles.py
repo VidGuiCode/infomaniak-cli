@@ -61,6 +61,23 @@ class ProfileManager:
 
         return profile
 
+    def replace_metadata(self, name: str, make_default: bool = False, **metadata: Any) -> Profile:
+        if not name or not name.strip():
+            raise ValueError("Profile name is required")
+
+        existing = self.get(name) if self.exists(name) else None
+        now = utc_now_iso()
+        data = existing.to_dict() if existing else {"name": name, "created_at": now}
+        data.update(metadata)
+        data["updated_at"] = now
+        profile = Profile.from_dict(data)
+        self.save(profile)
+
+        if make_default or not self.get_current_name():
+            self.set_current(name)
+
+        return profile
+
     def exists(self, name: str) -> bool:
         return self._profile_path(name).exists()
 

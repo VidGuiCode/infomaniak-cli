@@ -38,8 +38,8 @@ def bootstrap_profile(
     drives = _as_items(_optional_get(api, "/2/drive"))
     kchat_teams = _as_items(_optional_get(api, "/api/v4/teams"))
 
-    drive = _first_item(drives) or _find_item([*services, *products], "kdrive", "drive")
-    kchat = _first_item(kchat_teams) or _find_item([*services, *products], "kchat", "chat")
+    drive = _first_item(drives)
+    kchat = _first_item(kchat_teams)
     default_mailbox = _mailbox_address(_first_item(mailboxes))
 
     metadata = {
@@ -53,7 +53,7 @@ def bootstrap_profile(
         "default_drive_name": _item_name(drive) if drive else None,
         "kchat_team_id": _item_id(kchat) if kchat else None,
     }
-    profile = manager.create_or_update(profile_name, make_default=True, **metadata)
+    profile = manager.replace_metadata(profile_name, make_default=True, **metadata)
 
     return {
         "profile": profile.name,

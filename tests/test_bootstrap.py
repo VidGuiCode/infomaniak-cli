@@ -14,7 +14,7 @@ class FakeAPI:
         return self.responses[path]
 
 
-def test_bootstrap_auto_selects_single_account_and_saves_discovered_defaults(tmp_path):
+def test_bootstrap_auto_selects_single_account_and_saves_discovered_account_defaults(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update("cylro", make_default=True)
     api = FakeAPI(
@@ -56,9 +56,9 @@ def test_bootstrap_auto_selects_single_account_and_saves_discovered_defaults(tmp
     assert profile.account_id == "42"
     assert profile.account_name == "Cylro SARL-S"
     assert profile.mail_hosting_id == "mail-1"
-    assert profile.default_drive_id == "drive-1"
-    assert profile.default_drive_name == "Cylro Documents"
-    assert profile.kchat_team_id == "chat-1"
+    assert profile.default_drive_id is None
+    assert profile.default_drive_name is None
+    assert profile.kchat_team_id is None
     assert profile.ksuite_id == "ksuite-1"
 
 
@@ -147,6 +147,55 @@ def test_bootstrap_continues_when_optional_service_endpoints_are_missing(tmp_pat
     profile = manager.get("cylro")
     assert profile.mail_hosting_id == "mail-hosting-1"
     assert profile.default_mailbox is None
+    assert profile.default_drive_id is None
+    assert profile.default_drive_name is None
+    assert profile.kchat_team_id is None
+
+
+def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update(
+        "cylro",
+        default_drive_id="40",
+        default_drive_name="drive",
+        kchat_team_id="54",
+        make_default=True,
+    )
+    api = FakeAPI(
+        {
+            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/1/accounts": {"result": "success", "data": [{"id": 1988835, "name": "Cylro SARL-S"}]},
+            "/1/accounts/1988835/products": {
+                "result": "success",
+                "data": [
+                    {"id": 3099794, "service_id": 40, "service_name": "drive", "customer_name": "cylro.com"},
+                    {"id": 312891, "service_id": 54, "service_name": "kchat", "customer_name": "cylro.com"},
+                    {"id": 1009330, "service_id": 23, "service_name": "email_hosting", "customer_name": "cylro.com"},
+                ],
+            },
+            "/1/accounts/1988835/services": {
+                "result": "success",
+                "data": [
+                    {"id": 23, "name": "email_hosting", "count": 1},
+                    {"id": 40, "name": "drive", "count": 1},
+                    {"id": 54, "name": "kchat", "count": 1},
+                ],
+            },
+            "/1/my_ksuite/current": {"result": "success", "data": {}},
+            "/1/mail_hostings/1009330/mailboxes": {
+                "result": "success",
+                "data": [{"id": "mbox-1", "email": "gui@example.com"}],
+            },
+        }
+    )
+
+    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+
+    assert result["mail_hosting_id"] == "1009330"
+    assert result["default_mailbox"] == "gui@example.com"
+    assert result["default_drive"] == {"id": None, "name": None}
+    assert result["kchat_team_id"] is None
+    profile = manager.get("cylro")
     assert profile.default_drive_id is None
     assert profile.default_drive_name is None
     assert profile.kchat_team_id is None
