@@ -266,6 +266,117 @@ class TestMailUnread:
         assert output["count"] == 2
         assert len(output["messages"]) == 2
 
+    def test_mail_unread_accepts_folder_filter(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        created_clients = []
+
+        def make_client(host, port, username, password, *, imap_factory=None):
+            fake = FakeIMAP({"list_unread": []})
+            created_clients.append(fake)
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", make_client)
+
+        assert cli.main(["mail", "unread", "--folder", "Sent", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "Sent"
+        assert ("list_messages", "Sent", 20, True, None, None, None) in created_clients[0].calls
+
+    def test_mail_unread_accepts_folder_short_option(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        created_clients = []
+
+        def make_client(host, port, username, password, *, imap_factory=None):
+            fake = FakeIMAP({"list_unread": []})
+            created_clients.append(fake)
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", make_client)
+
+        assert cli.main(["mail", "unread", "-f", "Archive", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "Archive"
+        assert ("list_messages", "Archive", 20, True, None, None, None) in created_clients[0].calls
+
+    def test_mail_unread_accepts_days_filter(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+        monkeypatch.setattr(cli, "_today", lambda: datetime.date(2026, 6, 22))
+        created_clients = []
+
+        def make_client(host, port, username, password, *, imap_factory=None):
+            fake = FakeIMAP({"list_unread": []})
+            created_clients.append(fake)
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", make_client)
+
+        assert cli.main(["mail", "unread", "--days", "7", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "INBOX"
+        assert ("list_messages", "INBOX", 20, True, "2026-06-15", None, None) in created_clients[0].calls
+
+    def test_mail_unread_accepts_since_and_before_filters(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+        created_clients = []
+
+        def make_client(host, port, username, password, *, imap_factory=None):
+            fake = FakeIMAP({"list_unread": []})
+            created_clients.append(fake)
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", make_client)
+
+        assert cli.main([
+            "mail", "unread",
+            "--since", "2026-06-01",
+            "--before", "2026-06-15",
+            "--json",
+        ]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "INBOX"
+        assert (
+            "list_messages",
+            "INBOX",
+            20,
+            True,
+            "2026-06-01",
+            "2026-06-15",
+            None,
+        ) in created_clients[0].calls
+
+    def test_mail_unread_accepts_limit_short_option(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+        created_clients = []
+
+        def make_client(host, port, username, password, *, imap_factory=None):
+            fake = FakeIMAP({"list_unread": []})
+            created_clients.append(fake)
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", make_client)
+
+        assert cli.main(["mail", "unread", "-n", "3", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["count"] == 0
+        assert ("list_messages", "INBOX", 3, True, None, None, None) in created_clients[0].calls
+
     def test_mail_unread_human_output(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
         ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)

@@ -39,12 +39,12 @@ class FakeIMAP:
     def select(self, mailbox: str, readonly: bool = False) -> tuple[str, list]:
         self.calls.append(("select", (mailbox, readonly)))
         self._selected = True
-        return ("OK", [b"10"])
+        return self.responses.get("select", ("OK", [b"10"]))
 
     def examine(self, mailbox: str) -> tuple[str, list]:
         self.calls.append(("examine", (mailbox,)))
         self._selected = True
-        return ("OK", [b"10"])
+        return self.responses.get("examine", ("OK", [b"10"]))
 
     def list(self) -> tuple[str, list]:
         self.calls.append(("list", ()))
@@ -227,6 +227,24 @@ class TestIMAPClientListMessages:
         with pytest.raises(MailError) as exc_info:
             client.list_messages(since="not-a-date")
         assert "invalid date" in str(exc_info.value)
+
+    def test_list_messages_formats_examine_failure_cleanly(self):
+        fake = FakeIMAP(
+            responses={
+                "examine": ("NO", [b"Mailbox doesn't exist: __codex_no_such_folder__"]),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+
+        with pytest.raises(MailError) as exc_info:
+            client.list_messages(folder="__codex_no_such_folder__")
+
+        assert str(exc_info.value) == (
+            "IMAP examine failed for __codex_no_such_folder__: "
+            "Mailbox doesn't exist: __codex_no_such_folder__"
+        )
 
     def test_list_messages_honors_limit(self):
         raw_msg = _build_raw_message()

@@ -136,13 +136,13 @@ ik drive list --json --raw
 
 ik mail folders --json
 ik mail list --days 7 --json
-ik mail unread --json
+ik mail unread --folder INBOX --days 7 --json
 ik mail search "invoice" --days 30 --json
-ik mail read <uid> --json
+ik mail read <uid> --json --raw
 ik mail threads --folder Sent --days 7 --json
 ```
 
-Use `--json` for structured output. Use `--raw` for full API payloads. Use `--profile` to target a specific account.
+Use `--json` for structured output. Use `--raw` for full API/message payloads, including `body_preview` on `mail read`. Use `--profile` to target a specific account.
 
 ## Configuration
 

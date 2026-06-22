@@ -83,7 +83,7 @@ class IMAPClient:
             # Fall back to read-only select if examine is not supported
             typ, data = self._conn.select(mailbox, readonly=True)
         if typ != "OK":
-            raise MailError(f"IMAP examine failed for {mailbox}: {data}")
+            raise MailError(f"IMAP examine failed for {mailbox}: {_format_imap_response(data)}")
 
     def _search(self, criteria: list[str]) -> list[str]:
         typ, data = self._conn.search(None, *criteria)
@@ -378,6 +378,19 @@ def _extract_text_body(msg: email.message.Message) -> str | None:
     if chosen.get_content_type() == "text/html":
         return _html_to_text(text)
     return text
+
+
+def _format_imap_response(data: Any) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode(errors="replace")
+    if isinstance(data, str):
+        return data
+    if isinstance(data, (list, tuple)):
+        parts = [_format_imap_response(item) for item in data if item is not None]
+        return "; ".join(part for part in parts if part)
+    return str(data)
 
 
 def _decode_payload(payload: bytes, charset: str | None) -> str:

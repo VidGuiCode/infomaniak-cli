@@ -81,7 +81,9 @@ ik mail list [--folder/-f <name>] [--limit/-n N] [--unread]
              [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
              [--json] [--raw]
 
-ik mail unread [--limit N] [--json] [--raw]   # shortcut for list --unread
+ik mail unread [--folder/-f <name>] [--limit/-n N]
+               [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
+               [--json] [--raw]   # shortcut for list --unread
 
 ik mail search "query" [--folder/-f <name>] [--limit N] [--unread]
                        [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
@@ -96,6 +98,7 @@ ik mail threads [--folder/-f <name>] [--days N] [--since YYYY-MM-DD] [--before Y
 - `--since`/`--before` accept dates as `YYYY-MM-DD`.
 - `--unread` filters to unread messages only.
 - `ik mail list` shows **both** read and unread messages by default; each message has a `seen` flag in JSON output.
+- `ik mail read --json` returns slim message metadata. Add `--raw` to include `body_preview`.
 
 `<uid>` is a number from the `unread`/`search` output. In PowerShell do NOT type the angle
 brackets — `<` is a reserved operator. Use the bare number:
@@ -111,9 +114,9 @@ ik mail folders --json
 ik mail list --folder Sent --days 7 --json
 ik mail list --folder Spam --days 5 --json
 ik mail list --since 2026-06-01 --before 2026-06-15 --json
-ik mail unread --json
+ik mail unread --folder INBOX --days 7 --json
 ik mail search "invoice" --days 30 --json
-ik mail read 123 --json
+ik mail read 123 --json --raw
 ik mail read 123 --folder Spam --json
 ik mail threads --days 7 --json
 ik mail threads --folder Sent --since 2026-06-01 --json
