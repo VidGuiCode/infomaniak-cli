@@ -74,16 +74,45 @@ Password  : device password from config.infomaniak.com
 ## Commands
 
 ```bash
-ik mail unread [--limit N] [--json] [--raw]
-ik mail search "query" [--limit N] [--json] [--raw]
+ik mail folders [--json] [--raw]
+ik mail labels   # alias for folders
+
+ik mail list [--folder/-f <name>] [--limit/-n N] [--unread]
+             [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
+             [--json] [--raw]
+
+ik mail unread [--limit N] [--json] [--raw]   # shortcut for list --unread
+
+ik mail search "query" [--folder/-f <name>] [--limit N] [--unread]
+                       [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
+                       [--json] [--raw]
+
 ik mail read <uid> [--json] [--raw]
 ```
+
+- `--folder` selects any IMAP folder. Default is `INBOX`.
+- `--days N` is a shortcut for `--since` set to `today - N days`.
+- `--since`/`--before` accept dates as `YYYY-MM-DD`.
+- `--unread` filters to unread messages only.
+- `ik mail list` shows **both** read and unread messages by default; each message has a `seen` flag in JSON output.
 
 `<uid>` is a number from the `unread`/`search` output. In PowerShell do NOT type the angle
 brackets — `<` is a reserved operator. Use the bare number:
 
 ```powershell
 ik --profile work mail read 70 --json
+```
+
+## Examples
+
+```bash
+ik mail folders --json
+ik mail list --folder Sent --days 7 --json
+ik mail list --folder Spam --days 5 --json
+ik mail list --since 2026-06-01 --before 2026-06-15 --json
+ik mail unread --json
+ik mail search "invoice" --days 30 --json
+ik mail read 123 --json
 ```
 
 ## Troubleshooting
@@ -94,6 +123,7 @@ ik --profile work mail read 70 --json
 | `Invalid login or password` with correct-looking password | Username was the local part only | Use the FULL email address |
 | Works in webmail but not IMAP, 2FA on | Login password can't pass 2FA over IMAP | Use the config.infomaniak.com device password |
 | `The '<' operator is reserved` (PowerShell) | You typed literal `<uid>` | Use the real number, no angle brackets |
+| `invalid date` | Date not in YYYY-MM-DD format | Use `--since 2026-06-01`, not `--since 01/06/2026` |
 
 ## Security
 

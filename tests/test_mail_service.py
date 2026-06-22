@@ -36,10 +36,19 @@ class FakeIMAP:
             raise imaplib.IMAP4.error("authentication failed")
         self._logged_in = True
 
-    def select(self, mailbox: str) -> tuple[str, list]:
-        self.calls.append(("select", (mailbox,)))
+    def select(self, mailbox: str, readonly: bool = False) -> tuple[str, list]:
+        self.calls.append(("select", (mailbox, readonly)))
         self._selected = True
         return ("OK", [b"10"])
+
+    def examine(self, mailbox: str) -> tuple[str, list]:
+        self.calls.append(("examine", (mailbox,)))
+        self._selected = True
+        return ("OK", [b"10"])
+
+    def list(self) -> tuple[str, list]:
+        self.calls.append(("list", ()))
+        return self.responses.get("list", ("OK", []))
 
     def search(self, charset: str | None, *criteria: str) -> tuple[str, list]:
         self.calls.append(("search", (charset,) + criteria))
@@ -103,21 +112,155 @@ class TestIMAPClientConnect:
         assert "app-password" not in str(exc_info.value)
 
 
+def _header_fetch_key(msg_id: str) -> str:
+    return (
+        f"fetch {msg_id} "
+        f"(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])"
+    )
+
+
+class TestIMAPClientListFolders:
+    def test_list_folders_parses_flags_and_roles(self):
+        lines = [
+            b'(\\HasNoChildren \\Inbox) "/" "INBOX"',
+            b'(\\HasNoChildren \\Sent) "/" "Sent"',
+            b'(\\HasChildren) "/" "Projects/Client A"',
+            b'(\\Junk) "/" "Junk Mail"',
+        ]
+        fake = FakeIMAP(responses={"list": ("OK", lines)})
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        folders = client.list_folders()
+        assert len(folders) == 4
+        assert folders[0] == {
+            "name": "INBOX",
+            "separator": "/",
+            "flags": [r"\HasNoChildren", r"\Inbox"],
+            "role": "inbox",
+        }
+        assert folders[1]["role"] == "sent"
+        assert folders[2]["name"] == "Projects/Client A"
+        assert folders[3]["role"] == "junk"
+        assert ("list", ()) in fake.calls
+
+    def test_list_folders_decodes_modified_utf7(self):
+        # Re&-ceipts is the literal ampersand escape
+        # &AOk- = é, &APw- = ü in modified UTF-7
+        lines = [
+            b'(\\HasNoChildren) "/" "Re&-ceipts"',
+            b'(\\HasNoChildren) "/" "&AOk-rabische b&APw-cke"',
+        ]
+        fake = FakeIMAP(responses={"list": ("OK", lines)})
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        folders = client.list_folders()
+        assert folders[0]["name"] == "Re&ceipts"
+        assert folders[1]["name"] == "érabische bücke"
+
+    def test_list_folders_skips_unparseable_lines(self):
+        fake = FakeIMAP(responses={"list": ("OK", [b"not-a-list-line"])})
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        folders = client.list_folders()
+        assert folders == []
+
+
+class TestIMAPClientListMessages:
+    def test_list_messages_returns_headers_with_seen_flag(self):
+        raw_msg = _build_raw_message(subject="Invoice #42", body="Please pay")
+        fake = FakeIMAP(
+            responses={
+                "ALL": ("OK", [b"1 2"]),
+                _header_fetch_key("1"): (
+                    "OK",
+                    [(b"1 (UID 101 FLAGS (\\Seen))", raw_msg)],
+                ),
+                _header_fetch_key("2"): (
+                    "OK",
+                    [(b"2 (UID 102 FLAGS (\\Recent))", raw_msg)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.list_messages(folder="INBOX")
+        assert len(items) == 2
+        assert items[0]["uid"] == "102"
+        assert items[0]["seen"] is False
+        assert items[1]["uid"] == "101"
+        assert items[1]["seen"] is True
+        assert ("examine", ("INBOX",)) in fake.calls
+
+    def test_list_messages_builds_date_criteria(self):
+        fake = FakeIMAP(responses={"SINCE 07-Jun-2026 BEFORE 15-Jun-2026": ("OK", [b""])})
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.list_messages(since="2026-06-07", before="2026-06-15")
+        assert items == []
+        assert ("search", (None, "SINCE", "07-Jun-2026", "BEFORE", "15-Jun-2026")) in fake.calls
+
+    def test_list_messages_builds_on_criteria(self):
+        fake = FakeIMAP(responses={"ON 01-Jan-2024": ("OK", [b""])})
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.list_messages(on="2024-01-01")
+        assert items == []
+        assert ("search", (None, "ON", "01-Jan-2024")) in fake.calls
+
+    def test_list_messages_invalid_date_raises(self):
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: FakeIMAP()
+        )
+        with pytest.raises(MailError) as exc_info:
+            client.list_messages(since="not-a-date")
+        assert "invalid date" in str(exc_info.value)
+
+    def test_list_messages_honors_limit(self):
+        raw_msg = _build_raw_message()
+        fake = FakeIMAP(
+            responses={
+                "ALL": ("OK", [b"1 2 3"]),
+                _header_fetch_key("1"): (
+                    "OK",
+                    [(b"1 (UID 101 FLAGS (\\Seen))", raw_msg)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.list_messages(limit=1)
+        assert len(items) == 1
+        assert items[0]["uid"] == "101"
+
+    def test_list_messages_empty_folder(self):
+        fake = FakeIMAP(responses={"ALL": ("OK", [b""])})
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.list_messages(folder="Archive")
+        assert items == []
+
+
 class TestIMAPClientListUnread:
     def test_list_unread_returns_slim_headers_with_uids(self):
         raw_msg = _build_raw_message(subject="Invoice #42", body="Please pay")
         fake = FakeIMAP(
             responses={
                 "UNSEEN": ("OK", [b"1 2"]),
-                "fetch 1 (UID)": ("OK", [b"1 (UID 101)"]),
-                "fetch 2 (UID)": ("OK", [b"2 (UID 102)"]),
-                "fetch 1 (BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])": (
+                _header_fetch_key("1"): (
                     "OK",
-                    [(b"1", raw_msg)],
+                    [(b"1 (UID 101 FLAGS (\\Seen))", raw_msg)],
                 ),
-                "fetch 2 (BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])": (
+                _header_fetch_key("2"): (
                     "OK",
-                    [(b"2", raw_msg)],
+                    [(b"2 (UID 102 FLAGS (\\Recent))", raw_msg)],
                 ),
             }
         )
@@ -126,10 +269,11 @@ class TestIMAPClientListUnread:
         )
         items = client.list_unread()
         assert len(items) == 2
-        assert items[0]["uid"] == "101"
+        assert items[0]["uid"] == "102"
+        assert items[0]["seen"] is False
         assert items[0]["subject"] == "Invoice #42"
         assert items[0]["from"] == "sender@example.com"
-        assert items[1]["uid"] == "102"
+        assert items[1]["uid"] == "101"
         assert ("search", (None, "UNSEEN")) in fake.calls
 
     def test_list_unread_honors_limit(self):
@@ -137,10 +281,9 @@ class TestIMAPClientListUnread:
         fake = FakeIMAP(
             responses={
                 "UNSEEN": ("OK", [b"1 2 3"]),
-                "fetch 1 (UID)": ("OK", [b"1 (UID 101)"]),
-                "fetch 1 (BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])": (
+                _header_fetch_key("1"): (
                     "OK",
-                    [(b"1", raw_msg)],
+                    [(b"1 (UID 101 FLAGS (\\Recent))", raw_msg)],
                 ),
             }
         )
@@ -166,10 +309,9 @@ class TestIMAPClientSearch:
         fake = FakeIMAP(
             responses={
                 "OR SUBJECT invoice FROM invoice": ("OK", [b"5"]),
-                "fetch 5 (UID)": ("OK", [b"5 (UID 2001)"]),
-                "fetch 5 (BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])": (
+                _header_fetch_key("5"): (
                     "OK",
-                    [(b"5", raw_msg)],
+                    [(b"5 (UID 2001 FLAGS (\\Seen))", raw_msg)],
                 ),
             }
         )
@@ -180,16 +322,16 @@ class TestIMAPClientSearch:
         assert len(items) == 1
         assert items[0]["uid"] == "2001"
         assert items[0]["subject"] == "Invoice due"
+        assert items[0]["seen"] is True
 
     def test_search_honors_limit(self):
         raw_msg = _build_raw_message()
         fake = FakeIMAP(
             responses={
                 "OR SUBJECT query FROM query": ("OK", [b"1 2 3"]),
-                "fetch 1 (UID)": ("OK", [b"1 (UID 301)"]),
-                "fetch 1 (BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])": (
+                _header_fetch_key("1"): (
                     "OK",
-                    [(b"1", raw_msg)],
+                    [(b"1 (UID 301 FLAGS (\\Recent))", raw_msg)],
                 ),
             }
         )
@@ -199,6 +341,31 @@ class TestIMAPClientSearch:
         items = client.search("query", limit=1)
         assert len(items) == 1
         assert items[0]["uid"] == "301"
+
+    def test_search_with_date_and_unread_filters(self):
+        raw_msg = _build_raw_message()
+        fake = FakeIMAP(
+            responses={
+                "OR SUBJECT invoice FROM invoice UNSEEN SINCE 01-Jun-2026 BEFORE 15-Jun-2026": (
+                    "OK",
+                    [b"7"],
+                ),
+                _header_fetch_key("7"): (
+                    "OK",
+                    [(b"7 (UID 4001 FLAGS (\\Recent))", raw_msg)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.search(
+            "invoice", folder="INBOX", unread_only=True, since="2026-06-01", before="2026-06-15"
+        )
+        assert len(items) == 1
+        assert items[0]["uid"] == "4001"
+        assert items[0]["seen"] is False
+        assert ("examine", ("INBOX",)) in fake.calls
 
 
 class TestIMAPClientFetchMessage:
@@ -329,4 +496,5 @@ class TestSlimMessage:
             "from": "a@example.com",
             "subject": "Hello",
             "date": "Mon, 01 Jan 2024 12:00:00 +0000",
+            "seen": False,
         }

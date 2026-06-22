@@ -6,12 +6,26 @@ No third-party dependencies.
 
 from __future__ import annotations
 
+import base64
+import datetime
 import email
 import email.header
 import email.message
 import imaplib
 import re
 from typing import Any
+
+
+_SPECIAL_USE_ROLES: dict[str, str] = {
+    r"\Inbox": "inbox",
+    r"\Sent": "sent",
+    r"\Junk": "junk",
+    r"\Spam": "spam",
+    r"\Trash": "trash",
+    r"\Drafts": "drafts",
+    r"\Archive": "archive",
+    r"\Flagged": "flagged",
+}
 
 
 class MailError(ValueError):
@@ -61,14 +75,17 @@ class IMAPClient:
         except imaplib.IMAP4.error as exc:
             raise MailError("mail authentication failed (check app password)") from exc
 
-    def _select(self, mailbox: str = "INBOX") -> None:
+    def _examine(self, mailbox: str = "INBOX") -> None:
         self._connect()
-        typ, data = self._conn.select(mailbox)
+        try:
+            typ, data = self._conn.examine(mailbox)
+        except Exception:
+            # Fall back to read-only select if examine is not supported
+            typ, data = self._conn.select(mailbox, readonly=True)
         if typ != "OK":
-            raise MailError(f"IMAP select failed for {mailbox}: {data}")
+            raise MailError(f"IMAP examine failed for {mailbox}: {data}")
 
     def _search(self, criteria: list[str]) -> list[str]:
-        self._select("INBOX")
         typ, data = self._conn.search(None, *criteria)
         if typ != "OK" or data is None or not data[0]:
             return []
@@ -102,38 +119,117 @@ class IMAPClient:
             items.append(_slim_headers(msg, uid=None))
         return items
 
-    def list_unread(self, limit: int | None = None) -> list[dict[str, Any]]:
-        """Return unread message summaries (slim headers)."""
-        self._select("INBOX")
-        msg_ids = self._search(["UNSEEN"])
-        if limit is not None:
-            msg_ids = msg_ids[:limit]
-        uids = self._fetch_uids(msg_ids)
-        items = self._fetch_headers(msg_ids)
-        for item, uid in zip(items, uids):
-            item["uid"] = uid
+    def _fetch_headers_and_flags(self, msg_ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch headers and flags for a list of message sequence numbers."""
+        if not msg_ids:
+            return []
+        items = []
+        for msg_id in msg_ids:
+            typ, data = self._conn.fetch(
+                msg_id,
+                "(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])",
+            )
+            if typ != "OK" or not data or not data[0]:
+                continue
+            if isinstance(data[0], tuple):
+                raw_meta, raw_header = data[0]
+                meta = _parse_fetch_meta(raw_meta)
+                msg = email.message_from_bytes(raw_header)
+                item = _slim_headers(msg, uid=meta.get("uid"))
+                item["seen"] = r"\Seen" in meta.get("flags", [])
+                items.append(item)
         return items
 
-    def search(self, query: str, limit: int | None = None) -> list[dict[str, Any]]:
-        """Search messages by a free-text query.
+    def list_folders(self) -> list[dict[str, Any]]:
+        """Return IMAP folders with names, separators, flags, and roles."""
+        self._connect()
+        typ, data = self._conn.list()
+        if typ != "OK" or not data:
+            return []
+        folders = []
+        for line in data:
+            if line is None:
+                continue
+            folder = _parse_folder_list(line)
+            if folder:
+                folders.append(folder)
+        return folders
 
-        Uses IMAP OR search on SUBJECT and FROM.
+    def list_messages(
+        self,
+        folder: str = "INBOX",
+        limit: int | None = None,
+        unread_only: bool = False,
+        since: str | None = None,
+        before: str | None = None,
+        on: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List messages in a folder, optionally filtered by date and read status.
+
+        Uses EXAMINE for read-only access so messages are never marked as seen.
+        Results are sorted by UID descending (newest first).
         """
-        self._select("INBOX")
-        # IMAP search with OR SUBJECT query FROM query
-        criteria = ["OR", "SUBJECT", query, "FROM", query]
+        self._examine(folder)
+        criteria: list[str] = []
+        if unread_only:
+            criteria.append("UNSEEN")
+        if since:
+            criteria.extend(["SINCE", _imap_date(since)])
+        if before:
+            criteria.extend(["BEFORE", _imap_date(before)])
+        if on:
+            criteria.extend(["ON", _imap_date(on)])
+        if not criteria:
+            criteria = ["ALL"]
+
         msg_ids = self._search(criteria)
         if limit is not None:
             msg_ids = msg_ids[:limit]
-        uids = self._fetch_uids(msg_ids)
-        items = self._fetch_headers(msg_ids)
-        for item, uid in zip(items, uids):
-            item["uid"] = uid
+
+        items = self._fetch_headers_and_flags(msg_ids)
+        items.sort(key=lambda x: int(x.get("uid", 0)), reverse=True)
         return items
 
-    def fetch_message(self, uid: str) -> dict[str, Any]:
+    def list_unread(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return unread message summaries (slim headers)."""
+        return self.list_messages(folder="INBOX", limit=limit, unread_only=True)
+
+    def search(
+        self,
+        query: str,
+        folder: str = "INBOX",
+        limit: int | None = None,
+        unread_only: bool = False,
+        since: str | None = None,
+        before: str | None = None,
+        on: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search messages by a free-text query in a folder.
+
+        Uses IMAP OR search on SUBJECT and FROM, combined with optional filters.
+        """
+        self._examine(folder)
+        criteria = ["OR", "SUBJECT", query, "FROM", query]
+        if unread_only:
+            criteria.append("UNSEEN")
+        if since:
+            criteria.extend(["SINCE", _imap_date(since)])
+        if before:
+            criteria.extend(["BEFORE", _imap_date(before)])
+        if on:
+            criteria.extend(["ON", _imap_date(on)])
+
+        msg_ids = self._search(criteria)
+        if limit is not None:
+            msg_ids = msg_ids[:limit]
+
+        items = self._fetch_headers_and_flags(msg_ids)
+        items.sort(key=lambda x: int(x.get("uid", 0)), reverse=True)
+        return items
+
+    def fetch_message(self, uid: str, folder: str = "INBOX") -> dict[str, Any]:
         """Fetch a full message by UID, returning parsed headers + body preview."""
-        self._select("INBOX")
+        self._examine(folder)
         typ, data = self._conn.uid("FETCH", uid, "(RFC822)")
         if typ != "OK" or not data or not data[0]:
             raise MailError(f"Message UID {uid} not found")
@@ -277,4 +373,98 @@ def slim_message(msg: dict[str, Any]) -> dict[str, Any]:
         "from": msg.get("from"),
         "subject": msg.get("subject"),
         "date": msg.get("date"),
+        "seen": msg.get("seen", False),
+    }
+
+
+def _imap_date(date_str: str) -> str:
+    """Convert YYYY-MM-DD to IMAP date format (DD-Mon-YYYY)."""
+    try:
+        dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise MailError(f"invalid date: {date_str}. Expected YYYY-MM-DD.") from exc
+    return dt.strftime("%d-%b-%Y")
+
+
+def _parse_fetch_meta(raw_meta: bytes) -> dict[str, Any]:
+    """Parse UID and FLAGS from an IMAP FETCH response envelope."""
+    text = raw_meta.decode("ascii", errors="replace")
+    meta: dict[str, Any] = {"uid": None, "flags": []}
+    uid_match = re.search(r"UID\s+(\d+)", text)
+    if uid_match:
+        meta["uid"] = uid_match.group(1)
+    flags_match = re.search(r"FLAGS\s+\(([^)]*)\)", text)
+    if flags_match:
+        meta["flags"] = flags_match.group(1).split()
+    return meta
+
+
+def _decode_modified_utf7(data: bytes) -> str:
+    """Decode an IMAP modified UTF-7 mailbox name to a Unicode string."""
+    result: list[str] = []
+    i = 0
+    while i < len(data):
+        byte = data[i : i + 1]
+        if byte == b"&":
+            if i + 1 < len(data) and data[i + 1 : i + 2] == b"-":
+                result.append("&")
+                i += 2
+                continue
+            end = data.find(b"-", i)
+            if end == -1:
+                end = len(data)
+            encoded = data[i + 1 : end]
+            # Modified base64 uses ',' instead of '/'
+            encoded = encoded.replace(b",", b"/")
+            padding = (4 - len(encoded) % 4) % 4
+            encoded += b"=" * padding
+            try:
+                utf16 = base64.b64decode(encoded)
+                result.append(utf16.decode("utf-16be"))
+            except Exception:
+                # Fall back to preserving raw bytes if decoding fails
+                result.append(data[i:end].decode("latin-1"))
+            i = end + 1
+        else:
+            try:
+                result.append(byte.decode("ascii"))
+            except UnicodeDecodeError:
+                result.append(byte.decode("latin-1"))
+            i += 1
+    return "".join(result)
+
+
+def _parse_folder_list(line: bytes) -> dict[str, Any] | None:
+    """Parse one IMAP LIST response line into folder metadata.
+
+    Expected format::
+
+        (\\Flag1 \\Flag2) "/" "Folder Name"
+        (\\HasNoChildren \\Inbox) "." INBOX
+
+    Returns None when the line cannot be parsed.
+    """
+    match = re.match(
+        rb"^\s*\((?P<flags>.*?)\)\s+(?P<sep>\"[^\"]*\"|[^\s]+)\s+(?P<name>.*)$",
+        line,
+    )
+    if not match:
+        return None
+    flags_text = match.group("flags").decode("ascii", errors="replace")
+    flags = flags_text.split()
+    separator = match.group("sep").decode("ascii", errors="replace").strip('"')
+    name_raw = match.group("name").strip()
+    if name_raw.startswith(b'"') and name_raw.endswith(b'"'):
+        name_raw = name_raw[1:-1]
+    name = _decode_modified_utf7(name_raw)
+    role: str | None = None
+    for flag in flags:
+        role = _SPECIAL_USE_ROLES.get(flag)
+        if role:
+            break
+    return {
+        "name": name,
+        "separator": separator or None,
+        "flags": flags,
+        "role": role,
     }

@@ -102,16 +102,21 @@ Rules:
 
 ## Mail
 
-Initial read-only commands:
+Read-only commands:
 
 ```bash
 ik auth mail --mailbox user@example.com --password <app-password>
-ik mail unread
-ik mail search "invoice"
-ik mail read <uid>
-ik mail unread --json --limit 10
+
+ik mail folders              # or ik mail labels
+ik mail list                 # both read and unread; default folder INBOX
+ik mail list --folder Spam --days 5 --json
+ik mail list --since 2026-06-01 --before 2026-06-15 --json
+ik mail unread               # shortcut for ik mail list --unread
+ik mail search "invoice" --days 30 --json
 ik mail read <uid> --json --raw
 ```
+
+`ik mail list` defaults to the `INBOX` folder and shows both read and unread messages. Each message in JSON output includes a `seen` boolean. `--days N` is a convenience shortcut for `--since` set to `today - N days`.
 
 Later write commands:
 

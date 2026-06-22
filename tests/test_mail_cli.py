@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import io
 import json
 import sys
@@ -13,6 +14,15 @@ from infomaniak_cli import cli
 from infomaniak_cli.auth import MailPasswordStore, TokenStore
 from infomaniak_cli.profiles import ProfileManager
 from infomaniak_cli.services.mail import MailError
+
+
+def _validate_iso_date(value):
+    if value is None:
+        return
+    try:
+        datetime.datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"invalid date: {value}. Expected YYYY-MM-DD.") from exc
 
 
 class FakeIMAP:
@@ -29,22 +39,64 @@ class FakeIMAP:
     def _select(self, mailbox="INBOX"):
         self.calls.append(("select", mailbox))
 
-    def list_unread(self, limit=None):
-        self._select("INBOX")
-        items = self.responses.get("list_unread", [])
+    def list_folders(self):
+        return self.responses.get("list_folders", [])
+
+    def list_messages(
+        self,
+        folder="INBOX",
+        limit=None,
+        unread_only=False,
+        since=None,
+        before=None,
+        on=None,
+    ):
+        for value in (since, before, on):
+            _validate_iso_date(value)
+        self._select(folder)
+        key = "list_messages"
+        items = self.responses.get(key, [])
+        if unread_only:
+            key = "list_unread"
+            items = self.responses.get(key, [])
         if limit is not None:
             items = items[:limit]
+        # Record call args so tests can inspect criteria
+        self.calls.append((
+            "list_messages",
+            folder,
+            limit,
+            unread_only,
+            since,
+            before,
+            on,
+        ))
         return items
 
-    def search(self, query, limit=None):
-        self._select("INBOX")
+    def list_unread(self, limit=None):
+        return self.list_messages(folder="INBOX", limit=limit, unread_only=True)
+
+    def search(self, query, folder="INBOX", limit=None, unread_only=False, since=None, before=None, on=None):
+        for value in (since, before, on):
+            _validate_iso_date(value)
+        self._select(folder)
         items = self.responses.get("search", {}).get(query, [])
         if limit is not None:
             items = items[:limit]
+        self.calls.append((
+            "search",
+            query,
+            folder,
+            limit,
+            unread_only,
+            since,
+            before,
+            on,
+        ))
         return items
 
-    def fetch_message(self, uid):
-        self._select("INBOX")
+    def fetch_message(self, uid, folder="INBOX"):
+        self._select(folder)
         msg = self.responses.get("fetch_message", {}).get(uid)
         if msg is None:
             raise MailError(f"Message UID {uid} not found")
@@ -148,9 +200,14 @@ class TestMailUnread:
         assert cli.main(["mail", "unread", "--json"]) == 0
 
         output = json.loads(capsys.readouterr().out)
-        assert output["profile"] is None  # uses current profile
+        assert output["profile"] == "work"  # resolved current profile
+        assert output["folder"] == "INBOX"
+        assert output["count"] == 2
         assert len(output["messages"]) == 2
-        assert output["messages"][0] == {"uid": "101", "from": "a@example.com", "subject": "Hello", "date": "Mon, 01 Jan 2024"}
+        assert output["messages"][0] == {
+            "uid": "101", "from": "a@example.com", "subject": "Hello",
+            "date": "Mon, 01 Jan 2024", "seen": False,
+        }
 
     def test_mail_unread_json_raw_emits_full_payload(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
@@ -167,6 +224,7 @@ class TestMailUnread:
         assert cli.main(["mail", "unread", "--json", "--raw"]) == 0
 
         output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
         assert "body_preview" in output["messages"][0]
 
     def test_mail_unread_limit_honored(self, tmp_path, monkeypatch, capsys):
@@ -186,6 +244,8 @@ class TestMailUnread:
         assert cli.main(["mail", "unread", "--json", "--limit", "2"]) == 0
 
         output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
+        assert output["count"] == 2
         assert len(output["messages"]) == 2
 
     def test_mail_unread_human_output(self, tmp_path, monkeypatch, capsys):
@@ -203,7 +263,7 @@ class TestMailUnread:
         assert cli.main(["mail", "unread"]) == 0
 
         out = capsys.readouterr().out
-        assert "Unread messages: 1" in out
+        assert "Unread messages in INBOX: 1" in out
         assert "101" in out
         assert "Invoice" in out
 
@@ -226,8 +286,10 @@ class TestMailSearch:
         assert cli.main(["mail", "search", "invoice", "--json"]) == 0
 
         output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
         assert output["query"] == "invoice"
-        assert len(output["messages"]) == 1
+        assert output["folder"] == "INBOX"
+        assert output["count"] == 1
         assert output["messages"][0]["uid"] == "201"
 
     def test_mail_search_limit(self, tmp_path, monkeypatch, capsys):
@@ -248,6 +310,8 @@ class TestMailSearch:
         assert cli.main(["mail", "search", "q", "--json", "--limit", "1"]) == 0
 
         output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
+        assert output["count"] == 1
         assert len(output["messages"]) == 1
 
     def test_mail_search_missing_config(self, tmp_path, monkeypatch, capsys):
@@ -377,3 +441,237 @@ class TestMailProfileOverride:
         output = json.loads(capsys.readouterr().out)
         assert output["profile"] == "personal"
         assert seen == [("personal@example.com", "personal-pw")]
+
+
+class TestMailFolders:
+    def test_mail_folders_json_slim(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_folders": [
+                {"name": "INBOX", "separator": "/", "flags": [r"\Inbox"], "role": "inbox"},
+                {"name": "Sent", "separator": "/", "flags": [r"\Sent"], "role": "sent"},
+                {"name": "Junk Mail", "separator": "/", "flags": [r"\Junk"], "role": "junk"},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "folders", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
+        assert output["count"] == 3
+        assert output["folders"] == [
+            {"name": "INBOX", "role": "inbox"},
+            {"name": "Sent", "role": "sent"},
+            {"name": "Junk Mail", "role": "junk"},
+        ]
+
+    def test_mail_labels_alias(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_folders": [{"name": "INBOX", "role": "inbox"}]}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "labels", "--json"]) == 0
+        output = json.loads(capsys.readouterr().out)
+        assert output["count"] == 1
+
+    def test_mail_folders_raw_json(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        folder = {"name": "INBOX", "separator": "/", "flags": [r"\Inbox"], "role": "inbox"}
+        fake_responses = {"list_folders": [folder]}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "folders", "--json", "--raw"]) == 0
+        output = json.loads(capsys.readouterr().out)
+        assert output["folders"][0] == folder
+
+    def test_mail_folders_human_output(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_folders": [
+                {"name": "INBOX", "separator": "/", "flags": [r"\Inbox"], "role": "inbox"},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "folders"]) == 0
+        out = capsys.readouterr().out
+        assert "Profile: work" in out
+        assert "Folders: 1" in out
+        assert "INBOX (inbox)" in out
+
+
+class TestMailList:
+    def test_mail_list_defaults_to_inbox_and_limit(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_messages": [
+                {"uid": "1", "from": "a@example.com", "subject": "s1", "date": "Mon", "seen": True},
+                {"uid": "2", "from": "b@example.com", "subject": "s2", "date": "Tue", "seen": False},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "list", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
+        assert output["folder"] == "INBOX"
+        assert output["count"] == 2
+        assert output["messages"][0]["seen"] is True
+
+    def test_mail_list_folder_option(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_messages": []}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "list", "--folder", "Spam", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "Spam"
+
+    def test_mail_list_unread_only(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_messages": []}
+        factory = _fake_imap_factory(fake_responses)
+        monkeypatch.setattr(cli, "IMAPClient", factory)
+
+        assert cli.main(["mail", "list", "--unread", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "INBOX"
+
+    def test_mail_list_days_computes_since(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_messages": []}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+        # Freeze today to 2026-06-22; --days 5 => since 2026-06-17
+        monkeypatch.setattr(cli, "_today", lambda: __import__("datetime").date(2026, 6, 22))
+
+        assert cli.main(["mail", "list", "--days", "5", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "INBOX"
+        assert output["count"] == 0
+
+    def test_mail_list_since_before_validate_and_pass(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_messages": []}
+        factory = _fake_imap_factory(fake_responses)
+        monkeypatch.setattr(cli, "IMAPClient", factory)
+
+        assert cli.main(["mail", "list", "--since", "2026-06-01", "--before", "2026-06-15", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "INBOX"
+
+    def test_mail_list_days_and_since_errors(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_messages": []}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "list", "--days", "5", "--since", "2026-06-01", "--json"]) == 2
+
+        captured = capsys.readouterr()
+        assert "use either --days or --since" in captured.err
+
+    def test_mail_list_invalid_date_errors(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_messages": []}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "list", "--since", "not-a-date", "--json"]) == 1
+
+        captured = capsys.readouterr()
+        assert "invalid date" in captured.err
+
+
+class TestMailSearchExtended:
+    def test_mail_search_with_folder_and_days(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "search": {
+                "invoice": [
+                    {"uid": "501", "from": "acct@example.com", "subject": "Invoice", "date": "Mon", "seen": False},
+                ],
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+        monkeypatch.setattr(cli, "_today", lambda: __import__("datetime").date(2026, 6, 22))
+
+        assert cli.main(["mail", "search", "invoice", "--folder", "Archive", "--days", "30", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
+        assert output["folder"] == "Archive"
+        assert output["query"] == "invoice"
+        assert output["count"] == 1
+        assert output["messages"][0]["uid"] == "501"
+
+    def test_mail_search_unread_and_dates(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"search": {"query": []}}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main([
+            "mail", "search", "query", "--unread",
+            "--since", "2026-06-01", "--before", "2026-06-15", "--json",
+        ]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "INBOX"
+        assert output["count"] == 0
+
+    def test_mail_search_days_and_since_errors(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"search": {"invoice": []}}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "search", "invoice", "--days", "5", "--since", "2026-06-01", "--json"]) == 2
+
+        captured = capsys.readouterr()
+        assert "use either --days or --since" in captured.err
+
+

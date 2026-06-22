@@ -69,8 +69,10 @@ ik drive list
 ik drive list --json
 ik drive list --json --raw
 
+ik mail folders --json
+ik mail list --days 7 --json
 ik mail unread
-ik mail search "invoice" --json
+ik mail search "invoice" --days 30 --json
 ik mail read <uid> --json
 ```
 
@@ -107,7 +109,7 @@ Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.m
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
 | kDrive | `drive list` |
-| Mail | `mail unread`, `mail search`, `mail read` |
+| Mail | `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read` |
 
 Run `ik <command> --help` for full options on any command.
 
@@ -131,8 +133,10 @@ ik account services --json
 ik drive list --json
 ik drive list --json --raw
 
+ik mail folders --json
+ik mail list --days 7 --json
 ik mail unread --json
-ik mail search "invoice" --json
+ik mail search "invoice" --days 30 --json
 ik mail read <uid> --json
 ```
 

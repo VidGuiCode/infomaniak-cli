@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import sys
 from typing import Any, Mapping
@@ -292,65 +293,166 @@ def _mail_client(args: argparse.Namespace) -> IMAPClient:
     return IMAPClient(host, port, mailbox, password)
 
 
-def cmd_mail_unread(args: argparse.Namespace) -> int:
+def _mail_profile_and_client(args: argparse.Namespace) -> tuple[Any, IMAPClient]:
+    profile, host, port, mailbox, password = _mail_profile_or_error(args)
+    return profile, IMAPClient(host, port, mailbox, password)
+
+
+def _today() -> datetime.date:
+    """Return today's date. Inject-able for tests."""
+    return datetime.date.today()
+
+
+def _resolve_mail_dates(args: argparse.Namespace) -> tuple[str | None, str | None, str | None]:
+    """Resolve --since/--before/--days/--on into (since, before, on) ISO dates.
+
+    Raises ValueError for mutually exclusive or invalid combinations.
+    """
+    since = getattr(args, "since", None)
+    before = getattr(args, "before", None)
+    on = getattr(args, "on", None)
+    days = getattr(args, "days", None)
+
+    if days is not None and since:
+        raise ValueError("use either --days or --since, not both")
+    if on and (since or before):
+        raise ValueError("--on cannot be combined with --since or --before")
+    if days is not None:
+        since = (_today() - datetime.timedelta(days=days)).isoformat()
+    return since, before, on
+
+
+def _render_message_line(item: Mapping[str, Any], show_seen: bool = True) -> str:
+    seen_marker = "R" if item.get("seen") else "U"
+    uid = item.get("uid", "-")
+    subject = item.get("subject") or "(no subject)"
+    from_addr = item.get("from") or "(unknown)"
+    date = item.get("date") or ""
+    if show_seen:
+        return f"{seen_marker}\t{uid}\t{date}\t{from_addr}\t{subject}"
+    return f"{uid}\t{date}\t{from_addr}\t{subject}"
+
+
+def cmd_mail_folders(args: argparse.Namespace) -> int:
     try:
-        client = _mail_client(args)
+        profile, client = _mail_profile_and_client(args)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     try:
         with client:
-            items = client.list_unread(limit=args.limit)
+            folders = client.list_folders()
+    except MailError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        output = folders if args.raw else [{"name": f["name"], "role": f["role"]} for f in folders]
+        print_json({"profile": profile.name, "count": len(folders), "folders": output})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Folders: {len(folders)}")
+        for folder in folders:
+            role = f" ({folder['role']})" if folder["role"] else ""
+            print(f"{folder['name']}{role}")
+    return 0
+
+
+def cmd_mail_list(args: argparse.Namespace) -> int:
+    try:
+        since, before, on = _resolve_mail_dates(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        profile, client = _mail_profile_and_client(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        with client:
+            items = client.list_messages(
+                folder=args.folder,
+                limit=args.limit,
+                unread_only=args.unread,
+                since=since,
+                before=before,
+                on=on,
+            )
     except MailError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     if args.json:
         output = items if args.raw else [slim_message(item) for item in items]
-        print_json({"profile": args.profile, "messages": output})
+        print_json({"profile": profile.name, "folder": args.folder, "count": len(items), "messages": output})
     else:
-        print(f"Unread messages: {len(items)}")
+        status = "Unread messages" if args.unread else "Messages"
+        print(f"{status} in {args.folder}: {len(items)}")
         for item in items:
-            uid = item.get("uid", "-")
-            subject = item.get("subject") or "(no subject)"
-            from_addr = item.get("from") or "(unknown)"
-            date = item.get("date") or ""
-            print(f"{uid}\t{date}\t{from_addr}\t{subject}")
+            print(_render_message_line(item))
     return 0
+
+
+def cmd_mail_unread(args: argparse.Namespace) -> int:
+    args.unread = True
+    args.folder = getattr(args, "folder", "INBOX")
+    return cmd_mail_list(args)
 
 
 def cmd_mail_search(args: argparse.Namespace) -> int:
     try:
-        client = _mail_client(args)
+        since, before, on = _resolve_mail_dates(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        profile, client = _mail_profile_and_client(args)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     try:
         with client:
-            items = client.search(args.query, limit=args.limit)
+            items = client.search(
+                args.query,
+                folder=args.folder,
+                limit=args.limit,
+                unread_only=args.unread,
+                since=since,
+                before=before,
+                on=on,
+            )
     except MailError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     if args.json:
         output = items if args.raw else [slim_message(item) for item in items]
-        print_json({"profile": args.profile, "query": args.query, "messages": output})
+        print_json(
+            {
+                "profile": profile.name,
+                "folder": args.folder,
+                "query": args.query,
+                "count": len(items),
+                "messages": output,
+            }
+        )
     else:
-        print(f"Search results for '{args.query}': {len(items)}")
+        status = "Unread search results" if args.unread else "Search results"
+        print(f"{status} for '{args.query}' in {args.folder}: {len(items)}")
         for item in items:
-            uid = item.get("uid", "-")
-            subject = item.get("subject") or "(no subject)"
-            from_addr = item.get("from") or "(unknown)"
-            date = item.get("date") or ""
-            print(f"{uid}\t{date}\t{from_addr}\t{subject}")
+            print(_render_message_line(item))
     return 0
 
 
 def cmd_mail_read(args: argparse.Namespace) -> int:
     try:
-        client = _mail_client(args)
+        profile, client = _mail_profile_and_client(args)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -365,7 +467,7 @@ def cmd_mail_read(args: argparse.Namespace) -> int:
     if args.json:
         if not args.raw:
             msg = slim_message(msg)
-        print_json({"profile": args.profile, "uid": args.uid, "message": msg})
+        print_json({"profile": profile.name, "uid": args.uid, "message": msg})
     else:
         print(f"UID: {args.uid}")
         print(f"From: {msg.get('from') or '(unknown)'}")
@@ -642,16 +744,43 @@ def build_parser() -> argparse.ArgumentParser:
 
     mail = sub.add_parser("mail", help="Read-only IMAP mail commands")
     mail_sub = mail.add_subparsers(dest="mail_command", required=True)
-    mail_unread = mail_sub.add_parser("unread", help="List unread messages")
+    mail_folders = mail_sub.add_parser("folders", help="List IMAP folders/labels")
+    mail_folders.add_argument("--json", action="store_true")
+    mail_folders.add_argument(
+        "--raw", action="store_true", help="With --json, emit the full raw folder payload."
+    )
+    mail_folders.set_defaults(func=cmd_mail_folders)
+    mail_labels = mail_sub.add_parser("labels", help="Alias for 'folders'")
+    mail_labels.add_argument("--json", action="store_true")
+    mail_labels.add_argument("--raw", action="store_true")
+    mail_labels.set_defaults(func=cmd_mail_folders)
+    mail_list = mail_sub.add_parser("list", help="List messages in a folder")
+    mail_list.add_argument("--folder", "-f", default="INBOX", help="Folder to list. Defaults to INBOX.")
+    mail_list.add_argument("--limit", "-n", type=int, default=20, help="Maximum messages. Defaults to 20.")
+    mail_list.add_argument("--unread", action="store_true", help="Only unread messages.")
+    mail_list.add_argument("--since", help="Start date (YYYY-MM-DD, inclusive).")
+    mail_list.add_argument("--before", help="End date (YYYY-MM-DD, exclusive).")
+    mail_list.add_argument("--days", type=int, help="Convenience: messages since today - N days.")
+    mail_list.add_argument("--json", action="store_true")
+    mail_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
+    mail_list.set_defaults(func=cmd_mail_list)
+    mail_unread = mail_sub.add_parser("unread", help="Shortcut for 'ik mail list --unread'")
     mail_unread.add_argument("--limit", type=int, help="Maximum number of messages to show.")
     mail_unread.add_argument("--json", action="store_true")
     mail_unread.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_unread.set_defaults(func=cmd_mail_unread)
     mail_search = mail_sub.add_parser("search", help="Search messages by query")
     mail_search.add_argument("query", help="Search query string")
+    mail_search.add_argument("--folder", "-f", default="INBOX", help="Folder to search. Defaults to INBOX.")
     mail_search.add_argument("--limit", type=int, help="Maximum number of messages to show.")
+    mail_search.add_argument("--unread", action="store_true", help="Only unread messages.")
+    mail_search.add_argument("--since", help="Start date (YYYY-MM-DD, inclusive).")
+    mail_search.add_argument("--before", help="End date (YYYY-MM-DD, exclusive).")
+    mail_search.add_argument("--days", type=int, help="Convenience: messages since today - N days.")
     mail_search.add_argument("--json", action="store_true")
-    mail_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
+    mail_search.add_argument(
+        "--raw", action="store_true", help="With --json, emit the full raw message payload."
+    )
     mail_search.set_defaults(func=cmd_mail_search)
     mail_read = mail_sub.add_parser("read", help="Read a single message by UID")
     mail_read.add_argument("uid", help="Message UID")
