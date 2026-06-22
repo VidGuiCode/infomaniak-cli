@@ -18,18 +18,18 @@ Important risks:
 Every profile has separate credentials and defaults:
 
 ```text
-profiles/cylro.yaml
+profiles/work.yaml
 profiles/personal.yaml
-tokens/cylro.token.json
+tokens/work.token.json
 tokens/personal.token.json
 ```
 
 Commands should always show profile context for sensitive operations:
 
 ```text
-Profile: cylro
-Account: Cylro SARL-S
-Sending from: contact@cylro.com
+Profile: work
+Account: Example Co
+Sending from: contact@example.com
 To: accountant@example.com
 Continue? [y/N]
 ```
@@ -37,7 +37,7 @@ Continue? [y/N]
 For Hermes/cron, use explicit profile always:
 
 ```bash
-ik --profile cylro mail unread
+ik --profile work mail unread
 ```
 
 Do not rely on the last selected default profile in scheduled jobs.
@@ -125,9 +125,9 @@ For external side effects, show:
 Example:
 
 ```text
-Profile: cylro
+Profile: work
 Action: kChat post
-Team: Cylro
+Team: Example Co
 Channel: admin
 Message: Reminder: VAT task due
 Continue? [y/N]

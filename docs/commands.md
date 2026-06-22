@@ -22,7 +22,7 @@ Admin means real company/account administration.
 
 ```bash
 ik setup
-ik setup --profile cylro
+ik setup --profile work
 ik whoami
 ik doctor
 ik bootstrap
@@ -40,7 +40,7 @@ Expected behavior:
 ```bash
 ik profile list
 ik profile show
-ik profile use cylro
+ik profile use work
 ik profile rename old new
 ik profile delete old
 ```
@@ -48,7 +48,7 @@ ik profile delete old
 Every command should support:
 
 ```bash
-ik --profile cylro <command>
+ik --profile work <command>
 ```
 
 ## Auth
@@ -150,7 +150,7 @@ Posting should show active profile/team/channel before sending.
 
 ```bash
 ik meet rooms
-ik meet create-room --name "Cylro Admin"
+ik meet create-room --name "Example Admin"
 ik meet settings <room_id>
 ```
 

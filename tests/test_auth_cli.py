@@ -23,7 +23,7 @@ class FakeAPI:
 
 def test_auth_token_stdin_strips_token_and_does_not_echo_it(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", make_default=True)
+    ProfileManager().create_or_update("work", make_default=True)
     token = "secret-token-from-stdin"
     monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {token}\n\n"))
 
@@ -32,25 +32,25 @@ def test_auth_token_stdin_strips_token_and_does_not_echo_it(tmp_path, monkeypatc
     captured = capsys.readouterr()
     assert token not in captured.out
     assert token not in captured.err
-    assert TokenStore().load_token("cylro") == token
+    assert TokenStore().load_token("work") == token
 
 
 def test_auth_token_argument_still_saves_token(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", make_default=True)
+    ProfileManager().create_or_update("work", make_default=True)
 
     assert cli.main(["auth", "token", "--token", "argument-token"]) == 0
 
     captured = capsys.readouterr()
     assert "argument-token" not in captured.out
-    assert TokenStore().load_token("cylro") == "argument-token"
+    assert TokenStore().load_token("work") == "argument-token"
 
 
 def test_auth_check_json_uses_token_base_url_and_resolves_user(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", make_default=True)
-    TokenStore().save_token("cylro", "secret-token")
-    fake_api = FakeAPI({"result": "success", "data": {"email": "gui@example.com"}})
+    ProfileManager().create_or_update("work", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI({"result": "success", "data": {"email": "user@example.com"}})
     seen_clients = []
 
     def make_client(token, *, base_url):
@@ -62,16 +62,16 @@ def test_auth_check_json_uses_token_base_url_and_resolves_user(tmp_path, monkeyp
     assert cli.main(["--base-url", "https://api.example.test", "auth", "check", "--json"]) == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output == {"ok": True, "profile": "cylro", "user": "gui@example.com"}
+    assert output == {"ok": True, "profile": "work", "user": "user@example.com"}
     assert seen_clients == [("secret-token", "https://api.example.test")]
     assert fake_api.calls == [("/2/profile", None)]
 
 
 def test_auth_check_auth_failure_is_clear_and_redacted(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", make_default=True)
+    ProfileManager().create_or_update("work", make_default=True)
     token = "secret-token"
-    TokenStore().save_token("cylro", token)
+    TokenStore().save_token("work", token)
     error = InformaniakAPIError(
         401,
         "GET /2/profile failed: authentication failed or insufficient scope (token secret-token expired)",

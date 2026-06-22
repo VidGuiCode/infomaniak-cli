@@ -1,4 +1,4 @@
-# infomaniak-cli
+﻿# infomaniak-cli
 
 ![version](https://img.shields.io/badge/version-0.1.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
@@ -12,7 +12,35 @@ Built for personal and company Informaniak accounts. Token-based auth — no bro
 
 ## Install
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11+.
+
+Recommended global install with [pipx](https://pipx.pypa.io/):
+
+```bash
+pipx install infomaniak-cli
+ik version
+```
+
+Alternative install with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv tool install infomaniak-cli
+ik version
+```
+
+Plain `pip` also works, but `pipx` or `uv tool` is preferred for a command-line app because it keeps the CLI isolated from your system Python packages.
+
+```bash
+pip install infomaniak-cli
+```
+
+Install directly from GitHub:
+
+```bash
+pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git
+```
+
+For development:
 
 ```bash
 git clone https://github.com/VidGuiCode/infomaniak-cli.git
@@ -20,16 +48,10 @@ cd infomaniak-cli
 uv sync
 ```
 
-Or install directly:
-
-```bash
-pip install git+https://github.com/VidGuiCode/infomaniak-cli.git
-```
-
 ## Quick start
 
 ```bash
-ik setup --profile cylro
+ik setup --profile work
 ik auth token
 # paste your Informaniak Manager personal API token
 
@@ -94,11 +116,13 @@ Login state is stored in your platform's app-data folder:
 
 This directory contains your profile config and API token. Treat it as a secret and do not share or commit it.
 
-`ik auth logout` removes saved auth data. To remove the installed CLI itself, uninstall with pip:
+`ik auth logout` removes saved auth data. To remove the installed CLI itself:
 
 ```bash
-pip uninstall infomaniak-cli
+pipx uninstall infomaniak-cli
 ```
+
+If you installed with `uv tool`, run `uv tool uninstall infomaniak-cli`. If you installed with plain `pip`, run `pip uninstall infomaniak-cli`.
 
 ## How this differs from other tools
 
@@ -123,6 +147,7 @@ See [`context/ROADMAP.md`](context/ROADMAP.md) (private working context) for pla
 - [`docs/setup-and-profiles.md`](docs/setup-and-profiles.md) — setup/auth/profile flow
 - [`docs/commands.md`](docs/commands.md) — CLI commands reference
 - [`docs/security.md`](docs/security.md) — safety, secrets, profile separation
+- [`docs/release.md`](docs/release.md) - install and release guidance
 
 ## License
 

@@ -102,8 +102,8 @@ def test_slim_file_projects_useful_fields_only():
 
 def test_cli_drive_list_json_uses_profile_default_drive_id(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", default_drive_id="drive-1", make_default=True)
-    TokenStore().save_token("cylro", "secret-token")
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
     fake_api = FakeAPI(
         {
             "/2/drive/drive-1/files": {
@@ -128,7 +128,7 @@ def test_cli_drive_list_json_uses_profile_default_drive_id(tmp_path, monkeypatch
 
     output = json.loads(capsys.readouterr().out)
     assert output == {
-        "profile": "cylro",
+        "profile": "work",
         "drive_id": "drive-1",
         "parent_id": None,
         "files": [
@@ -140,8 +140,8 @@ def test_cli_drive_list_json_uses_profile_default_drive_id(tmp_path, monkeypatch
 
 def test_cli_drive_list_json_raw_emits_full_payload(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", default_drive_id="drive-1", make_default=True)
-    TokenStore().save_token("cylro", "secret-token")
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
     raw_file = {"id": "folder-1", "name": "Admin", "type": "dir", "permissions": {"share": True}}
     fake_api = FakeAPI({"/2/drive/drive-1/files": {"result": "success", "data": [raw_file]}})
     monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
@@ -149,13 +149,13 @@ def test_cli_drive_list_json_raw_emits_full_payload(tmp_path, monkeypatch, capsy
     assert cli.main(["drive", "list", "--json", "--raw"]) == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output == {"profile": "cylro", "drive_id": "drive-1", "parent_id": None, "files": [raw_file]}
+    assert output == {"profile": "work", "drive_id": "drive-1", "parent_id": None, "files": [raw_file]}
 
 
 def test_cli_drive_list_honors_drive_id_override(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", default_drive_id="profile-drive", make_default=True)
-    TokenStore().save_token("cylro", "secret-token")
+    ProfileManager().create_or_update("work", default_drive_id="profile-drive", make_default=True)
+    TokenStore().save_token("work", "secret-token")
     fake_api = FakeAPI({"/2/drive/override-drive/files": {"result": "success", "data": []}})
     monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
 
@@ -168,21 +168,21 @@ def test_cli_drive_list_honors_drive_id_override(tmp_path, monkeypatch, capsys):
 
 def test_cli_drive_list_requires_drive_id(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", make_default=True)
-    TokenStore().save_token("cylro", "secret-token")
+    ProfileManager().create_or_update("work", make_default=True)
+    TokenStore().save_token("work", "secret-token")
 
     assert cli.main(["drive", "list"]) == 1
 
     captured = capsys.readouterr()
-    assert "No default kDrive selected for profile: cylro" in captured.err
-    assert "Run `ik --profile cylro bootstrap`" in captured.err
+    assert "No default kDrive selected for profile: work" in captured.err
+    assert "Run `ik --profile work bootstrap`" in captured.err
     assert "--drive-id" in captured.err
 
 
 def test_cli_drive_list_redacts_api_errors(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", default_drive_id="drive-1", make_default=True)
-    TokenStore().save_token("cylro", "secret-token")
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
     fake_api = FakeAPI(
         {
             "/2/drive/drive-1/files": InformaniakAPIError(
@@ -204,8 +204,8 @@ def test_cli_drive_list_redacts_api_errors(tmp_path, monkeypatch, capsys):
 
 def test_cli_drive_list_404_reports_wrong_drive_id_path(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", default_drive_id="drive-1", make_default=True)
-    TokenStore().save_token("cylro", "secret-token")
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
     fake_api = FakeAPI(
         {
             "/2/drive/drive-1/files": InformaniakAPIError(

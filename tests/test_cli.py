@@ -18,14 +18,14 @@ def run_ik(tmp_path, *args):
 
 
 def test_cli_setup_whoami_and_doctor_json(tmp_path):
-    setup = run_ik(tmp_path, "setup", "--profile", "cylro", "--non-interactive")
+    setup = run_ik(tmp_path, "setup", "--profile", "work", "--non-interactive")
     assert setup.returncode == 0, setup.stderr
-    assert "Profile ready: cylro" in setup.stdout
+    assert "Profile ready: work" in setup.stdout
 
     whoami = run_ik(tmp_path, "whoami", "--json")
     assert whoami.returncode == 0, whoami.stderr
     data = json.loads(whoami.stdout)
-    assert data["profile"] == "cylro"
+    assert data["profile"] == "work"
 
     doctor = run_ik(tmp_path, "doctor", "--json")
     assert doctor.returncode == 0, doctor.stderr
@@ -35,10 +35,10 @@ def test_cli_setup_whoami_and_doctor_json(tmp_path):
 
 
 def test_cli_bootstrap_requires_token(tmp_path):
-    setup = run_ik(tmp_path, "setup", "--profile", "cylro", "--non-interactive")
+    setup = run_ik(tmp_path, "setup", "--profile", "work", "--non-interactive")
     assert setup.returncode == 0, setup.stderr
 
     bootstrap = run_ik(tmp_path, "bootstrap", "--non-interactive")
 
     assert bootstrap.returncode == 1
-    assert "No token configured for profile: cylro" in bootstrap.stderr
+    assert "No token configured for profile: work" in bootstrap.stderr

@@ -61,19 +61,19 @@ def test_api_client_get_builds_url_headers_and_parses_json():
 
 
 def test_api_client_get_raw_allows_non_enveloped_json():
-    response = TransportResponse(status_code=200, text='[{"id":"team-1","display_name":"Cylro"}]')
+    response = TransportResponse(status_code=200, text='[{"id":"team-1","display_name":"Example Co"}]')
     client = InformaniakAPIClient(token="secret-token", base_url="https://api.example.test", transport=FakeTransport(response))
 
     payload = client.get_raw("https://chat.example.test/api/v4/users/me/teams")
 
-    assert payload == [{"id": "team-1", "display_name": "Cylro"}]
+    assert payload == [{"id": "team-1", "display_name": "Example Co"}]
 
 
 def test_api_client_post_sends_json_content_type():
     transport = FakeTransport(TransportResponse(status_code=201, text='{"result":"success","data":{"ok":true}}'))
     client = InformaniakAPIClient(token="secret-token", base_url="https://api.example.test/", transport=transport)
 
-    payload = client.post("1/accounts/42/tags", json={"name": "Cylro"})
+    payload = client.post("1/accounts/42/tags", json={"name": "Example Co"})
 
     assert payload["data"]["ok"] is True
     assert transport.requests[0]["method"] == "POST"
@@ -83,7 +83,7 @@ def test_api_client_post_sends_json_content_type():
         "Authorization": "Bearer secret-token",
         "Content-Type": "application/json",
     }
-    assert transport.requests[0]["json"] == {"name": "Cylro"}
+    assert transport.requests[0]["json"] == {"name": "Example Co"}
 
 
 def test_api_client_error_exposes_status_and_redacts_token():

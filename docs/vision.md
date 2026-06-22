@@ -86,9 +86,9 @@ Do not start with destructive automation.
 Hermes can use the CLI immediately through terminal commands:
 
 ```bash
-ik --profile cylro mail unread
-ik --profile cylro drive search "RCS"
-ik --profile cylro account services
+ik --profile work mail unread
+ik --profile work drive search "invoice"
+ik --profile work account services
 ```
 
 Later, the project can expose one MCP server that wraps the same modules:

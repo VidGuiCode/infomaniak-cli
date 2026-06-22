@@ -24,46 +24,46 @@ Interactive flow:
 No profiles found.
 
 What is this profile for?
-> cylro
+> work
 
 Open Informaniak login? [Y/n]
 
-Authenticated as: gui@example.com
+Authenticated as: user@example.com
 
 Found accounts:
 1. Personal account
-2. Cylro SARL-S
+2. Example Co
 
-Use which account for profile "cylro"?
+Use which account for profile "work"?
 > 2
 
 Found mailboxes:
-1. contact@cylro.com
-2. admin@cylro.com
-3. gui@cylro.com
+1. contact@example.com
+2. admin@example.com
+3. user@example.com
 
 Default mailbox?
 > 1
 
 Found kDrives:
-1. Cylro Documents
+1. Example Documents
 2. Shared Admin
 
 Default kDrive?
 > 1
 
-Make "cylro" the default profile? [Y/n]
+Make "work" the default profile? [Y/n]
 ```
 
 Final output:
 
 ```text
-✓ Profile created: cylro
-✓ Authenticated as: gui@example.com
-✓ Account selected: Cylro SARL-S
-✓ Default mailbox: contact@cylro.com
-✓ Default kDrive: Cylro Documents
-✓ kChat workspace: Cylro
+✓ Profile created: work
+✓ Authenticated as: user@example.com
+✓ Account selected: Example Co
+✓ Default mailbox: contact@example.com
+✓ Default kDrive: Example Documents
+✓ kChat workspace: Example Co
 ✓ Profile is ready
 ```
 
@@ -88,17 +88,17 @@ Gui has personal and company Informaniak usage. The CLI must keep them separated
 Expected usage:
 
 ```bash
-ik profile use cylro
+ik profile use work
 ik whoami
 
 ik --profile personal mail unread
-ik --profile cylro drive search "invoice"
+ik --profile work drive search "invoice"
 ```
 
 For Hermes and cron jobs, always prefer explicit profile:
 
 ```bash
-ik --profile cylro mail unread
+ik --profile work mail unread
 ```
 
 This avoids accidental personal/company mixups.
@@ -109,10 +109,10 @@ Management commands should exist, but normal users should not need them before s
 
 ```bash
 ik setup
-ik setup --profile cylro
+ik setup --profile work
 
 ik profile list
-ik profile use cylro
+ik profile use work
 ik profile show
 ik profile rename old new
 ik profile delete old
@@ -170,15 +170,15 @@ Reserve `ik admin ...` for true Informaniak Manager / company-admin operations o
 ## Stored profile example
 
 ```yaml
-name: cylro
-informaniak_user: gui@example.com
+name: work
+informaniak_user: user@example.com
 account_id: "123456"
-account_name: "Cylro SARL-S"
+account_name: "Example Co"
 ksuite_id: "98765"
 mail_hosting_id: "55555"
-default_mailbox: "contact@cylro.com"
+default_mailbox: "contact@example.com"
 default_drive_id: "77777"
-default_drive_name: "Cylro Documents"
+default_drive_name: "Example Documents"
 kchat_team_id: "abc123"
 created_at: "2026-06-21T00:00:00Z"
 updated_at: "2026-06-21T00:00:00Z"
@@ -192,10 +192,10 @@ Prefer a normal user config location. On Windows:
 C:/Users/gui/AppData/Roaming/infomaniak-cli/
   config.yaml
   profiles/
-    cylro.yaml
+    work.yaml
     personal.yaml
   tokens/
-    cylro.token.json
+    work.token.json
     personal.token.json
 ```
 

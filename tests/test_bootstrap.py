@@ -16,29 +16,29 @@ class FakeAPI:
 
 def test_bootstrap_auto_selects_single_account_and_saves_discovered_account_defaults(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
-    manager.create_or_update("cylro", make_default=True)
+    manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
-                "data": [{"id": "mail-1", "name": "Cylro Mail", "type": "mail_hosting"}],
+                "data": [{"id": "mail-1", "name": "Example Mail", "type": "mail_hosting"}],
             },
             "/1/accounts/42/services": {
                 "result": "success",
                 "data": [
-                    {"id": "drive-1", "name": "Cylro Documents", "service_type": "kdrive"},
-                    {"id": "chat-1", "name": "Cylro Chat", "service_type": "kchat"},
+                    {"id": "drive-1", "name": "Example Documents", "service_type": "kdrive"},
+                    {"id": "chat-1", "name": "Example Chat", "service_type": "kchat"},
                 ],
             },
             "/2/drive": {"result": "success", "data": []},
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
-    assert result["profile"] == "cylro"
+    assert result["profile"] == "work"
     assert result["account"]["id"] == "42"
     assert result["informaniak_user"] == "gui@example.com"
     assert api.calls == [
@@ -49,10 +49,10 @@ def test_bootstrap_auto_selects_single_account_and_saves_discovered_account_defa
         ("/1/mail_hostings/mail-1/mailboxes", None),
         ("/2/drive", {"account_id": "42"}),
     ]
-    profile = manager.get("cylro")
+    profile = manager.get("work")
     assert profile.informaniak_user == "gui@example.com"
     assert profile.account_id == "42"
-    assert profile.account_name == "Cylro SARL-S"
+    assert profile.account_name == "Example Co"
     assert profile.mail_hosting_id == "mail-1"
     assert profile.default_drive_id is None
     assert profile.default_drive_name is None
@@ -62,24 +62,24 @@ def test_bootstrap_auto_selects_single_account_and_saves_discovered_account_defa
 
 def test_bootstrap_enriches_mailbox_and_drive_defaults_from_optional_endpoints(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
-    manager.create_or_update("cylro", make_default=True)
+    manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
-                "data": [{"id": "mail-hosting-1", "name": "Cylro Mail", "type": "mail_hosting"}],
+                "data": [{"id": "mail-hosting-1", "name": "Example Mail", "type": "mail_hosting"}],
             },
             "/1/accounts/42/services": {
                 "result": "success",
-                "data": [{"id": "kchat-service-1", "name": "Cylro Chat", "service_type": "kchat"}],
+                "data": [{"id": "kchat-service-1", "name": "Example Chat", "service_type": "kchat"}],
             },
             "/1/mail_hostings/mail-hosting-1/mailboxes": {
                 "result": "success",
                 "data": [
-                    {"id": "mbox-1", "email": "contact@cylro.com"},
-                    {"id": "mbox-2", "email": "admin@cylro.com"},
+                    {"id": "mbox-1", "email": "contact@example.com"},
+                    {"id": "mbox-2", "email": "admin@example.com"},
                 ],
             },
             "/2/drive": {
@@ -87,7 +87,7 @@ def test_bootstrap_enriches_mailbox_and_drive_defaults_from_optional_endpoints(t
                 "data": [
                     {
                         "id": 777,
-                        "name": "Cylro Documents",
+                        "name": "Example Documents",
                         "account_id": 42,
                         "product_id": 3000001,
                         "role": "admin",
@@ -106,10 +106,10 @@ def test_bootstrap_enriches_mailbox_and_drive_defaults_from_optional_endpoints(t
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
-    assert result["default_mailbox"] == "contact@cylro.com"
-    assert result["default_drive"] == {"id": "777", "name": "Cylro Documents"}
+    assert result["default_mailbox"] == "contact@example.com"
+    assert result["default_drive"] == {"id": "777", "name": "Example Documents"}
     assert result["kchat_team_id"] is None
     assert api.calls == [
         ("/2/profile", None),
@@ -119,33 +119,33 @@ def test_bootstrap_enriches_mailbox_and_drive_defaults_from_optional_endpoints(t
         ("/1/mail_hostings/mail-hosting-1/mailboxes", None),
         ("/2/drive", {"account_id": "42"}),
     ]
-    profile = manager.get("cylro")
+    profile = manager.get("work")
     assert profile.mail_hosting_id == "mail-hosting-1"
-    assert profile.default_mailbox == "contact@cylro.com"
+    assert profile.default_mailbox == "contact@example.com"
     assert profile.default_drive_id == "777"
-    assert profile.default_drive_name == "Cylro Documents"
+    assert profile.default_drive_name == "Example Documents"
     assert profile.kchat_team_id is None
 
 
 def test_bootstrap_finds_drive_with_account_filtered_drive_endpoint(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
-    manager.create_or_update("cylro", make_default=True)
+    manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {"result": "success", "data": []},
             "/1/accounts/42/services": {"result": "success", "data": []},
             "/2/drive": {
                 "result": "success",
-                "data": [{"id": 777, "name": "Cylro Drive", "account_id": 42, "product_id": 3000001}],
+                "data": [{"id": 777, "name": "Example Drive", "account_id": 42, "product_id": 3000001}],
             },
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
-    assert result["default_drive"] == {"id": "777", "name": "Cylro Drive"}
+    assert result["default_drive"] == {"id": "777", "name": "Example Drive"}
     assert api.calls == [
         ("/2/profile", None),
         ("/1/accounts", None),
@@ -153,15 +153,15 @@ def test_bootstrap_finds_drive_with_account_filtered_drive_endpoint(tmp_path):
         ("/1/accounts/42/services", None),
         ("/2/drive", {"account_id": "42"}),
     ]
-    profile = manager.get("cylro")
+    profile = manager.get("work")
     assert profile.default_drive_id == "777"
-    assert profile.default_drive_name == "Cylro Drive"
+    assert profile.default_drive_name == "Example Drive"
 
 
 def test_bootstrap_keeps_drive_null_when_drive_endpoint_is_empty(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update(
-        "cylro",
+        "work",
         default_drive_id="40",
         default_drive_name="drive",
         make_default=True,
@@ -169,7 +169,7 @@ def test_bootstrap_keeps_drive_null_when_drive_endpoint_is_empty(tmp_path):
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
                 "data": [{"id": 3000001, "service_id": 40, "service_name": "drive"}],
@@ -182,10 +182,10 @@ def test_bootstrap_keeps_drive_null_when_drive_endpoint_is_empty(tmp_path):
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
     assert result["default_drive"] == {"id": None, "name": None}
-    profile = manager.get("cylro")
+    profile = manager.get("work")
     assert profile.default_drive_id is None
     assert profile.default_drive_name is None
 
@@ -193,7 +193,7 @@ def test_bootstrap_keeps_drive_null_when_drive_endpoint_is_empty(tmp_path):
 def test_bootstrap_rejects_product_shaped_drive_endpoint_response(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update(
-        "cylro",
+        "work",
         default_drive_id="3000001",
         default_drive_name="example.com",
         make_default=True,
@@ -201,7 +201,7 @@ def test_bootstrap_rejects_product_shaped_drive_endpoint_response(tmp_path):
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
                 "data": [{"id": 3000001, "service_id": 40, "service_name": "drive", "customer_name": "example.com"}],
@@ -217,43 +217,43 @@ def test_bootstrap_rejects_product_shaped_drive_endpoint_response(tmp_path):
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
     assert result["default_drive"] == {"id": None, "name": None}
-    profile = manager.get("cylro")
+    profile = manager.get("work")
     assert profile.default_drive_id is None
     assert profile.default_drive_name is None
 
 
 def test_bootstrap_rejects_drive_response_without_real_drive_id(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
-    manager.create_or_update("cylro", default_drive_id="3000001", make_default=True)
+    manager.create_or_update("work", default_drive_id="3000001", make_default=True)
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {"result": "success", "data": []},
             "/1/accounts/42/services": {"result": "success", "data": []},
             "/2/drive": {
                 "result": "success",
-                "data": [{"product_id": 3000001, "name": "Cylro Drive", "account_id": 42}],
+                "data": [{"product_id": 3000001, "name": "Example Drive", "account_id": 42}],
             },
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
     assert result["default_drive"] == {"id": None, "name": None}
-    assert manager.get("cylro").default_drive_id is None
+    assert manager.get("work").default_drive_id is None
 
 
 def test_bootstrap_leaves_kchat_team_null_without_probing_main_api(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
-    manager.create_or_update("cylro", kchat_team_id="54", make_default=True)
+    manager.create_or_update("work", kchat_team_id="54", make_default=True)
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
                 "data": [{"id": 3000002, "service_id": 54, "service_name": "kchat"}],
@@ -266,37 +266,37 @@ def test_bootstrap_leaves_kchat_team_null_without_probing_main_api(tmp_path):
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
     assert result["kchat_team_id"] is None
     assert result["counts"]["kchat_teams"] == 0
     assert all("kchat" not in path.lower() and "api/v4" not in path.lower() for path, _ in api.calls)
-    assert manager.get("cylro").kchat_team_id is None
+    assert manager.get("work").kchat_team_id is None
 
 
 def test_bootstrap_continues_when_optional_service_endpoints_are_missing(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
-    manager.create_or_update("cylro", make_default=True)
+    manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
-                "data": [{"id": "mail-hosting-1", "name": "Cylro Mail", "type": "mail_hosting"}],
+                "data": [{"id": "mail-hosting-1", "name": "Example Mail", "type": "mail_hosting"}],
             },
             "/1/accounts/42/services": {"result": "success", "data": []},
             "/2/drive": {"result": "success", "data": []},
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
     assert result["mail_hosting_id"] == "mail-hosting-1"
     assert result["default_mailbox"] is None
     assert result["default_drive"] == {"id": None, "name": None}
     assert result["kchat_team_id"] is None
-    profile = manager.get("cylro")
+    profile = manager.get("work")
     assert profile.mail_hosting_id == "mail-hosting-1"
     assert profile.default_mailbox is None
     assert profile.default_drive_id is None
@@ -307,7 +307,7 @@ def test_bootstrap_continues_when_optional_service_endpoints_are_missing(tmp_pat
 def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update(
-        "cylro",
+        "work",
         default_drive_id="40",
         default_drive_name="drive",
         kchat_team_id="54",
@@ -316,7 +316,7 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
-            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Cylro SARL-S"}]},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
                 "data": [
@@ -341,13 +341,13 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
         }
     )
 
-    result = bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
     assert result["mail_hosting_id"] == "3000003"
     assert result["default_mailbox"] == "gui@example.com"
     assert result["default_drive"] == {"id": None, "name": None}
     assert result["kchat_team_id"] is None
-    profile = manager.get("cylro")
+    profile = manager.get("work")
     assert profile.default_drive_id is None
     assert profile.default_drive_name is None
     assert profile.kchat_team_id is None
@@ -357,7 +357,7 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
 
 def test_bootstrap_non_interactive_requires_account_id_when_multiple_accounts(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
-    manager.create_or_update("cylro", make_default=True)
+    manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
@@ -365,24 +365,24 @@ def test_bootstrap_non_interactive_requires_account_id_when_multiple_accounts(tm
                 "result": "success",
                 "data": [
                     {"id": 1, "name": "Personal"},
-                    {"id": 42, "name": "Cylro SARL-S"},
+                    {"id": 42, "name": "Example Co"},
                 ],
             },
         }
     )
 
     with pytest.raises(BootstrapError) as exc_info:
-        bootstrap_profile("cylro", api, manager=manager, non_interactive=True)
+        bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
     message = str(exc_info.value)
     assert "Multiple accounts found" in message
     assert "1: Personal" in message
-    assert "42: Cylro SARL-S" in message
+    assert "42: Example Co" in message
 
 
 def test_bootstrap_uses_explicit_account_id_when_multiple_accounts(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
-    manager.create_or_update("cylro", make_default=True)
+    manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
             "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
@@ -390,7 +390,7 @@ def test_bootstrap_uses_explicit_account_id_when_multiple_accounts(tmp_path):
                 "result": "success",
                 "data": [
                     {"id": 1, "name": "Personal"},
-                    {"id": 42, "name": "Cylro SARL-S"},
+                    {"id": 42, "name": "Example Co"},
                 ],
             },
             "/1/accounts/42/products": {"result": "success", "data": []},
@@ -399,6 +399,6 @@ def test_bootstrap_uses_explicit_account_id_when_multiple_accounts(tmp_path):
         }
     )
 
-    bootstrap_profile("cylro", api, manager=manager, account_id="42", non_interactive=True)
+    bootstrap_profile("work", api, manager=manager, account_id="42", non_interactive=True)
 
-    assert manager.get("cylro").account_name == "Cylro SARL-S"
+    assert manager.get("work").account_name == "Example Co"

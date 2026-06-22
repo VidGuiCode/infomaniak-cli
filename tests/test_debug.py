@@ -57,7 +57,7 @@ def test_build_probe_candidates_includes_drive_kchat_and_ksuite_paths():
 def test_probe_endpoints_reports_status_and_shape_without_values_or_token():
     token = "secret-token"
     transport = FakeTransport(
-        TransportResponse(status_code=200, text='{"result":"success","data":[{"id":"drive-1","name":"Cylro"}]}'),
+        TransportResponse(status_code=200, text='{"result":"success","data":[{"id":"drive-1","name":"Example Co"}]}'),
         TransportResponse(status_code=404, text='{"result":"error","error":{"message":"secret-token not allowed"}}'),
     )
     client = InformaniakAPIClient(token=token, base_url="https://api.example.test", transport=transport)
@@ -82,22 +82,22 @@ def test_probe_endpoints_reports_status_and_shape_without_values_or_token():
     assert result["results"][1]["status_code"] == 404
     rendered = json.dumps(result)
     assert token not in rendered
-    assert "Cylro" not in rendered
+    assert "Example Co" not in rendered
     assert transport.requests[0]["headers"]["Authorization"] == f"Bearer {token}"
 
 
 def test_cli_debug_probe_json_uses_profile_token_and_does_not_leak_values(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
-    ProfileManager().create_or_update("cylro", account_id="42", make_default=True)
+    ProfileManager().create_or_update("work", account_id="42", make_default=True)
     token = "secret-token"
-    TokenStore().save_token("cylro", token)
+    TokenStore().save_token("work", token)
     fake_client = FakeProbeClient(token)
     monkeypatch.setattr(cli, "_make_api_client", lambda token, base_url: fake_client)
 
     assert cli.main(["debug", "probe", "--json"]) == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output["profile"] == "cylro"
+    assert output["profile"] == "work"
     assert "kChat may require a different host or token" in output["notes"][0]
     assert fake_client.calls == [(candidate["path"], candidate["params"]) for candidate in build_probe_candidates("42")]
     rendered = json.dumps(output)
