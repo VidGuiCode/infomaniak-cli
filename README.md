@@ -76,6 +76,28 @@ ik mail read <uid> --json
 
 Context (profile, account, drive) is sticky — set it once and every command uses it. Use `--profile` to override for a single command.
 
+## Mail setup (read this — it's the tricky part)
+
+Mail works over **IMAP**, which needs a **different password** than the rest of the CLI. This trips
+everyone up, so here is the rule:
+
+> ⚠️ The mail password must be generated at **https://config.infomaniak.com/** (the mail sync
+> assistant / "add a device" flow) — **NOT** the account-level "Application passwords" page in the
+> Manager. The account-level one is rejected for mailbox IMAP with `Invalid login or password`,
+> even though it looks valid.
+
+Then:
+
+```bash
+ik auth mail --mailbox you@example.com --password "<config.infomaniak.com device password>"
+ik mail unread --json
+```
+
+Username is always the **full email address**. If your account has 2FA, this device password is
+the only thing that works for IMAP (a normal login password cannot pass 2FA over IMAP).
+
+Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.md)**.
+
 ## Commands
 
 | Area | Commands |
@@ -155,6 +177,7 @@ See [`context/ROADMAP.md`](context/ROADMAP.md) (private working context) for pla
 
 - [`docs/vision.md`](docs/vision.md) — full product vision and service mapping
 - [`docs/setup-and-profiles.md`](docs/setup-and-profiles.md) — setup/auth/profile flow
+- [`docs/mail-setup.md`](docs/mail-setup.md) — IMAP mail setup (the config.infomaniak.com password trap)
 - [`docs/commands.md`](docs/commands.md) — CLI commands reference
 - [`docs/security.md`](docs/security.md) — safety, secrets, profile separation
 - [`docs/release.md`](docs/release.md) - install and release guidance

@@ -189,7 +189,7 @@ updated_at: "2026-06-21T00:00:00Z"
 Prefer a normal user config location. On Windows:
 
 ```text
-C:/Users/gui/AppData/Roaming/infomaniak-cli/
+C:/Users/<user>/AppData/Roaming/infomaniak-cli/
   config.yaml
   profiles/
     work.yaml
@@ -197,6 +197,8 @@ C:/Users/gui/AppData/Roaming/infomaniak-cli/
   tokens/
     work.token.json
     personal.token.json
+    work.mail
+    personal.mail
 ```
 
 Cross-platform fallback:
