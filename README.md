@@ -74,6 +74,7 @@ ik mail list --days 7 --json
 ik mail unread
 ik mail search "invoice" --days 30 --json
 ik mail read <uid> --json
+ik mail threads --folder Sent --days 7 --json
 ```
 
 Context (profile, account, drive) is sticky — set it once and every command uses it. Use `--profile` to override for a single command.
@@ -109,7 +110,7 @@ Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.m
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
 | kDrive | `drive list` |
-| Mail | `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read` |
+| Mail | `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
 
 Run `ik <command> --help` for full options on any command.
 
@@ -138,6 +139,7 @@ ik mail list --days 7 --json
 ik mail unread --json
 ik mail search "invoice" --days 30 --json
 ik mail read <uid> --json
+ik mail threads --folder Sent --days 7 --json
 ```
 
 Use `--json` for structured output. Use `--raw` for full API payloads. Use `--profile` to target a specific account.

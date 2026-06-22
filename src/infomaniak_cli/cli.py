@@ -457,9 +457,10 @@ def cmd_mail_read(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    folder = getattr(args, "folder", "INBOX")
     try:
         with client:
-            msg = client.fetch_message(args.uid)
+            msg = client.fetch_message(args.uid, folder=folder)
     except MailError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -467,9 +468,10 @@ def cmd_mail_read(args: argparse.Namespace) -> int:
     if args.json:
         if not args.raw:
             msg = slim_message(msg)
-        print_json({"profile": profile.name, "uid": args.uid, "message": msg})
+        print_json({"profile": profile.name, "uid": args.uid, "folder": folder, "message": msg})
     else:
         print(f"UID: {args.uid}")
+        print(f"Folder: {folder}")
         print(f"From: {msg.get('from') or '(unknown)'}")
         print(f"To: {msg.get('to') or '(unknown)'}")
         print(f"Subject: {msg.get('subject') or '(no subject)'}")
@@ -480,6 +482,54 @@ def cmd_mail_read(args: argparse.Namespace) -> int:
             print(preview)
         else:
             print("(no body preview available)")
+    return 0
+
+
+def _slim_thread(thread: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "thread_id": thread["thread_id"],
+        "subject": thread["subject"],
+        "message_count": thread["message_count"],
+        "newest_date": thread["newest_date"],
+        "messages": [slim_message(m) for m in thread["messages"]],
+    }
+
+
+def cmd_mail_threads(args: argparse.Namespace) -> int:
+    try:
+        since, before, on = _resolve_mail_dates(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        profile, client = _mail_profile_and_client(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        with client:
+            threads = client.list_threads(
+                folder=args.folder,
+                limit=args.limit,
+                since=since,
+                before=before,
+                on=on,
+            )
+    except MailError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        output = threads if args.raw else [_slim_thread(t) for t in threads]
+        print_json({"profile": profile.name, "folder": args.folder, "count": len(threads), "threads": output})
+    else:
+        print(f"Threads in {args.folder}: {len(threads)}")
+        for thread in threads:
+            print(f"[{thread['message_count']}] {thread['subject']} (latest UID {thread['newest_uid']})")
+            for item in thread["messages"]:
+                print(f"  {_render_message_line(item)}")
     return 0
 
 
@@ -784,9 +834,20 @@ def build_parser() -> argparse.ArgumentParser:
     mail_search.set_defaults(func=cmd_mail_search)
     mail_read = mail_sub.add_parser("read", help="Read a single message by UID")
     mail_read.add_argument("uid", help="Message UID")
+    mail_read.add_argument("--folder", "-f", default="INBOX", help="Folder containing the message. Defaults to INBOX.")
     mail_read.add_argument("--json", action="store_true")
     mail_read.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_read.set_defaults(func=cmd_mail_read)
+
+    mail_threads = mail_sub.add_parser("threads", help="Group messages into conversation threads")
+    mail_threads.add_argument("--folder", "-f", default="INBOX", help="Folder to list. Defaults to INBOX.")
+    mail_threads.add_argument("--limit", "-n", type=int, help="Maximum number of threads to show.")
+    mail_threads.add_argument("--since", help="Start date (YYYY-MM-DD, inclusive).")
+    mail_threads.add_argument("--before", help="End date (YYYY-MM-DD, exclusive).")
+    mail_threads.add_argument("--days", type=int, help="Convenience: threads with messages since today - N days.")
+    mail_threads.add_argument("--json", action="store_true")
+    mail_threads.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
+    mail_threads.set_defaults(func=cmd_mail_threads)
 
     return parser
 

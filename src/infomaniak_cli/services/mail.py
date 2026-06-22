@@ -127,7 +127,7 @@ class IMAPClient:
         for msg_id in msg_ids:
             typ, data = self._conn.fetch(
                 msg_id,
-                "(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])",
+                "(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])",
             )
             if typ != "OK" or not data or not data[0]:
                 continue
@@ -139,6 +139,43 @@ class IMAPClient:
                 item["seen"] = r"\Seen" in meta.get("flags", [])
                 items.append(item)
         return items
+
+    def list_threads(
+        self,
+        folder: str = "INBOX",
+        limit: int | None = None,
+        since: str | None = None,
+        before: str | None = None,
+        on: str | None = None,
+        days: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Group messages in a folder into conversation threads.
+
+        Threads are determined by following ``In-Reply-To`` and ``References``
+        headers. Results are sorted by newest message first.
+        """
+        if days is not None and since is not None:
+            raise MailError("use either --days or --since, not both")
+        if days is not None:
+            since = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+
+        self._examine(folder)
+        criteria: list[str] = []
+        if since:
+            criteria.extend(["SINCE", _imap_date(since)])
+        if before:
+            criteria.extend(["BEFORE", _imap_date(before)])
+        if on:
+            criteria.extend(["ON", _imap_date(on)])
+        if not criteria:
+            criteria = ["ALL"]
+
+        msg_ids = self._search(criteria)
+        items = self._fetch_headers_and_flags(msg_ids)
+        threads = _build_threads(items)
+        if limit is not None:
+            threads = threads[:limit]
+        return threads
 
     def list_folders(self) -> list[dict[str, Any]]:
         """Return IMAP folders with names, separators, flags, and roles."""
@@ -281,6 +318,8 @@ def _slim_headers(msg: email.message.Message, uid: str | None = None) -> dict[st
         "subject": _decode_header_value(msg.get("Subject")),
         "date": msg.get("Date"),
         "message_id": msg.get("Message-ID"),
+        "in_reply_to": msg.get("In-Reply-To"),
+        "references": _parse_message_id_list(msg.get("References")),
     }
     if uid is not None:
         result["uid"] = uid
@@ -468,3 +507,72 @@ def _parse_folder_list(line: bytes) -> dict[str, Any] | None:
         "flags": flags,
         "role": role,
     }
+
+
+def _parse_message_id_list(value: str | None) -> list[str]:
+    """Split a space-separated Message-ID list header into individual IDs."""
+    if not value:
+        return []
+    return [part.strip() for part in value.split() if part.strip()]
+
+
+class _UnionFind:
+    """Simple union-find for grouping message IDs into threads."""
+
+    def __init__(self) -> None:
+        self.parent: dict[str, str] = {}
+
+    def _ensure(self, x: str) -> None:
+        if x not in self.parent:
+            self.parent[x] = x
+
+    def find(self, x: str) -> str:
+        self._ensure(x)
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])
+        return self.parent[x]
+
+    def union(self, x: str, y: str) -> None:
+        self._ensure(x)
+        self._ensure(y)
+        rx, ry = self.find(x), self.find(y)
+        if rx != ry:
+            self.parent[ry] = rx
+
+
+def _build_threads(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group messages into conversation threads by In-Reply-To/References."""
+    uf = _UnionFind()
+    for item in items:
+        mid = item.get("message_id") or f"uid-{item.get('uid')}"
+        uf.find(mid)
+        in_reply_to = item.get("in_reply_to")
+        if in_reply_to:
+            uf.union(mid, in_reply_to)
+        for ref in item.get("references", []):
+            if ref:
+                uf.union(mid, ref)
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        mid = item.get("message_id") or f"uid-{item.get('uid')}"
+        root = uf.find(mid)
+        groups.setdefault(root, []).append(item)
+
+    threads: list[dict[str, Any]] = []
+    for root, messages in groups.items():
+        messages.sort(key=lambda x: int(x.get("uid", 0)))
+        newest = messages[-1]
+        threads.append(
+            {
+                "thread_id": root,
+                "subject": messages[0].get("subject") or "(no subject)",
+                "message_count": len(messages),
+                "newest_date": newest.get("date"),
+                "newest_uid": newest.get("uid"),
+                "messages": messages,
+            }
+        )
+
+    threads.sort(key=lambda t: int(t.get("newest_uid", 0)), reverse=True)
+    return threads

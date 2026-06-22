@@ -113,10 +113,13 @@ ik mail list --folder Spam --days 5 --json
 ik mail list --since 2026-06-01 --before 2026-06-15 --json
 ik mail unread               # shortcut for ik mail list --unread
 ik mail search "invoice" --days 30 --json
-ik mail read <uid> --json --raw
+ik mail read <uid> --folder Spam --json
+ik mail threads --folder Sent --days 7 --json
 ```
 
 `ik mail list` defaults to the `INBOX` folder and shows both read and unread messages. Each message in JSON output includes a `seen` boolean. `--days N` is a convenience shortcut for `--since` set to `today - N days`.
+
+`ik mail read` also accepts `--folder` so you can read messages from any folder by UID. `ik mail threads` groups messages into conversation threads using `In-Reply-To` and `References` headers.
 
 Later write commands:
 

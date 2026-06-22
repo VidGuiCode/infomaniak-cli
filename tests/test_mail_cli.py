@@ -102,6 +102,24 @@ class FakeIMAP:
             raise MailError(f"Message UID {uid} not found")
         return msg
 
+    def list_threads(self, folder="INBOX", limit=None, since=None, before=None, on=None, days=None):
+        for value in (since, before, on):
+            _validate_iso_date(value)
+        self._select(folder)
+        threads = self.responses.get("list_threads", [])
+        if limit is not None:
+            threads = threads[:limit]
+        self.calls.append((
+            "list_threads",
+            folder,
+            limit,
+            since,
+            before,
+            on,
+            days,
+        ))
+        return threads
+
     def close(self):
         self.calls.append("close")
 
@@ -674,4 +692,263 @@ class TestMailSearchExtended:
         captured = capsys.readouterr()
         assert "use either --days or --since" in captured.err
 
+
+
+
+class TestMailReadFolder:
+    def test_mail_read_default_folder_is_inbox(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "Subject line",
+                    "date": "Mon, 01 Jan 2024",
+                    "body_preview": "Hello world",
+                },
+            },
+        }
+        factory = _fake_imap_factory(fake_responses)
+        seen = []
+
+        def tracking_factory(host, port, username, password, *, imap_factory=None):
+            fake = factory(host, port, username, password, imap_factory=imap_factory)
+            original_fetch = fake.fetch_message
+
+            def tracking_fetch(uid, folder="INBOX"):
+                seen.append(folder)
+                return original_fetch(uid, folder=folder)
+
+            fake.fetch_message = tracking_fetch
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", tracking_factory)
+
+        assert cli.main(["mail", "read", "555", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
+        assert output["uid"] == "555"
+        assert output["folder"] == "INBOX"
+        assert output["message"]["uid"] == "555"
+        assert seen == ["INBOX"]
+
+    def test_mail_read_folder_option_selects_folder(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "Spam item",
+                    "date": "Mon, 01 Jan 2024",
+                    "body_preview": "Spam body",
+                },
+            },
+        }
+        factory = _fake_imap_factory(fake_responses)
+        seen = []
+
+        def tracking_factory(host, port, username, password, *, imap_factory=None):
+            fake = factory(host, port, username, password, imap_factory=imap_factory)
+            original_fetch = fake.fetch_message
+
+            def tracking_fetch(uid, folder="INBOX"):
+                seen.append(folder)
+                return original_fetch(uid, folder=folder)
+
+            fake.fetch_message = tracking_fetch
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", tracking_factory)
+
+        assert cli.main(["mail", "read", "555", "--folder", "Spam", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "Spam"
+        assert output["message"]["subject"] == "Spam item"
+        assert seen == ["Spam"]
+
+    def test_mail_read_human_output_shows_folder(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "Subject line",
+                    "date": "Mon, 01 Jan 2024",
+                    "body_preview": "Hello world",
+                },
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "555", "--folder", "Sent"]) == 0
+
+        out = capsys.readouterr().out
+        assert "Folder: Sent" in out
+        assert "UID: 555" in out
+
+
+
+class TestMailThreads:
+    def test_mail_threads_json_groups_messages(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_threads": [
+                {
+                    "thread_id": "<root@example.com>",
+                    "subject": "Project kickoff",
+                    "message_count": 2,
+                    "newest_date": "Tue, 02 Jan 2024",
+                    "newest_uid": "102",
+                    "messages": [
+                        {"uid": "101", "from": "a@example.com", "subject": "Project kickoff", "date": "Mon, 01 Jan 2024", "seen": True},
+                        {"uid": "102", "from": "b@example.com", "subject": "Re: Project kickoff", "date": "Tue, 02 Jan 2024", "seen": False},
+                    ],
+                },
+                {
+                    "thread_id": "<other@example.com>",
+                    "subject": "Invoice",
+                    "message_count": 1,
+                    "newest_date": "Wed, 03 Jan 2024",
+                    "newest_uid": "103",
+                    "messages": [
+                        {"uid": "103", "from": "c@example.com", "subject": "Invoice", "date": "Wed, 03 Jan 2024", "seen": True},
+                    ],
+                },
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "threads", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "work"
+        assert output["folder"] == "INBOX"
+        assert output["count"] == 2
+        assert len(output["threads"]) == 2
+        assert output["threads"][0]["thread_id"] == "<root@example.com>"
+        assert output["threads"][0]["message_count"] == 2
+        assert output["threads"][0]["messages"][0] == {
+            "uid": "101", "from": "a@example.com", "subject": "Project kickoff",
+            "date": "Mon, 01 Jan 2024", "seen": True,
+        }
+
+    def test_mail_threads_folder_and_days(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_threads": []}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+        monkeypatch.setattr(cli, "_today", lambda: __import__("datetime").date(2026, 6, 22))
+
+        assert cli.main(["mail", "threads", "--folder", "Sent", "--days", "7", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["folder"] == "Sent"
+        assert output["count"] == 0
+
+    def test_mail_threads_limit(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_threads": [
+                {"thread_id": "t1", "subject": "A", "message_count": 1, "newest_date": "Mon", "newest_uid": "2", "messages": []},
+                {"thread_id": "t2", "subject": "B", "message_count": 1, "newest_date": "Mon", "newest_uid": "1", "messages": []},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "threads", "--limit", "1", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["count"] == 1
+
+    def test_mail_threads_raw_includes_full_messages(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_threads": [
+                {
+                    "thread_id": "t1",
+                    "subject": "A",
+                    "message_count": 1,
+                    "newest_date": "Mon",
+                    "newest_uid": "1",
+                    "messages": [
+                        {"uid": "1", "from": "a@example.com", "subject": "A", "date": "Mon", "seen": True, "in_reply_to": "<x@example.com>"},
+                    ],
+                },
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "threads", "--json", "--raw"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert "in_reply_to" in output["threads"][0]["messages"][0]
+
+    def test_mail_threads_human_output(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_threads": [
+                {
+                    "thread_id": "<root@example.com>",
+                    "subject": "Project kickoff",
+                    "message_count": 1,
+                    "newest_date": "Mon, 01 Jan 2024",
+                    "newest_uid": "101",
+                    "messages": [
+                        {"uid": "101", "from": "a@example.com", "subject": "Project kickoff", "date": "Mon, 01 Jan 2024", "seen": True},
+                    ],
+                },
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "threads"]) == 0
+
+        out = capsys.readouterr().out
+        assert "Threads in INBOX: 1" in out
+        assert "Project kickoff" in out
+        assert "101" in out
+
+    def test_mail_threads_days_and_since_errors(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_threads": []}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "threads", "--days", "5", "--since", "2026-06-01", "--json"]) == 2
+
+        captured = capsys.readouterr()
+        assert "use either --days or --since" in captured.err
 

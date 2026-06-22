@@ -87,7 +87,8 @@ ik mail search "query" [--folder/-f <name>] [--limit N] [--unread]
                        [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
                        [--json] [--raw]
 
-ik mail read <uid> [--json] [--raw]
+ik mail read <uid> [--folder/-f <name>] [--json] [--raw]
+ik mail threads [--folder/-f <name>] [--days N] [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--limit/-n N] [--json] [--raw]
 ```
 
 - `--folder` selects any IMAP folder. Default is `INBOX`.
@@ -113,6 +114,9 @@ ik mail list --since 2026-06-01 --before 2026-06-15 --json
 ik mail unread --json
 ik mail search "invoice" --days 30 --json
 ik mail read 123 --json
+ik mail read 123 --folder Spam --json
+ik mail threads --days 7 --json
+ik mail threads --folder Sent --since 2026-06-01 --json
 ```
 
 ## Troubleshooting

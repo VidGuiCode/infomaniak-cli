@@ -78,13 +78,20 @@ def _build_raw_message(
     to_addr: str = "recipient@example.com",
     body: str = "Hello world",
     content_type: str = "text/plain",
+    message_id: str = "<test-msg-123@example.com>",
+    in_reply_to: str | None = None,
+    references: list[str] | None = None,
 ) -> bytes:
     msg = email.message.EmailMessage(policy=email.policy.default)
     msg["Subject"] = subject
     msg["From"] = from_addr
     msg["To"] = to_addr
     msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
-    msg["Message-ID"] = "<test-msg-123@example.com>"
+    msg["Message-ID"] = message_id
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = " ".join(references)
     msg.set_content(body, subtype=content_type.split("/")[1])
     return msg.as_bytes()
 
@@ -115,7 +122,7 @@ class TestIMAPClientConnect:
 def _header_fetch_key(msg_id: str) -> str:
     return (
         f"fetch {msg_id} "
-        f"(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])"
+        f"(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])"
     )
 
 
@@ -498,3 +505,120 @@ class TestSlimMessage:
             "date": "Mon, 01 Jan 2024 12:00:00 +0000",
             "seen": False,
         }
+
+
+class TestIMAPClientListThreads:
+    def test_list_threads_groups_by_in_reply_to(self):
+        root = _build_raw_message(
+            subject="Project kickoff",
+            message_id="<root-1@example.com>",
+            body="First message",
+        )
+        reply1 = _build_raw_message(
+            subject="Re: Project kickoff",
+            message_id="<reply-1@example.com>",
+            in_reply_to="<root-1@example.com>",
+            body="Reply one",
+        )
+        reply2 = _build_raw_message(
+            subject="Re: Project kickoff",
+            message_id="<reply-2@example.com>",
+            in_reply_to="<reply-1@example.com>",
+            body="Reply two",
+        )
+        other = _build_raw_message(
+            subject="Invoice",
+            message_id="<other-1@example.com>",
+            body="Other thread",
+        )
+        fake = FakeIMAP(
+            responses={
+                "ALL": ("OK", [b"1 2 3 4"]),
+                _header_fetch_key("1"): (
+                    "OK",
+                    [(b"1 (UID 101 FLAGS (\\Seen))", root)],
+                ),
+                _header_fetch_key("2"): (
+                    "OK",
+                    [(b"2 (UID 102 FLAGS (\\Seen))", reply1)],
+                ),
+                _header_fetch_key("3"): (
+                    "OK",
+                    [(b"3 (UID 103 FLAGS (\\Seen))", reply2)],
+                ),
+                _header_fetch_key("4"): (
+                    "OK",
+                    [(b"4 (UID 104 FLAGS (\\Seen))", other)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        threads = client.list_threads(folder="INBOX")
+        assert len(threads) == 2
+        by_subject = {t["subject"]: t for t in threads}
+        # Project thread
+        project = by_subject["Project kickoff"]
+        assert project["message_count"] == 3
+        assert project["newest_uid"] == "103"
+        assert [m["uid"] for m in project["messages"]] == ["101", "102", "103"]
+        # Invoice thread
+        invoice = by_subject["Invoice"]
+        assert invoice["message_count"] == 1
+        assert invoice["messages"][0]["uid"] == "104"
+        # Newest thread first
+        assert threads[0]["newest_uid"] == "104"
+
+    def test_list_threads_groups_by_references(self):
+        root = _build_raw_message(
+            subject="Meeting",
+            message_id="<meet-root@example.com>",
+            body="Meeting invite",
+        )
+        reply = _build_raw_message(
+            subject="Re: Meeting",
+            message_id="<meet-reply@example.com>",
+            references=["<meet-root@example.com>"],
+            body="I'll join",
+        )
+        fake = FakeIMAP(
+            responses={
+                "ALL": ("OK", [b"1 2"]),
+                _header_fetch_key("1"): ("OK", [(b"1 (UID 201 FLAGS (\\Seen))", root)]),
+                _header_fetch_key("2"): ("OK", [(b"2 (UID 202 FLAGS (\\Seen))", reply)]),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        threads = client.list_threads(folder="INBOX")
+        assert len(threads) == 1
+        assert threads[0]["message_count"] == 2
+        assert [m["uid"] for m in threads[0]["messages"]] == ["201", "202"]
+
+    def test_list_threads_honors_limit(self):
+        msg1 = _build_raw_message(subject="A", message_id="<a@example.com>")
+        msg2 = _build_raw_message(subject="B", message_id="<b@example.com>")
+        fake = FakeIMAP(
+            responses={
+                "ALL": ("OK", [b"1 2"]),
+                _header_fetch_key("1"): ("OK", [(b"1 (UID 301 FLAGS (\\Seen))", msg1)]),
+                _header_fetch_key("2"): ("OK", [(b"2 (UID 302 FLAGS (\\Seen))", msg2)]),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        threads = client.list_threads(folder="INBOX", limit=1)
+        assert len(threads) == 1
+        assert threads[0]["newest_uid"] == "302"
+
+    def test_list_threads_empty_folder(self):
+        fake = FakeIMAP(responses={"ALL": ("OK", [b""])})
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        threads = client.list_threads(folder="Archive")
+        assert threads == []
+
