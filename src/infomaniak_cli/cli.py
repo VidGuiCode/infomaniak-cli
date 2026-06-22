@@ -9,12 +9,20 @@ from typing import Any, Mapping
 from . import __version__
 from . import update as update_module
 from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError
-from .auth import MailPasswordStore, TokenStore
+from .auth import ContactsPasswordStore, MailPasswordStore, TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .debug import probe_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
 from .services.account import list_accounts, list_products, list_services, slim_accounts
+from .services.contacts import (
+    ContactError,
+    ContactsClient,
+    find_contact,
+    search_contacts,
+    slim_contact,
+    slim_contacts,
+)
 from .services.drive import (
     build_folder_tree,
     find_file,
@@ -92,6 +100,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "default_mailbox": profile.default_mailbox,
         "default_drive_id": profile.default_drive_id,
         "default_drive_name": profile.default_drive_name,
+        "contacts_url": profile.contacts_url,
+        "contacts_username": profile.contacts_username,
         "kchat_team_id": profile.kchat_team_id,
     }
     if args.json:
@@ -102,6 +112,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         print(f"Account: {profile.account_name or profile.account_id or 'not selected'}")
         print(f"Default mailbox: {profile.default_mailbox or 'not selected'}")
         print(f"Default kDrive: {profile.default_drive_name or profile.default_drive_id or 'not selected'}")
+        print(f"Contacts: {profile.contacts_username or profile.contacts_url or 'not selected'}")
         print(f"kChat team: {profile.kchat_team_id or 'not selected'}")
     return 0
 
@@ -380,6 +391,37 @@ def cmd_auth_mail(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auth_contacts(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        print("No profile selected.", file=sys.stderr)
+        return 1
+    if args.stdin and args.password:
+        print("error: use either --password or --stdin, not both", file=sys.stderr)
+        return 2
+
+    profile = manager.get(name)
+    contacts_url = (args.url or profile.contacts_url or "").strip()
+    contacts_username = (args.username or profile.contacts_username or "").strip()
+    if not contacts_url:
+        print("error: --url is required the first time contacts are configured", file=sys.stderr)
+        return 2
+    if not contacts_username:
+        print("error: --username is required the first time contacts are configured", file=sys.stderr)
+        return 2
+
+    if args.stdin:
+        password = sys.stdin.read().strip()
+    else:
+        password = args.password.strip() if args.password else input("Contacts CardDAV password: ").strip()
+    ContactsPasswordStore().save_password(name, password)
+    manager.create_or_update(name, contacts_url=contacts_url, contacts_username=contacts_username)
+
+    print(f"Contacts password saved for profile: {name}")
+    return 0
+
+
 def _mail_profile_or_error(args: argparse.Namespace) -> tuple[Any, str, str, str]:
     """Resolve profile and return (profile, host, port, username, password).
 
@@ -419,6 +461,29 @@ def _mail_client(args: argparse.Namespace) -> IMAPClient:
 def _mail_profile_and_client(args: argparse.Namespace) -> tuple[Any, IMAPClient]:
     profile, host, port, mailbox, password = _mail_profile_or_error(args)
     return profile, IMAPClient(host, port, mailbox, password)
+
+
+def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, ContactsClient]:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        raise ValueError("No profile configured. Run `ik setup --profile <name>` first.")
+
+    profile = manager.get(name)
+    if not profile.contacts_url or not profile.contacts_username:
+        raise ValueError(
+            f"No contacts configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth contacts --url <carddav-url> --username <email>` first."
+        )
+
+    contacts_store = ContactsPasswordStore()
+    if not contacts_store.has_password(name):
+        raise ValueError(
+            f"No contacts password configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth contacts --url <carddav-url> --username <email>` first."
+        )
+
+    return profile, ContactsClient(profile.contacts_url, profile.contacts_username, contacts_store.load_password(name))
 
 
 def _today() -> datetime.date:
@@ -751,6 +816,15 @@ def _display_drive_tree(tree: list[Mapping[str, Any]], *, level: int = 0) -> lis
     return lines
 
 
+def _display_contact(contact: Mapping[str, Any]) -> str:
+    contact_id = contact.get("id") or "-"
+    name = contact.get("display_name") or "unnamed"
+    emails = contact.get("emails") or []
+    email = emails[0] if isinstance(emails, list) and emails else ""
+    organization = contact.get("organization") or ""
+    return f"{contact_id}\t{name}\t{email}\t{organization}"
+
+
 def _drive_404_error(drive_id: str) -> ValueError:
     path = f"/2/drive/{drive_id}/files"
     return ValueError(
@@ -979,6 +1053,73 @@ def cmd_drive_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_contacts_list(args: argparse.Namespace) -> int:
+    profile, client = _contacts_profile_and_client(args)
+    contacts = client.list_contacts(limit=args.limit)
+
+    if args.json:
+        output_contacts = contacts if args.raw else slim_contacts(contacts)
+        print_json({"profile": profile.name, "count": len(contacts), "contacts": output_contacts})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Contacts: {len(contacts)}")
+        if not contacts:
+            print("No contacts found.")
+        for contact in contacts:
+            print(_display_contact(contact))
+    return 0
+
+
+def cmd_contacts_search(args: argparse.Namespace) -> int:
+    profile, client = _contacts_profile_and_client(args)
+    contacts = search_contacts(client.list_contacts(), args.query, limit=args.limit)
+
+    if args.json:
+        output_contacts = contacts if args.raw else slim_contacts(contacts)
+        print_json(
+            {
+                "profile": profile.name,
+                "query": args.query,
+                "count": len(contacts),
+                "contacts": output_contacts,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Query: {args.query}")
+        print(f"Contacts: {len(contacts)}")
+        if not contacts:
+            print("No matching contacts found.")
+        for contact in contacts:
+            print(_display_contact(contact))
+    return 0
+
+
+def cmd_contacts_show(args: argparse.Namespace) -> int:
+    profile, client = _contacts_profile_and_client(args)
+    contact = find_contact(client.list_contacts(), args.contact_id)
+    if contact is None:
+        raise ValueError(f"Contact not found: {args.contact_id}")
+
+    output_contact = contact if args.raw else slim_contact(contact)
+    if args.json:
+        print_json({"profile": profile.name, "contact_id": args.contact_id, "contact": output_contact})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Contact ID: {args.contact_id}")
+        print(f"Name: {output_contact.get('display_name') or 'unnamed'}")
+        emails = output_contact.get("emails") or []
+        if emails:
+            print(f"Email: {emails[0]}")
+        phones = output_contact.get("phones") or []
+        if phones:
+            print(f"Phone: {phones[0]}")
+        organization = output_contact.get("organization")
+        if organization:
+            print(f"Organization: {organization}")
+    return 0
+
+
 def cmd_debug_probe(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     result = probe_profile(profile.name, profile.account_id, client)
@@ -1124,6 +1265,12 @@ def build_parser() -> argparse.ArgumentParser:
     auth_mail.add_argument("--imap-host", help="IMAP server host. Defaults to mail.infomaniak.com.")
     auth_mail.add_argument("--imap-port", type=int, help="IMAP server port. Defaults to 993.")
     auth_mail.set_defaults(func=cmd_auth_mail)
+    auth_contacts = auth_sub.add_parser("contacts", help="Store CardDAV contacts credentials for a profile")
+    auth_contacts.add_argument("--url", help="CardDAV address-book collection URL.")
+    auth_contacts.add_argument("--username", help="CardDAV username, usually the full email address.")
+    auth_contacts.add_argument("--password", help="CardDAV password. Omit to prompt.")
+    auth_contacts.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
+    auth_contacts.set_defaults(func=cmd_auth_contacts)
 
     mail = sub.add_parser("mail", help="Read-only IMAP mail commands")
     mail_sub = mail.add_subparsers(dest="mail_command", required=True)
@@ -1186,6 +1333,25 @@ def build_parser() -> argparse.ArgumentParser:
     mail_threads.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_threads.set_defaults(func=cmd_mail_threads)
 
+    contacts = sub.add_parser("contacts", help="Read-only CardDAV contacts commands")
+    contacts_sub = contacts.add_subparsers(dest="contacts_command", required=True)
+    contacts_list = contacts_sub.add_parser("list", help="List contacts")
+    contacts_list.add_argument("--limit", type=int, help="Maximum contacts to fetch.")
+    contacts_list.add_argument("--json", action="store_true")
+    contacts_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw contact payload.")
+    contacts_list.set_defaults(func=cmd_contacts_list)
+    contacts_search = contacts_sub.add_parser("search", help="Search contacts by name, email, phone, or organization")
+    contacts_search.add_argument("query", help="Case-insensitive contact search query.")
+    contacts_search.add_argument("--limit", type=int, help="Maximum matching contacts to show.")
+    contacts_search.add_argument("--json", action="store_true")
+    contacts_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw contact payload.")
+    contacts_search.set_defaults(func=cmd_contacts_search)
+    contacts_show = contacts_sub.add_parser("show", help="Show one contact by ID")
+    contacts_show.add_argument("contact_id", help="Contact ID.")
+    contacts_show.add_argument("--json", action="store_true")
+    contacts_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw contact payload.")
+    contacts_show.set_defaults(func=cmd_contacts_show)
+
     return parser
 
 
@@ -1194,7 +1360,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (BootstrapError, InformaniakAPIError, KeyError, MailError, ValueError) as exc:
+    except (BootstrapError, ContactError, InformaniakAPIError, KeyError, MailError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

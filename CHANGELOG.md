@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.5 - Read-only Contacts
+
+- Added explicit CardDAV contacts setup with `ik auth contacts`.
+- Added read-only contacts commands: `contacts list`, `contacts search`, and `contacts show`.
+- Added stable slim JSON output with `--raw` for full parsed contact payloads.
+- Kept Contacts operations read-only; no create, update, delete, import, bulk export, or sync write behavior.
+- Deferred contact groups until address-book/group discovery is confirmed cleanly.
+
 ## v0.1.4 - Read-only kDrive browsing
 
 - Added `ik drive folders` to list folders from the confirmed kDrive files endpoint.

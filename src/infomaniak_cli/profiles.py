@@ -26,6 +26,8 @@ class Profile:
     imap_port: int | None = None
     default_drive_id: str | None = None
     default_drive_name: str | None = None
+    contacts_url: str | None = None
+    contacts_username: str | None = None
     kchat_team_id: str | None = None
     created_at: str = ""
     updated_at: str = ""

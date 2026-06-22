@@ -70,9 +70,12 @@ ik auth login --new-profile personal
 ik auth status
 ik auth logout
 ik auth refresh
+ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
 ```
 
 `auth login` should route to setup if needed.
+
+`auth contacts` stores explicit CardDAV contacts credentials. It does not reuse mail credentials automatically.
 
 ## Account / environment discovery
 
@@ -166,7 +169,7 @@ ik drive info <file_id>
 
 `ik drive search <query>` is currently implemented by listing files and filtering by file/folder name client-side because no separate search endpoint has been confirmed. `ik drive info <file_id>` is currently implemented by finding the item in the list endpoint response because no single-file metadata endpoint has been confirmed.
 
-Not implemented in v0.1.4: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
+Not implemented in v0.1.5: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
 
 ## kChat
 
@@ -190,15 +193,34 @@ ik meet settings <room_id>
 
 Lower priority.
 
-## Calendar / Contacts
+## Contacts
+
+Read-only commands:
+
+```bash
+ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
+
+ik contacts list
+ik contacts list --limit 50 --json
+ik contacts search "accountant"
+ik contacts search "example.com" --json
+ik contacts show <contact_id> --json
+ik contacts show <contact_id> --json --raw
+```
+
+`ik contacts list`, `ik contacts search`, and `ik contacts show` use a configured CardDAV address-book collection URL. JSON output defaults to a stable slim contact schema. Add `--raw` with `--json` to include the full parsed contact payload, including the raw vCard text when available.
+
+Search is client-side and matches available name, email, phone, and organization fields case-insensitively.
+
+Not implemented in v0.1.5: contact create, update, delete, import, bulk export, sync writes, or groups. `contacts groups` is deferred until address-book/group discovery is confirmed cleanly.
+
+## Calendar
 
 Later via CalDAV/CardDAV:
 
 ```bash
 ik calendar today
 ik calendar upcoming --days 14
-ik contacts search "accountant"
-ik contacts show <contact_id>
 ```
 
 ## Output modes

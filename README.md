@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.4-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.5-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -65,6 +65,7 @@ ik auth token
 # paste your Informaniak Manager personal API token
 
 ik auth mail --mailbox user@example.com --password <app-password>
+ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
 
 ik whoami
 ik doctor
@@ -88,6 +89,10 @@ ik mail unread
 ik mail search "invoice" --days 30 --json
 ik mail read <uid> --json
 ik mail threads --folder Sent --days 7 --json
+
+ik contacts list --json
+ik contacts search "accountant" --json
+ik contacts show <contact_id> --json
 ```
 
 Context (profile, account, drive) is sticky — set it once and every command uses it. Use `--profile` to override for a single command.
@@ -107,17 +112,29 @@ Use the full email address as the mailbox username.
 
 Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.md)**.
 
+## Contacts setup
+
+Contacts use CardDAV. Configure an address-book collection URL and contacts credentials explicitly:
+
+```bash
+ik auth contacts --url "<carddav-address-book-url>" --username you@example.com --password "<carddav-password>"
+ik contacts list --json
+```
+
+The CLI does not reuse mail credentials automatically.
+
 ## Commands
 
 | Area | Commands |
 |------|----------|
 | Setup | `setup`, `whoami`, `doctor` |
 | Update | `update` |
-| Auth | `auth token`, `auth check`, `auth status`, `auth mail` |
+| Auth | `auth token`, `auth check`, `auth status`, `auth mail`, `auth contacts` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
 | kDrive | `drive list`, `drive folders`, `drive tree`, `drive search`, `drive info` |
 | Mail | `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
+| Contacts | `contacts list`, `contacts search`, `contacts show` |
 
 Run `ik <command> --help` for full options on any command.
 
@@ -151,6 +168,10 @@ ik mail unread --folder INBOX --days 7 --json
 ik mail search "invoice" --days 30 --json
 ik mail read <uid> --json --raw
 ik mail threads --folder Sent --days 7 --json
+
+ik contacts list --json
+ik contacts search "accountant" --json
+ik contacts show <contact_id> --json
 ```
 
 Use `--json` for structured output. Use `--raw` for full API/message payloads, including `body_preview` on `mail read`. Use `--profile` to target a specific account.

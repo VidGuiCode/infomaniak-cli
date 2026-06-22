@@ -4,7 +4,7 @@ import sys
 
 from infomaniak_cli import cli
 from infomaniak_cli.api import InformaniakAPIError
-from infomaniak_cli.auth import TokenStore
+from infomaniak_cli.auth import ContactsPasswordStore, TokenStore
 from infomaniak_cli.profiles import ProfileManager
 
 
@@ -44,6 +44,44 @@ def test_auth_token_argument_still_saves_token(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "argument-token" not in captured.out
     assert TokenStore().load_token("work") == "argument-token"
+
+
+def test_auth_contacts_stdin_saves_password_and_metadata_without_echo(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    password = "secret-contacts-password"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {password}\n\n"))
+
+    assert cli.main(
+        [
+            "auth",
+            "contacts",
+            "--url",
+            "https://sync.example.test/addressbooks/user/default/",
+            "--username",
+            "user@example.com",
+            "--stdin",
+        ]
+    ) == 0
+
+    captured = capsys.readouterr()
+    assert password not in captured.out
+    assert password not in captured.err
+    assert ContactsPasswordStore().load_password("work") == password
+    profile = ProfileManager().get("work")
+    assert profile.contacts_url == "https://sync.example.test/addressbooks/user/default/"
+    assert profile.contacts_username == "user@example.com"
+
+
+def test_auth_contacts_requires_url_and_username_first_time(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+
+    assert cli.main(["auth", "contacts", "--password", "pw"]) == 2
+
+    captured = capsys.readouterr()
+    assert "--url is required" in captured.err
+    assert not ContactsPasswordStore().has_password("work")
 
 
 def test_auth_check_json_uses_token_base_url_and_resolves_user(tmp_path, monkeypatch, capsys):
