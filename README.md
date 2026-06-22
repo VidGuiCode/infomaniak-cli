@@ -17,7 +17,7 @@ Requires Python 3.11+.
 Recommended global install with [pipx](https://pipx.pypa.io/):
 
 ```bash
-pipx install infomaniak-cli
+pipx install infomaniak-cli --backend pip
 ik version
 ```
 
@@ -37,7 +37,7 @@ pip install infomaniak-cli
 Install directly from GitHub:
 
 ```bash
-pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git
+pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git --backend pip
 ```
 
 For development:

@@ -128,7 +128,7 @@ def build_update_plan(current_version: str, release: ReleaseInfo, *, install_met
 
     if update_available and release.wheel_url:
         if method == "pipx":
-            command = ["pipx", "install", "--force", release.wheel_url]
+            command = ["pipx", "runpip", "infomaniak-cli", "install", "--force-reinstall", release.wheel_url]
             can_auto_update = True
         elif method == "uv_tool":
             command = ["uv", "tool", "install", "--force", release.wheel_url]
@@ -137,7 +137,7 @@ def build_update_plan(current_version: str, release: ReleaseInfo, *, install_met
             command = [sys.executable, "-m", "pip", "install", "--force-reinstall", release.wheel_url]
             can_auto_update = True
         elif method == "unknown":
-            command = ["pipx", "install", "--force", release.wheel_url]
+            command = ["pipx", "install", "--force", "--backend", "pip", release.wheel_url]
         elif method == "source":
             instructions = ["git pull", "uv sync"]
     elif update_available and method == "source":
@@ -158,6 +158,18 @@ def build_update_plan(current_version: str, release: ReleaseInfo, *, install_met
 
 def run_update_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, capture_output=True, check=False)
+
+
+def update_failure_hint(command: list[str], stderr: str) -> str | None:
+    if not command or command[0] != "pipx":
+        return None
+    lowered = stderr.lower()
+    if "virtual environment already exists" in lowered or "uv venv" in lowered:
+        return (
+            "pipx failed while trying to create an existing venv through its uv backend. "
+            "Manual recovery: pipx runpip infomaniak-cli install --force-reinstall <wheel_url>"
+        )
+    return None
 
 
 def _find_wheel_url(assets: Any, version: str) -> str | None:

@@ -9,7 +9,7 @@ This is different from `plane-cli`: `plane-cli` is developed as a Bun/TypeScript
 Use `pipx` for a global CLI install:
 
 ```bash
-pipx install infomaniak-cli
+pipx install infomaniak-cli --backend pip
 ik version
 ```
 
@@ -40,13 +40,13 @@ pip install infomaniak-cli
 For unreleased code:
 
 ```bash
-pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git
+pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git --backend pip
 ```
 
 For a GitHub release wheel:
 
 ```bash
-pipx install https://github.com/VidGuiCode/infomaniak-cli/releases/download/v0.1.4/infomaniak_cli-0.1.4-py3-none-any.whl
+pipx install https://github.com/VidGuiCode/infomaniak-cli/releases/download/v0.1.4/infomaniak_cli-0.1.4-py3-none-any.whl --backend pip
 ```
 
 ## Upgrade
@@ -114,7 +114,7 @@ Before publishing, verify the built package in a clean install environment:
 
 ```bash
 uv build
-pipx install --force dist/infomaniak_cli-0.1.4-py3-none-any.whl
+pipx install --force --backend pip dist/infomaniak_cli-0.1.4-py3-none-any.whl
 ik version
 ik --help
 ik setup --profile test --non-interactive

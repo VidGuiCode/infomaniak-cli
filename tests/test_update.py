@@ -119,7 +119,23 @@ def test_build_update_plan_for_unknown_prints_safe_fallback_command():
     assert plan.update_available is True
     assert plan.install_method == "unknown"
     assert plan.can_auto_update is False
-    assert plan.command == ["pipx", "install", "--force", release.wheel_url]
+    assert plan.command == ["pipx", "install", "--force", "--backend", "pip", release.wheel_url]
+
+
+def test_build_update_plan_for_pipx_updates_existing_venv_with_runpip():
+    release = parse_latest_release(_release_payload("0.1.3"))
+
+    plan = build_update_plan("0.1.2", release, install_method="pipx")
+
+    assert plan.can_auto_update is True
+    assert plan.command == [
+        "pipx",
+        "runpip",
+        "infomaniak-cli",
+        "install",
+        "--force-reinstall",
+        release.wheel_url,
+    ]
 
 
 def test_build_update_plan_for_source_does_not_auto_update():
@@ -169,7 +185,7 @@ def test_cli_update_dry_run_shows_command_but_does_not_run(monkeypatch, capsys):
     assert cli.main(["update", "--dry-run"]) == 0
 
     out = capsys.readouterr().out
-    assert "Would run: pipx install --force" in out
+    assert "Would run: pipx runpip infomaniak-cli install --force-reinstall" in out
     assert "Update now?" not in out
 
 
@@ -188,7 +204,7 @@ def test_cli_update_json_returns_shape_and_does_not_prompt(monkeypatch, capsys):
     assert output["update_available"] is True
     assert output["install_method"] == "pipx"
     assert output["can_auto_update"] is True
-    assert output["command"][0:3] == ["pipx", "install", "--force"]
+    assert output["command"][0:5] == ["pipx", "runpip", "infomaniak-cli", "install", "--force-reinstall"]
 
 
 def test_cli_update_json_yes_runs_supported_updater_and_stays_json(monkeypatch, capsys):
@@ -235,8 +251,30 @@ def test_cli_update_yes_runs_supported_updater(monkeypatch, capsys):
     assert cli.main(["update", "--yes"]) == 0
 
     assert calls
-    assert calls[0][0:3] == ["pipx", "install", "--force"]
-    assert "Running: pipx install --force" in capsys.readouterr().out
+    assert calls[0][0:5] == ["pipx", "runpip", "infomaniak-cli", "install", "--force-reinstall"]
+    assert "Running: pipx runpip infomaniak-cli install --force-reinstall" in capsys.readouterr().out
+
+
+def test_cli_update_pipx_uv_backend_failure_prints_recovery_hint(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "__version__", "0.1.2")
+    monkeypatch.setattr(cli.update_module, "fetch_latest_release", lambda: parse_latest_release(_release_payload("0.1.3")))
+    monkeypatch.setattr(cli.update_module, "detect_install_method", lambda: "pipx")
+
+    def fake_run(command):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="error: Failed to create virtual environment\nCaused by: A virtual environment already exists",
+        )
+
+    monkeypatch.setattr(cli.update_module, "run_update_command", fake_run)
+
+    assert cli.main(["update", "--yes"]) == 1
+
+    captured = capsys.readouterr()
+    assert "updater command failed" in captured.err
+    assert "Manual recovery: pipx runpip infomaniak-cli install --force-reinstall <wheel_url>" in captured.err
 
 
 def test_cli_update_source_checkout_does_not_auto_run(monkeypatch, capsys):
@@ -262,7 +300,7 @@ def test_cli_update_unknown_install_method_prints_fallback(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "Install method could not be detected" in out
-    assert "pipx install --force" in out
+    assert "pipx install --force --backend pip" in out
 
 
 def test_cli_update_missing_wheel_asset_prints_clean_message(monkeypatch, capsys):

@@ -213,6 +213,9 @@ def _run_update_plan(plan: update_module.UpdatePlan) -> int:
         print(result.stderr.rstrip(), file=sys.stderr)
     if result.returncode != 0:
         print(f"error: updater command failed with exit code {result.returncode}", file=sys.stderr)
+        hint = update_module.update_failure_hint(plan.command, result.stderr)
+        if hint:
+            print(hint, file=sys.stderr)
         return result.returncode
     return 0
 
@@ -227,6 +230,9 @@ def _run_update_plan_json(plan: update_module.UpdatePlan) -> tuple[int, dict[str
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
+    hint = update_module.update_failure_hint(plan.command, result.stderr)
+    if hint:
+        payload["hint"] = hint
     return result.returncode, payload
 
 
