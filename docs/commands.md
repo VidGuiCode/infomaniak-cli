@@ -150,15 +150,23 @@ Read-only commands:
 ```bash
 ik drive list
 ik drive list --parent <folder_id> --limit 20 --json
+ik drive folders
+ik drive folders --parent <folder_id> --limit 20 --json
+ik drive tree
+ik drive tree --depth 2 --limit 20 --json
 ik drive search "RCS"
 ik drive info <file_id>
 ```
 
 `ik drive list` uses the selected profile's default kDrive ID and calls `GET /2/drive/{drive_id}/files`. Use `--drive-id <id>` to override the profile default. `--parent <folder_id>` is passed to the same endpoint as `parent_id`.
 
+`ik drive folders` uses the same files endpoint and filters the returned items to folders/directories only. It supports `--drive-id`, `--parent`, `--limit`, `--json`, and `--raw`.
+
+`ik drive tree` builds a shallow read-only folder tree from repeated files endpoint calls with `parent_id` filtering. It defaults to `--depth 2`; use lower depth for cheaper checks. `--limit` applies per folder request.
+
 `ik drive search <query>` is currently implemented by listing files and filtering by file/folder name client-side because no separate search endpoint has been confirmed. `ik drive info <file_id>` is currently implemented by finding the item in the list endpoint response because no single-file metadata endpoint has been confirmed.
 
-Not implemented in v0.1.2: download, upload, move, delete, share changes, recursive sync, or any write behavior.
+Not implemented in v0.1.4: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
 
 ## kChat
 

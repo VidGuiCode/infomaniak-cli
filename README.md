@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.3-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.4-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -77,6 +77,8 @@ ik account services
 ik drive list
 ik drive list --json
 ik drive list --json --raw
+ik drive folders --json
+ik drive tree --depth 2 --json
 ik drive search "invoice" --json
 ik drive info <file_id> --json
 
@@ -90,15 +92,9 @@ ik mail threads --folder Sent --days 7 --json
 
 Context (profile, account, drive) is sticky — set it once and every command uses it. Use `--profile` to override for a single command.
 
-## Mail setup (read this — it's the tricky part)
+## Mail setup
 
-Mail works over **IMAP**, which needs a **different password** than the rest of the CLI. This trips
-everyone up, so here is the rule:
-
-> ⚠️ The mail password must be generated at **https://config.infomaniak.com/** (the mail sync
-> assistant / "add a device" flow) — **NOT** the account-level "Application passwords" page in the
-> Manager. The account-level one is rejected for mailbox IMAP with `Invalid login or password`,
-> even though it looks valid.
+Mail works over IMAP. Go to **https://config.infomaniak.com/**, use the **add a device** flow for your mailbox, and copy the generated credentials into the CLI.
 
 Then:
 
@@ -107,8 +103,7 @@ ik auth mail --mailbox you@example.com --password "<config.infomaniak.com device
 ik mail unread --json
 ```
 
-Username is always the **full email address**. If your account has 2FA, this device password is
-the only thing that works for IMAP (a normal login password cannot pass 2FA over IMAP).
+Use the full email address as the mailbox username.
 
 Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.md)**.
 
@@ -121,7 +116,7 @@ Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.m
 | Auth | `auth token`, `auth check`, `auth status`, `auth mail` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
-| kDrive | `drive list`, `drive search`, `drive info` |
+| kDrive | `drive list`, `drive folders`, `drive tree`, `drive search`, `drive info` |
 | Mail | `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
 
 Run `ik <command> --help` for full options on any command.
@@ -145,6 +140,8 @@ ik account services --json
 # 3. Use services
 ik drive list --json
 ik drive list --json --raw
+ik drive folders --json
+ik drive tree --depth 2 --json
 ik drive search "invoice" --json
 ik drive info <file_id> --json
 
@@ -197,7 +194,7 @@ See [`context/ROADMAP.md`](context/ROADMAP.md) (private working context) for pla
 
 - [`docs/vision.md`](docs/vision.md) — full product vision and service mapping
 - [`docs/setup-and-profiles.md`](docs/setup-and-profiles.md) — setup/auth/profile flow
-- [`docs/mail-setup.md`](docs/mail-setup.md) — IMAP mail setup (the config.infomaniak.com password trap)
+- [`docs/mail-setup.md`](docs/mail-setup.md) — IMAP mail setup with config.infomaniak.com device credentials
 - [`docs/commands.md`](docs/commands.md) — CLI commands reference
 - [`docs/security.md`](docs/security.md) — safety, secrets, profile separation
 - [`docs/release.md`](docs/release.md) - install and release guidance

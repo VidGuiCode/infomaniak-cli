@@ -52,6 +52,40 @@ def find_file(api: Any, drive_id: str, file_id: str) -> Mapping[str, Any] | None
     return None
 
 
+def list_folders(
+    api: Any,
+    drive_id: str,
+    *,
+    parent_id: str | None = None,
+    limit: int | None = None,
+) -> list[Mapping[str, Any]]:
+    return [file_item for file_item in list_files(api, drive_id, parent_id=parent_id, limit=limit) if is_folder(file_item)]
+
+
+def build_folder_tree(
+    api: Any,
+    drive_id: str,
+    *,
+    parent_id: str | None = None,
+    depth: int = 2,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    if depth < 1:
+        raise DriveError("--depth must be at least 1")
+    folders = list_folders(api, drive_id, parent_id=parent_id, limit=limit)
+    return [
+        {
+            "folder": dict(folder),
+            "children": (
+                build_folder_tree(api, drive_id, parent_id=str(folder["id"]), depth=depth - 1, limit=limit)
+                if depth > 1 and folder.get("id") is not None
+                else []
+            ),
+        }
+        for folder in folders
+    ]
+
+
 def slim_file(file_item: Mapping[str, Any], *, drive_id: str | None = None) -> dict[str, Any]:
     return {
         "id": _string_or_none(file_item.get("id")),
@@ -72,6 +106,29 @@ def slim_file(file_item: Mapping[str, Any], *, drive_id: str | None = None) -> d
 
 def slim_files(files: list[Mapping[str, Any]], *, drive_id: str | None = None) -> list[dict[str, Any]]:
     return [slim_file(file_item, drive_id=drive_id) for file_item in files]
+
+
+def slim_folder_tree(tree: list[Mapping[str, Any]], *, drive_id: str | None = None) -> list[dict[str, Any]]:
+    slim_tree: list[dict[str, Any]] = []
+    for node in tree:
+        folder = node.get("folder")
+        if not isinstance(folder, Mapping):
+            continue
+        children = node.get("children")
+        slim_tree.append(
+            {
+                "folder": slim_file(folder, drive_id=drive_id),
+                "children": slim_folder_tree(children if isinstance(children, list) else [], drive_id=drive_id),
+            }
+        )
+    return slim_tree
+
+
+def is_folder(file_item: Mapping[str, Any]) -> bool:
+    file_type = _file_type(file_item)
+    if file_type is None:
+        return False
+    return file_type.casefold() in {"dir", "directory", "folder"}
 
 
 def _file_items(payload: Any) -> list[Mapping[str, Any]]:

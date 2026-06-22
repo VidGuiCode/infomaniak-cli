@@ -15,7 +15,16 @@ from .debug import probe_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
 from .services.account import list_accounts, list_products, list_services, slim_accounts
-from .services.drive import find_file, list_files, search_files, slim_file, slim_files
+from .services.drive import (
+    build_folder_tree,
+    find_file,
+    list_files,
+    list_folders,
+    search_files,
+    slim_file,
+    slim_files,
+    slim_folder_tree,
+)
 from .services.mail import IMAPClient, MailError, slim_message
 
 
@@ -720,6 +729,22 @@ def _display_drive_item(item: Mapping[str, Any]) -> str:
     return f"{item_type}\t{item_id}\t{modified}\t{name}"
 
 
+def _display_drive_tree(tree: list[Mapping[str, Any]], *, level: int = 0) -> list[str]:
+    lines: list[str] = []
+    prefix = "  " * level
+    for node in tree:
+        folder = node.get("folder")
+        if not isinstance(folder, Mapping):
+            continue
+        item_id = folder.get("id") or "-"
+        name = folder.get("name") or folder.get("display_name") or "unnamed"
+        lines.append(f"{prefix}{item_id}\t{name}")
+        children = node.get("children")
+        if isinstance(children, list):
+            lines.extend(_display_drive_tree(children, level=level + 1))
+    return lines
+
+
 def _drive_404_error(drive_id: str) -> ValueError:
     path = f"/2/drive/{drive_id}/files"
     return ValueError(
@@ -806,6 +831,76 @@ def cmd_drive_list(args: argparse.Namespace) -> int:
             print("No files found.")
         for file_item in files:
             print(_display_drive_item(file_item))
+    return 0
+
+
+def cmd_drive_folders(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    try:
+        folders = list_folders(client, drive_id, parent_id=args.parent_id, limit=args.limit)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise _drive_404_error(drive_id) from exc
+        raise
+
+    if args.json:
+        output_folders = folders if args.raw else slim_files(folders, drive_id=drive_id)
+        print_json(
+            {
+                "profile": profile.name,
+                "drive_id": drive_id,
+                "parent_id": args.parent_id,
+                "count": len(folders),
+                "folders": output_folders,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        if args.parent_id:
+            print(f"Parent ID: {args.parent_id}")
+        print(f"Folders: {len(folders)}")
+        if not folders:
+            print("No folders found.")
+        for folder in folders:
+            print(_display_drive_item(folder))
+    return 0
+
+
+def cmd_drive_tree(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    try:
+        tree = build_folder_tree(client, drive_id, parent_id=args.parent_id, depth=args.depth, limit=args.limit)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise _drive_404_error(drive_id) from exc
+        raise
+
+    if args.json:
+        output_tree = tree if args.raw else slim_folder_tree(tree, drive_id=drive_id)
+        print_json(
+            {
+                "profile": profile.name,
+                "drive_id": drive_id,
+                "parent_id": args.parent_id,
+                "depth": args.depth,
+                "count": len(tree),
+                "tree": output_tree,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        if args.parent_id:
+            print(f"Parent ID: {args.parent_id}")
+        print(f"Depth: {args.depth}")
+        print(f"Folders: {len(tree)}")
+        if not tree:
+            print("No folders found.")
+        for line in _display_drive_tree(tree):
+            print(line)
     return 0
 
 
@@ -947,6 +1042,21 @@ def build_parser() -> argparse.ArgumentParser:
     drive_list.add_argument("--json", action="store_true")
     drive_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
     drive_list.set_defaults(func=cmd_drive_list)
+    drive_folders = drive_sub.add_parser("folders", help="List kDrive folders")
+    drive_folders.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_folders.add_argument("--parent", "--path", dest="parent_id", help="Folder/parent ID to list.")
+    drive_folders.add_argument("--limit", type=int, help="Maximum number of items to request from the files endpoint.")
+    drive_folders.add_argument("--json", action="store_true")
+    drive_folders.add_argument("--raw", action="store_true", help="With --json, emit the full raw folder payload.")
+    drive_folders.set_defaults(func=cmd_drive_folders)
+    drive_tree = drive_sub.add_parser("tree", help="Show a shallow read-only kDrive folder tree")
+    drive_tree.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_tree.add_argument("--parent", "--path", dest="parent_id", help="Folder/parent ID to start from.")
+    drive_tree.add_argument("--depth", type=int, default=2, help="Folder depth to fetch. Defaults to 2.")
+    drive_tree.add_argument("--limit", type=int, help="Maximum number of items to request per folder.")
+    drive_tree.add_argument("--json", action="store_true")
+    drive_tree.add_argument("--raw", action="store_true", help="With --json, emit the full raw folder payload.")
+    drive_tree.set_defaults(func=cmd_drive_tree)
     drive_search = drive_sub.add_parser("search", help="Search kDrive files and folders by name")
     drive_search.add_argument("query", help="Case-insensitive file/folder name query.")
     drive_search.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")

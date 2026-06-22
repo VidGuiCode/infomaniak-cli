@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.4 - Read-only kDrive browsing
+
+- Added `ik drive folders` to list folders from the confirmed kDrive files endpoint.
+- Added `ik drive tree` for shallow, bounded folder-tree browsing.
+- Added folder-only filtering, parent selection, depth, limit, slim JSON, and raw JSON support.
+- Kept kDrive operations read-only; no download, upload, move, delete, share edits, trash, or sync behavior.
+
 ## v0.1.3 - Self-update command
 
 - Added `ik update` to check the latest GitHub release and update supported installs.

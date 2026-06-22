@@ -6,7 +6,7 @@ from infomaniak_cli import cli
 from infomaniak_cli.api import InformaniakAPIError
 from infomaniak_cli.auth import TokenStore
 from infomaniak_cli.profiles import ProfileManager
-from infomaniak_cli.services.drive import DriveError, find_file, list_files, search_files, slim_file
+from infomaniak_cli.services.drive import DriveError, build_folder_tree, find_file, list_files, search_files, slim_file
 
 
 class FakeAPI:
@@ -16,7 +16,8 @@ class FakeAPI:
 
     def get(self, path, params=None):
         self.calls.append((path, params))
-        response = self.responses[path]
+        params_key = tuple(sorted(params.items())) if params else None
+        response = self.responses.get((path, params_key), self.responses.get(path))
         if isinstance(response, Exception):
             raise response
         return response
@@ -473,3 +474,284 @@ def test_cli_drive_info_not_found_is_helpful(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "kDrive file not found in drive drive-1: missing" in captured.err
+
+
+def test_cli_drive_folders_json_uses_profile_default_drive_id(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [
+                    {
+                        "id": "folder-1",
+                        "name": "Admin",
+                        "type": "dir",
+                        "parent_id": None,
+                        "drive_id": "drive-1",
+                        "visibility": "private",
+                        "created_at": 1,
+                        "last_modified_at": 2,
+                    }
+                ],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "folders", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "profile": "work",
+        "drive_id": "drive-1",
+        "parent_id": None,
+        "count": 1,
+        "folders": [
+            {
+                "id": "folder-1",
+                "name": "Admin",
+                "type": "dir",
+                "parent_id": None,
+                "drive_id": "drive-1",
+                "visibility": "private",
+                "created_at": 1,
+                "last_modified_at": 2,
+            }
+        ],
+    }
+    assert fake_api.calls == [("/2/drive/drive-1/files", None)]
+
+
+def test_cli_drive_folders_honors_drive_id_override(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="profile-drive", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI({"/2/drive/override-drive/files": {"result": "success", "data": []}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "folders", "--drive-id", "override-drive", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["drive_id"] == "override-drive"
+    assert fake_api.calls == [("/2/drive/override-drive/files", None)]
+
+
+def test_cli_drive_folders_honors_parent(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI({"/2/drive/drive-1/files": {"result": "success", "data": []}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "folders", "--parent", "folder-1", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["parent_id"] == "folder-1"
+    assert fake_api.calls == [("/2/drive/drive-1/files", {"parent_id": "folder-1"})]
+
+
+def test_cli_drive_folders_honors_limit(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI({"/2/drive/drive-1/files": {"result": "success", "data": []}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "folders", "--limit", "5", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["count"] == 0
+    assert fake_api.calls == [("/2/drive/drive-1/files", {"limit": 5})]
+
+
+def test_cli_drive_folders_filters_mixed_payload_to_folders_only(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [
+                    {"id": "folder-1", "name": "Admin", "type": "dir"},
+                    {"id": "file-1", "name": "Invoice.pdf", "type": "file"},
+                    {"id": "folder-2", "name": "Projects", "is_directory": True},
+                ],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "folders", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["count"] == 2
+    assert [folder["id"] for folder in output["folders"]] == ["folder-1", "folder-2"]
+
+
+def test_cli_drive_folders_raw_json_emits_full_folder_payloads(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    raw_folder = {"id": "folder-1", "name": "Admin", "type": "dir", "permissions": {"can_delete": True}}
+    fake_api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [raw_folder, {"id": "file-1", "name": "Invoice.pdf", "type": "file"}],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "folders", "--json", "--raw"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["folders"] == [raw_folder]
+
+
+def test_cli_drive_folders_requires_drive_id(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+
+    assert cli.main(["drive", "folders"]) == 1
+
+    captured = capsys.readouterr()
+    assert "No default kDrive selected for profile: work" in captured.err
+    assert "--drive-id" in captured.err
+
+
+def test_drive_service_builds_folder_tree_from_parent_responses():
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [
+                    {"id": "folder-1", "name": "Admin", "type": "dir"},
+                    {"id": "file-1", "name": "Invoice.pdf", "type": "file"},
+                ],
+            },
+            ("/2/drive/drive-1/files", (("parent_id", "folder-1"),)): {
+                "result": "success",
+                "data": [{"id": "folder-2", "name": "Taxes", "type": "dir", "parent_id": "folder-1"}],
+            },
+        }
+    )
+
+    tree = build_folder_tree(api, "drive-1", depth=2)
+
+    assert tree == [
+        {
+            "folder": {"id": "folder-1", "name": "Admin", "type": "dir"},
+            "children": [
+                {
+                    "folder": {"id": "folder-2", "name": "Taxes", "type": "dir", "parent_id": "folder-1"},
+                    "children": [],
+                }
+            ],
+        }
+    ]
+    assert api.calls == [
+        ("/2/drive/drive-1/files", None),
+        ("/2/drive/drive-1/files", {"parent_id": "folder-1"}),
+    ]
+
+
+def test_drive_service_tree_depth_one_does_not_fetch_children():
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [{"id": "folder-1", "name": "Admin", "type": "dir"}],
+            }
+        }
+    )
+
+    assert build_folder_tree(api, "drive-1", depth=1) == [
+        {"folder": {"id": "folder-1", "name": "Admin", "type": "dir"}, "children": []}
+    ]
+    assert api.calls == [("/2/drive/drive-1/files", None)]
+
+
+def test_cli_drive_tree_json_has_stable_schema(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [{"id": "folder-1", "name": "Admin", "type": "dir", "drive_id": "drive-1"}],
+            },
+            ("/2/drive/drive-1/files", (("parent_id", "folder-1"),)): {
+                "result": "success",
+                "data": [{"id": "folder-2", "name": "Taxes", "type": "dir", "parent_id": "folder-1"}],
+            },
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "tree", "--depth", "2", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "profile": "work",
+        "drive_id": "drive-1",
+        "parent_id": None,
+        "depth": 2,
+        "count": 1,
+        "tree": [
+            {
+                "folder": {
+                    "id": "folder-1",
+                    "name": "Admin",
+                    "type": "dir",
+                    "parent_id": None,
+                    "drive_id": "drive-1",
+                    "visibility": None,
+                    "created_at": None,
+                    "last_modified_at": None,
+                },
+                "children": [
+                    {
+                        "folder": {
+                            "id": "folder-2",
+                            "name": "Taxes",
+                            "type": "dir",
+                            "parent_id": "folder-1",
+                            "drive_id": "drive-1",
+                            "visibility": None,
+                            "created_at": None,
+                            "last_modified_at": None,
+                        },
+                        "children": [],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_cli_drive_tree_depth_one_does_not_fetch_children(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [{"id": "folder-1", "name": "Admin", "type": "dir"}],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "tree", "--depth", "1", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["tree"][0]["children"] == []
+    assert fake_api.calls == [("/2/drive/drive-1/files", None)]
