@@ -26,6 +26,7 @@ ik setup --profile work
 ik whoami
 ik doctor
 ik bootstrap
+ik update
 ```
 
 Expected behavior:
@@ -34,6 +35,16 @@ Expected behavior:
 - `whoami`: show active profile/account/user/default services.
 - `doctor`: verify auth and configured services.
 - `bootstrap`: rerun autodiscovery and update saved IDs/defaults.
+- `update`: check GitHub releases and update supported installs.
+
+Update flags:
+
+```bash
+ik update --check    # check only; never install
+ik update --yes      # update without prompting when auto-update is safe
+ik update --json     # machine-readable status; no prompt/install unless combined with --yes
+ik update --dry-run  # show the updater command without running it
+```
 
 ## Profiles
 

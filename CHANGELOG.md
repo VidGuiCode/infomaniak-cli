@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.3 - Self-update command
+
+- Added `ik update` to check the latest GitHub release and update supported installs.
+- Added `--check`, `--yes`, `--json`, and `--dry-run` update modes.
+- Detects pipx, uv tool, pip, source checkout, and unknown install methods conservatively.
+- Keeps source checkout updates manual and avoids profile/token/config mutation.
+
 ## v0.1.2 - Read-only kDrive
 
 - Added read-only kDrive commands: `drive list`, `drive search`, and `drive info`.

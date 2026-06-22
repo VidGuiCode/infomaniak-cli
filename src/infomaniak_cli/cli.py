@@ -7,6 +7,7 @@ import sys
 from typing import Any, Mapping
 
 from . import __version__
+from . import update as update_module
 from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError
 from .auth import MailPasswordStore, TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
@@ -115,6 +116,113 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_version(args: argparse.Namespace) -> int:
     print(__version__)
     return 0
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    try:
+        release = update_module.fetch_latest_release()
+        install_method = update_module.detect_install_method()
+        plan = update_module.build_update_plan(__version__, release, install_method=install_method)
+    except update_module.UpdateCheckError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        output = plan.to_json()
+        if args.yes and not args.check and not args.dry_run:
+            returncode, result = _run_update_plan_json(plan)
+            output["updater"] = result
+            print_json(output)
+            return returncode
+        if args.dry_run and plan.command:
+            output["dry_run_command"] = plan.command
+        print_json(output)
+        return 0
+
+    if not plan.update_available:
+        print(f"infomaniak-cli {plan.current_version} is up to date.")
+        return 0
+
+    _print_update_plan(plan)
+
+    if args.check:
+        return 0
+
+    if args.dry_run:
+        if plan.command:
+            print(f"Would run: {_format_command(plan.command)}")
+        return 0
+
+    if not plan.can_auto_update:
+        _print_manual_update_guidance(plan)
+        return 0
+
+    if not args.yes:
+        answer = input("Update now? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Update cancelled.")
+            return 0
+
+    return _run_update_plan(plan)
+
+
+def _print_update_plan(plan: update_module.UpdatePlan) -> None:
+    print(f"Current version: {plan.current_version}")
+    print(f"Latest version: {plan.latest_version}")
+    print(f"Release URL: {plan.release_url}")
+    print(f"Install method: {plan.install_method}")
+    if plan.wheel_url:
+        print(f"Wheel URL: {plan.wheel_url}")
+    else:
+        print("No installable wheel asset was found for this release.")
+
+
+def _print_manual_update_guidance(plan: update_module.UpdatePlan) -> None:
+    if plan.install_method == "source":
+        print("Source checkout detected. Automatic source updates are not run by `ik update`.")
+        for instruction in plan.instructions or ["git pull", "uv sync"]:
+            print(instruction)
+        return
+    if plan.install_method == "unknown":
+        print("Install method could not be detected. A safe install command is:")
+        if plan.command:
+            print(_format_command(plan.command))
+        return
+    if not plan.wheel_url:
+        print("Open the release URL above to update manually.")
+
+
+def _run_update_plan(plan: update_module.UpdatePlan) -> int:
+    if not plan.can_auto_update or not plan.command:
+        _print_manual_update_guidance(plan)
+        return 0
+    print(f"Running: {_format_command(plan.command)}")
+    result = update_module.run_update_command(plan.command)
+    if result.stdout:
+        print(result.stdout.rstrip())
+    if result.stderr:
+        print(result.stderr.rstrip(), file=sys.stderr)
+    if result.returncode != 0:
+        print(f"error: updater command failed with exit code {result.returncode}", file=sys.stderr)
+        return result.returncode
+    return 0
+
+
+def _run_update_plan_json(plan: update_module.UpdatePlan) -> tuple[int, dict[str, Any]]:
+    if not plan.can_auto_update or not plan.command:
+        return 0, {"ran": False, "reason": "manual_update_required"}
+    result = update_module.run_update_command(plan.command)
+    payload = {
+        "ran": True,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+    return result.returncode, payload
+
+
+def _format_command(command: list[str]) -> str:
+    return " ".join(command)
 
 
 def cmd_profile_list(args: argparse.Namespace) -> int:
@@ -861,6 +969,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     version = sub.add_parser("version", help="Show CLI version")
     version.set_defaults(func=cmd_version)
+    update = sub.add_parser("update", help="Check GitHub releases and update this CLI")
+    update.add_argument("--yes", action="store_true", help="Update without prompting when auto-update is safe.")
+    update.add_argument("--check", action="store_true", help="Only check update status; never install.")
+    update.add_argument("--json", action="store_true", help="Emit machine-readable update status.")
+    update.add_argument("--dry-run", action="store_true", help="Show the updater command without running it.")
+    update.set_defaults(func=cmd_update)
 
     profile = sub.add_parser("profile", help="Manage profiles")
     profile_sub = profile.add_subparsers(dest="profile_command", required=True)

@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.2-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.3-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -47,6 +47,15 @@ git clone https://github.com/VidGuiCode/infomaniak-cli.git
 cd infomaniak-cli
 uv sync
 ```
+
+## Update
+
+```bash
+ik update
+ik update --yes
+```
+
+`ik update` checks the latest GitHub release and can update pipx, uv tool, or pip installs when a release wheel is available. Source checkouts stay manual and print `git pull` / `uv sync` instructions.
 
 ## Quick start
 
@@ -108,6 +117,7 @@ Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.m
 | Area | Commands |
 |------|----------|
 | Setup | `setup`, `whoami`, `doctor` |
+| Update | `update` |
 | Auth | `auth token`, `auth check`, `auth status`, `auth mail` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
