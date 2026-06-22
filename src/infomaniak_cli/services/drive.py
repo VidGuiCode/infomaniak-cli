@@ -27,13 +27,51 @@ def list_files(
     return _file_items(payload)
 
 
-def slim_file(file_item: Mapping[str, Any]) -> dict[str, Any]:
-    fields = ("id", "name", "type", "size", "created_at", "updated_at")
-    return {field: file_item[field] for field in fields if field in file_item and file_item[field] is not None}
+def search_files(
+    api: Any,
+    drive_id: str,
+    query: str,
+    *,
+    limit: int | None = None,
+) -> list[Mapping[str, Any]]:
+    query_lower = query.casefold()
+    matches = [
+        file_item
+        for file_item in list_files(api, drive_id)
+        if query_lower in str(file_item.get("name") or "").casefold()
+    ]
+    if limit is not None:
+        return matches[:limit]
+    return matches
 
 
-def slim_files(files: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [slim_file(file_item) for file_item in files]
+def find_file(api: Any, drive_id: str, file_id: str) -> Mapping[str, Any] | None:
+    for file_item in list_files(api, drive_id):
+        if str(file_item.get("id")) == str(file_id):
+            return file_item
+    return None
+
+
+def slim_file(file_item: Mapping[str, Any], *, drive_id: str | None = None) -> dict[str, Any]:
+    return {
+        "id": _string_or_none(file_item.get("id")),
+        "name": _string_or_none(file_item.get("name") or file_item.get("display_name")),
+        "type": _file_type(file_item),
+        "parent_id": _parent_id(file_item),
+        "drive_id": _string_or_none(file_item.get("drive_id") or drive_id),
+        "visibility": _string_or_none(file_item.get("visibility") or file_item.get("visibility_type")),
+        "created_at": file_item.get("created_at") or file_item.get("created"),
+        "last_modified_at": (
+            file_item.get("last_modified_at")
+            or file_item.get("modified_at")
+            or file_item.get("updated_at")
+            or file_item.get("updated")
+        ),
+    }
+
+
+def slim_files(files: list[Mapping[str, Any]], *, drive_id: str | None = None) -> list[dict[str, Any]]:
+    return [slim_file(file_item, drive_id=drive_id) for file_item in files]
 
 
 def _file_items(payload: Any) -> list[Mapping[str, Any]]:
@@ -70,3 +108,32 @@ def _error_message(payload: Mapping[str, Any]) -> str:
     if error:
         return redact_secret(str(error))
     return redact_secret(str(payload))
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _file_type(file_item: Mapping[str, Any]) -> str | None:
+    value = file_item.get("type")
+    if value is not None:
+        return str(value)
+    if file_item.get("is_dir") or file_item.get("is_directory") or file_item.get("is_folder"):
+        return "folder"
+    if file_item.get("mime_type") or file_item.get("size") is not None:
+        return "file"
+    return None
+
+
+def _parent_id(file_item: Mapping[str, Any]) -> str | None:
+    value = file_item.get("parent_id")
+    if value is not None:
+        return str(value)
+    parent = file_item.get("parent")
+    if isinstance(parent, Mapping):
+        value = parent.get("id")
+        if value is not None:
+            return str(value)
+    return None

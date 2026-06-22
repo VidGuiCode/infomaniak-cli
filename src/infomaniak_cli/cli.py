@@ -14,7 +14,7 @@ from .debug import probe_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
 from .services.account import list_accounts, list_products, list_services, slim_accounts
-from .services.drive import list_files, slim_files
+from .services.drive import find_file, list_files, search_files, slim_file, slim_files
 from .services.mail import IMAPClient, MailError, slim_message
 
 
@@ -604,6 +604,22 @@ def _display_item(item: Mapping[str, Any]) -> str:
     return f"{item_id}\t{name}"
 
 
+def _display_drive_item(item: Mapping[str, Any]) -> str:
+    item_type = item.get("type") or "-"
+    item_id = item.get("id") or "-"
+    name = item.get("name") or item.get("display_name") or "unnamed"
+    modified = item.get("last_modified_at") or item.get("modified_at") or item.get("updated_at") or ""
+    return f"{item_type}\t{item_id}\t{modified}\t{name}"
+
+
+def _drive_404_error(drive_id: str) -> ValueError:
+    path = f"/2/drive/{drive_id}/files"
+    return ValueError(
+        f"kDrive files endpoint returned 404 for {path}; saved kDrive id may be wrong. "
+        "Rerun bootstrap or capture this failing path."
+    )
+
+
 def cmd_account_list(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     accounts = list_accounts(client)
@@ -658,25 +674,99 @@ def cmd_drive_list(args: argparse.Namespace) -> int:
         files = list_files(client, drive_id, parent_id=args.parent_id, limit=args.limit)
     except InformaniakAPIError as exc:
         if exc.status_code == 404:
-            path = f"/2/drive/{drive_id}/files"
-            raise ValueError(
-                f"kDrive files endpoint returned 404 for {path}; saved kDrive id may be wrong. "
-                "Rerun bootstrap or capture this failing path."
-            ) from exc
+            raise _drive_404_error(drive_id) from exc
         raise
 
     if args.json:
-        output_files = files if args.raw else slim_files(files)
-        print_json({"profile": profile.name, "drive_id": drive_id, "parent_id": args.parent_id, "files": output_files})
+        output_files = files if args.raw else slim_files(files, drive_id=drive_id)
+        print_json(
+            {
+                "profile": profile.name,
+                "drive_id": drive_id,
+                "parent_id": args.parent_id,
+                "count": len(files),
+                "files": output_files,
+            }
+        )
     else:
         print(f"Profile: {profile.name}")
         print(f"Drive ID: {drive_id}")
         if args.parent_id:
             print(f"Parent ID: {args.parent_id}")
+        print(f"Files: {len(files)}")
         if not files:
             print("No files found.")
         for file_item in files:
-            print(_display_item(file_item))
+            print(_display_drive_item(file_item))
+    return 0
+
+
+def cmd_drive_search(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    try:
+        files = search_files(client, drive_id, args.query, limit=args.limit)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise _drive_404_error(drive_id) from exc
+        raise
+
+    if args.json:
+        output_files = files if args.raw else slim_files(files, drive_id=drive_id)
+        print_json(
+            {
+                "profile": profile.name,
+                "drive_id": drive_id,
+                "query": args.query,
+                "count": len(files),
+                "files": output_files,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(f"Query: {args.query}")
+        print(f"Files: {len(files)}")
+        if not files:
+            print("No matching files found.")
+        for file_item in files:
+            print(_display_drive_item(file_item))
+    return 0
+
+
+def cmd_drive_info(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    try:
+        file_item = find_file(client, drive_id, args.file_id)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise _drive_404_error(drive_id) from exc
+        raise
+    if file_item is None:
+        raise ValueError(f"kDrive file not found in drive {drive_id}: {args.file_id}")
+
+    output_file = file_item if args.raw else slim_file(file_item, drive_id=drive_id)
+    if args.json:
+        print_json({"profile": profile.name, "drive_id": drive_id, "file_id": args.file_id, "file": output_file})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(f"File ID: {args.file_id}")
+        print(f"Name: {output_file.get('name') or 'unnamed'}")
+        print(f"Type: {output_file.get('type') or '-'}")
+        parent_id = output_file.get("parent_id")
+        if parent_id:
+            print(f"Parent ID: {parent_id}")
+        visibility = output_file.get("visibility")
+        if visibility:
+            print(f"Visibility: {visibility}")
+        created_at = output_file.get("created_at")
+        if created_at:
+            print(f"Created: {created_at}")
+        modified_at = output_file.get("last_modified_at")
+        if modified_at:
+            print(f"Modified: {modified_at}")
     return 0
 
 
@@ -749,6 +839,19 @@ def build_parser() -> argparse.ArgumentParser:
     drive_list.add_argument("--json", action="store_true")
     drive_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
     drive_list.set_defaults(func=cmd_drive_list)
+    drive_search = drive_sub.add_parser("search", help="Search kDrive files and folders by name")
+    drive_search.add_argument("query", help="Case-insensitive file/folder name query.")
+    drive_search.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_search.add_argument("--limit", type=int, help="Maximum number of matching files to show.")
+    drive_search.add_argument("--json", action="store_true")
+    drive_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
+    drive_search.set_defaults(func=cmd_drive_search)
+    drive_info = drive_sub.add_parser("info", help="Show read-only metadata for a kDrive file or folder")
+    drive_info.add_argument("file_id", help="File/folder ID.")
+    drive_info.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_info.add_argument("--json", action="store_true")
+    drive_info.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
+    drive_info.set_defaults(func=cmd_drive_info)
 
     debug = sub.add_parser("debug", help="Advanced read-only diagnostics")
     debug_sub = debug.add_subparsers(dest="debug_command", required=True)

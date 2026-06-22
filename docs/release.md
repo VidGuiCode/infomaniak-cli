@@ -46,7 +46,7 @@ pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git
 For a GitHub release wheel:
 
 ```bash
-pipx install https://github.com/VidGuiCode/infomaniak-cli/releases/download/v0.1.1/infomaniak_cli-0.1.1-py3-none-any.whl
+pipx install https://github.com/VidGuiCode/infomaniak-cli/releases/download/v0.1.2/infomaniak_cli-0.1.2-py3-none-any.whl
 ```
 
 ## Upgrade
@@ -114,7 +114,7 @@ Before publishing, verify the built package in a clean install environment:
 
 ```bash
 uv build
-pipx install --force dist/infomaniak_cli-0.1.1-py3-none-any.whl
+pipx install --force dist/infomaniak_cli-0.1.2-py3-none-any.whl
 ik version
 ik --help
 ik setup --profile test --non-interactive

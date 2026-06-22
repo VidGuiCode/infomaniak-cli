@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.1-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.2-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -68,6 +68,8 @@ ik account services
 ik drive list
 ik drive list --json
 ik drive list --json --raw
+ik drive search "invoice" --json
+ik drive info <file_id> --json
 
 ik mail folders --json
 ik mail list --days 7 --json
@@ -109,7 +111,7 @@ Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.m
 | Auth | `auth token`, `auth check`, `auth status`, `auth mail` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
-| kDrive | `drive list` |
+| kDrive | `drive list`, `drive search`, `drive info` |
 | Mail | `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
 
 Run `ik <command> --help` for full options on any command.
@@ -133,6 +135,8 @@ ik account services --json
 # 3. Use services
 ik drive list --json
 ik drive list --json --raw
+ik drive search "invoice" --json
+ik drive info <file_id> --json
 
 ik mail folders --json
 ik mail list --days 7 --json

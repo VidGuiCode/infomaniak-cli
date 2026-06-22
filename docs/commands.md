@@ -134,16 +134,20 @@ Sending should confirm profile/from/to unless `--yes` is provided.
 
 ## kDrive
 
+Read-only commands:
+
 ```bash
 ik drive list
+ik drive list --parent <folder_id> --limit 20 --json
 ik drive search "RCS"
 ik drive info <file_id>
-ik drive download <file_id>
-ik drive upload ./file.pdf /Admin/
-ik drive share-info <file_id>
 ```
 
-Uploads/moves/deletes should require confirmation in early versions.
+`ik drive list` uses the selected profile's default kDrive ID and calls `GET /2/drive/{drive_id}/files`. Use `--drive-id <id>` to override the profile default. `--parent <folder_id>` is passed to the same endpoint as `parent_id`.
+
+`ik drive search <query>` is currently implemented by listing files and filtering by file/folder name client-side because no separate search endpoint has been confirmed. `ik drive info <file_id>` is currently implemented by finding the item in the list endpoint response because no single-file metadata endpoint has been confirmed.
+
+Not implemented in v0.1.2: download, upload, move, delete, share changes, recursive sync, or any write behavior.
 
 ## kChat
 

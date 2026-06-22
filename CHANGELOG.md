@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.2 - Read-only kDrive
+
+- Added read-only kDrive commands: `drive list`, `drive search`, and `drive info`.
+- Added stable slim JSON output with `--raw` for full API item payloads.
+- Added default kDrive selection from profiles with `--drive-id` overrides.
+- Kept kDrive operations read-only; no download, upload, move, delete, share edits, or sync behavior.
+
 ## v0.1.1 - Read-only mail
 
 - Added IMAP mailbox setup with `ik auth mail`.
