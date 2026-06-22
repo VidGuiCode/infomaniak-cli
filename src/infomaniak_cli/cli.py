@@ -7,13 +7,14 @@ from typing import Any, Mapping
 
 from . import __version__
 from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError
-from .auth import TokenStore
+from .auth import MailPasswordStore, TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .debug import probe_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
 from .services.account import list_accounts, list_products, list_services, slim_accounts
 from .services.drive import list_files, slim_files
+from .services.mail import IMAPClient, MailError, slim_message
 
 
 def print_json(data: Any) -> None:
@@ -222,6 +223,161 @@ def cmd_auth_check(args: argparse.Namespace) -> int:
         print("Auth check: ok")
         print(f"Profile: {name}")
         print(f"Informaniak user: {user or 'not available'}")
+    return 0
+
+
+def cmd_auth_mail(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        print("No profile selected.", file=sys.stderr)
+        return 1
+    if args.stdin and args.password:
+        print("error: use either --password or --stdin, not both", file=sys.stderr)
+        return 2
+    if args.stdin:
+        password = sys.stdin.read().strip()
+    else:
+        password = args.password.strip() if args.password else input("Mail app password: ").strip()
+    MailPasswordStore().save_password(name, password)
+
+    # Also update mailbox/email if provided
+    metadata = {}
+    if args.mailbox:
+        metadata["default_mailbox"] = args.mailbox.strip()
+    if args.imap_host:
+        metadata["imap_host"] = args.imap_host.strip()
+    if args.imap_port is not None:
+        metadata["imap_port"] = args.imap_port
+    if metadata:
+        manager.create_or_update(name, **metadata)
+
+    print(f"Mail password saved for profile: {name}")
+    return 0
+
+
+def _mail_profile_or_error(args: argparse.Namespace) -> tuple[Any, str, str, str]:
+    """Resolve profile and return (profile, host, port, username, password).
+
+    Raises ValueError if any required mail config is missing.
+    """
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        raise ValueError("No profile configured. Run `ik setup --profile <name>` first.")
+
+    profile = manager.get(name)
+    mailbox = profile.default_mailbox
+    if not mailbox:
+        raise ValueError(
+            f"No default mailbox configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth mail` to set the mailbox email and app password."
+        )
+
+    mail_store = MailPasswordStore()
+    if not mail_store.has_password(name):
+        raise ValueError(
+            f"No mail password configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth mail` to set the mailbox app password."
+        )
+
+    host = profile.imap_host or "mail.infomaniak.com"
+    port = profile.imap_port or 993
+    password = mail_store.load_password(name)
+    return profile, host, port, mailbox, password
+
+
+def _mail_client(args: argparse.Namespace) -> IMAPClient:
+    profile, host, port, mailbox, password = _mail_profile_or_error(args)
+    return IMAPClient(host, port, mailbox, password)
+
+
+def cmd_mail_unread(args: argparse.Namespace) -> int:
+    try:
+        client = _mail_client(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        with client:
+            items = client.list_unread(limit=args.limit)
+    except MailError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        output = items if args.raw else [slim_message(item) for item in items]
+        print_json({"profile": args.profile, "messages": output})
+    else:
+        print(f"Unread messages: {len(items)}")
+        for item in items:
+            uid = item.get("uid", "-")
+            subject = item.get("subject") or "(no subject)"
+            from_addr = item.get("from") or "(unknown)"
+            date = item.get("date") or ""
+            print(f"{uid}\t{date}\t{from_addr}\t{subject}")
+    return 0
+
+
+def cmd_mail_search(args: argparse.Namespace) -> int:
+    try:
+        client = _mail_client(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        with client:
+            items = client.search(args.query, limit=args.limit)
+    except MailError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        output = items if args.raw else [slim_message(item) for item in items]
+        print_json({"profile": args.profile, "query": args.query, "messages": output})
+    else:
+        print(f"Search results for '{args.query}': {len(items)}")
+        for item in items:
+            uid = item.get("uid", "-")
+            subject = item.get("subject") or "(no subject)"
+            from_addr = item.get("from") or "(unknown)"
+            date = item.get("date") or ""
+            print(f"{uid}\t{date}\t{from_addr}\t{subject}")
+    return 0
+
+
+def cmd_mail_read(args: argparse.Namespace) -> int:
+    try:
+        client = _mail_client(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        with client:
+            msg = client.fetch_message(args.uid)
+    except MailError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        if not args.raw:
+            msg = slim_message(msg)
+        print_json({"profile": args.profile, "uid": args.uid, "message": msg})
+    else:
+        print(f"UID: {args.uid}")
+        print(f"From: {msg.get('from') or '(unknown)'}")
+        print(f"To: {msg.get('to') or '(unknown)'}")
+        print(f"Subject: {msg.get('subject') or '(no subject)'}")
+        print(f"Date: {msg.get('date') or ''}")
+        print()
+        preview = msg.get("body_preview")
+        if preview:
+            print(preview)
+        else:
+            print("(no body preview available)")
     return 0
 
 
@@ -476,6 +632,32 @@ def build_parser() -> argparse.ArgumentParser:
     auth_check = auth_sub.add_parser("check", help="Make one read-only authenticated profile request")
     auth_check.add_argument("--json", action="store_true")
     auth_check.set_defaults(func=cmd_auth_check)
+    auth_mail = auth_sub.add_parser("mail", help="Store the mailbox app password for a profile")
+    auth_mail.add_argument("--password", help="Mail app password. Omit to prompt.")
+    auth_mail.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
+    auth_mail.add_argument("--mailbox", help="Mailbox email address (e.g. user@example.com).")
+    auth_mail.add_argument("--imap-host", help="IMAP server host. Defaults to mail.infomaniak.com.")
+    auth_mail.add_argument("--imap-port", type=int, help="IMAP server port. Defaults to 993.")
+    auth_mail.set_defaults(func=cmd_auth_mail)
+
+    mail = sub.add_parser("mail", help="Read-only IMAP mail commands")
+    mail_sub = mail.add_subparsers(dest="mail_command", required=True)
+    mail_unread = mail_sub.add_parser("unread", help="List unread messages")
+    mail_unread.add_argument("--limit", type=int, help="Maximum number of messages to show.")
+    mail_unread.add_argument("--json", action="store_true")
+    mail_unread.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
+    mail_unread.set_defaults(func=cmd_mail_unread)
+    mail_search = mail_sub.add_parser("search", help="Search messages by query")
+    mail_search.add_argument("query", help="Search query string")
+    mail_search.add_argument("--limit", type=int, help="Maximum number of messages to show.")
+    mail_search.add_argument("--json", action="store_true")
+    mail_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
+    mail_search.set_defaults(func=cmd_mail_search)
+    mail_read = mail_sub.add_parser("read", help="Read a single message by UID")
+    mail_read.add_argument("uid", help="Message UID")
+    mail_read.add_argument("--json", action="store_true")
+    mail_read.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
+    mail_read.set_defaults(func=cmd_mail_read)
 
     return parser
 
@@ -485,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (BootstrapError, InformaniakAPIError, KeyError, ValueError) as exc:
+    except (BootstrapError, InformaniakAPIError, KeyError, MailError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

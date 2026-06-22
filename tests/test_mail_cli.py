@@ -1,0 +1,379 @@
+"""CLI tests for mail commands — fully offline, mocked IMAP."""
+
+from __future__ import annotations
+
+import io
+import json
+import sys
+from typing import Any
+
+import pytest
+
+from infomaniak_cli import cli
+from infomaniak_cli.auth import MailPasswordStore, TokenStore
+from infomaniak_cli.profiles import ProfileManager
+from infomaniak_cli.services.mail import MailError
+
+
+class FakeIMAP:
+    """Test double for IMAPClient, injected via the cli module."""
+
+    def __init__(self, responses=None):
+        self.responses = responses or {}
+        self.calls = []
+        self._opened = False
+
+    def _connect(self):
+        self._opened = True
+
+    def _select(self, mailbox="INBOX"):
+        self.calls.append(("select", mailbox))
+
+    def list_unread(self, limit=None):
+        self._select("INBOX")
+        items = self.responses.get("list_unread", [])
+        if limit is not None:
+            items = items[:limit]
+        return items
+
+    def search(self, query, limit=None):
+        self._select("INBOX")
+        items = self.responses.get("search", {}).get(query, [])
+        if limit is not None:
+            items = items[:limit]
+        return items
+
+    def fetch_message(self, uid):
+        self._select("INBOX")
+        msg = self.responses.get("fetch_message", {}).get(uid)
+        if msg is None:
+            raise MailError(f"Message UID {uid} not found")
+        return msg
+
+    def close(self):
+        self.calls.append("close")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def _fake_imap_factory(responses):
+    def make_client(host, port, username, password, *, imap_factory=None):
+        fake = FakeIMAP(responses)
+        fake.calls.append(("init", host, port, username, password))
+        return fake
+    return make_client
+
+
+class TestAuthMail:
+    def test_auth_mail_stdin_saves_password_and_does_not_echo_it(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", make_default=True)
+        password = "secret-mail-password"
+        monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {password}\n\n"))
+
+        assert cli.main(["auth", "mail", "--stdin"]) == 0
+
+        captured = capsys.readouterr()
+        assert password not in captured.out
+        assert password not in captured.err
+        assert MailPasswordStore().load_password("work") == password
+
+    def test_auth_mail_argument_saves_password(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", make_default=True)
+
+        assert cli.main(["auth", "mail", "--password", "arg-password"]) == 0
+
+        captured = capsys.readouterr()
+        assert "arg-password" not in captured.out
+        assert MailPasswordStore().load_password("work") == "arg-password"
+
+    def test_auth_mail_updates_profile_mailbox_and_host(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", make_default=True)
+
+        assert cli.main([
+            "auth", "mail",
+            "--password", "pw",
+            "--mailbox", "user@example.com",
+            "--imap-host", "imap.example.com",
+            "--imap-port", "995",
+        ]) == 0
+
+        profile = ProfileManager().get("work")
+        assert profile.default_mailbox == "user@example.com"
+        assert profile.imap_host == "imap.example.com"
+        assert profile.imap_port == 995
+
+
+class TestMailUnread:
+    def test_mail_unread_requires_mailbox(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        assert cli.main(["mail", "unread"]) == 1
+
+        captured = capsys.readouterr()
+        assert "No default mailbox configured" in captured.err
+        assert "auth mail" in captured.err
+
+    def test_mail_unread_requires_mail_password(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+
+        assert cli.main(["mail", "unread"]) == 1
+
+        captured = capsys.readouterr()
+        assert "No mail password configured" in captured.err
+        assert "auth mail" in captured.err
+
+    def test_mail_unread_json_uses_mocked_imap(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_unread": [
+                {"uid": "101", "from": "a@example.com", "subject": "Hello", "date": "Mon, 01 Jan 2024"},
+                {"uid": "102", "from": "b@example.com", "subject": "World", "date": "Tue, 02 Jan 2024"},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "unread", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["profile"] is None  # uses current profile
+        assert len(output["messages"]) == 2
+        assert output["messages"][0] == {"uid": "101", "from": "a@example.com", "subject": "Hello", "date": "Mon, 01 Jan 2024"}
+
+    def test_mail_unread_json_raw_emits_full_payload(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_unread": [
+                {"uid": "101", "from": "a@example.com", "subject": "Hello", "date": "Mon", "body_preview": "body"},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "unread", "--json", "--raw"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert "body_preview" in output["messages"][0]
+
+    def test_mail_unread_limit_honored(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_unread": [
+                {"uid": "101", "from": "a@example.com", "subject": "1", "date": "Mon"},
+                {"uid": "102", "from": "b@example.com", "subject": "2", "date": "Tue"},
+                {"uid": "103", "from": "c@example.com", "subject": "3", "date": "Wed"},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "unread", "--json", "--limit", "2"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert len(output["messages"]) == 2
+
+    def test_mail_unread_human_output(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_unread": [
+                {"uid": "101", "from": "sender@example.com", "subject": "Invoice", "date": "Mon"},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "unread"]) == 0
+
+        out = capsys.readouterr().out
+        assert "Unread messages: 1" in out
+        assert "101" in out
+        assert "Invoice" in out
+
+
+class TestMailSearch:
+    def test_mail_search_json(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "search": {
+                "invoice": [
+                    {"uid": "201", "from": "boss@example.com", "subject": "Invoice due", "date": "Mon"},
+                ],
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "search", "invoice", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["query"] == "invoice"
+        assert len(output["messages"]) == 1
+        assert output["messages"][0]["uid"] == "201"
+
+    def test_mail_search_limit(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "search": {
+                "q": [
+                    {"uid": "301", "from": "a", "subject": "1", "date": "Mon"},
+                    {"uid": "302", "from": "b", "subject": "2", "date": "Tue"},
+                ],
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "search", "q", "--json", "--limit", "1"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert len(output["messages"]) == 1
+
+    def test_mail_search_missing_config(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", make_default=True)
+
+        assert cli.main(["mail", "search", "invoice"]) == 1
+
+        captured = capsys.readouterr()
+        assert "No default mailbox configured" in captured.err
+
+
+class TestMailRead:
+    def test_mail_read_json(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "Full message",
+                    "date": "Mon",
+                    "body_preview": "The full body.",
+                },
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "555", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["uid"] == "555"
+        assert output["message"]["uid"] == "555"
+        assert output["message"]["from"] == "sender@example.com"
+        assert "body_preview" not in output["message"]  # slim mode by default
+
+    def test_mail_read_raw_json(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "Full",
+                    "date": "Mon",
+                    "body_preview": "The full body.",
+                    "message_id": "<msg@example.com>",
+                },
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "555", "--json", "--raw"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert "body_preview" in output["message"]
+
+    def test_mail_read_human_output(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "Subject line",
+                    "date": "Mon, 01 Jan 2024",
+                    "body_preview": "Hello world",
+                },
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "555"]) == 0
+
+        out = capsys.readouterr().out
+        assert "UID: 555" in out
+        assert "From: sender@example.com" in out
+        assert "Subject: Subject line" in out
+        assert "Hello world" in out
+
+    def test_mail_read_not_found(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"fetch_message": {}}
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "999", "--json"]) == 1
+
+        captured = capsys.readouterr()
+        assert "not found" in captured.err
+
+
+class TestMailProfileOverride:
+    def test_mail_unread_with_explicit_profile(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="work@example.com", make_default=True)
+        ProfileManager().create_or_update("personal", default_mailbox="personal@example.com")
+        MailPasswordStore().save_password("work", "work-pw")
+        MailPasswordStore().save_password("personal", "personal-pw")
+
+        fake_responses = {"list_unread": []}
+        seen = []
+
+        def make_client(host, port, username, password, *, imap_factory=None):
+            seen.append((username, password))
+            fake = FakeIMAP(fake_responses)
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", make_client)
+
+        assert cli.main(["--profile", "personal", "mail", "unread", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["profile"] == "personal"
+        assert seen == [("personal@example.com", "personal-pw")]

@@ -105,10 +105,12 @@ Rules:
 Initial read-only commands:
 
 ```bash
+ik auth mail --mailbox user@example.com --password <app-password>
 ik mail unread
 ik mail search "invoice"
-ik mail read <message_id>
-ik mail threads --since 7d
+ik mail read <uid>
+ik mail unread --json --limit 10
+ik mail read <uid> --json --raw
 ```
 
 Later write commands:

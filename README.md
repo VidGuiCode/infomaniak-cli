@@ -1,4 +1,4 @@
-﻿# infomaniak-cli
+# infomaniak-cli
 
 ![version](https://img.shields.io/badge/version-0.1.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
@@ -55,6 +55,8 @@ ik setup --profile work
 ik auth token
 # paste your Informaniak Manager personal API token
 
+ik auth mail --mailbox user@example.com --password <app-password>
+
 ik whoami
 ik doctor
 ik bootstrap
@@ -66,6 +68,10 @@ ik account services
 ik drive list
 ik drive list --json
 ik drive list --json --raw
+
+ik mail unread
+ik mail search "invoice" --json
+ik mail read <uid> --json
 ```
 
 Context (profile, account, drive) is sticky — set it once and every command uses it. Use `--profile` to override for a single command.
@@ -75,11 +81,11 @@ Context (profile, account, drive) is sticky — set it once and every command us
 | Area | Commands |
 |------|----------|
 | Setup | `setup`, `whoami`, `doctor` |
-| Auth | `auth token`, `auth check`, `auth status` |
+| Auth | `auth token`, `auth check`, `auth status`, `auth mail` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
 | kDrive | `drive list` |
-| Debug | `debug probe` |
+| Mail | `mail unread`, `mail search`, `mail read` |
 
 Run `ik <command> --help` for full options on any command.
 
@@ -102,6 +108,10 @@ ik account services --json
 # 3. Use services
 ik drive list --json
 ik drive list --json --raw
+
+ik mail unread --json
+ik mail search "invoice" --json
+ik mail read <uid> --json
 ```
 
 Use `--json` for structured output. Use `--raw` for full API payloads. Use `--profile` to target a specific account.

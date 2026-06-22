@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .auth import TokenStore
+from .auth import MailPasswordStore, TokenStore
 from .config_paths import get_config_dir
 from .profiles import ProfileManager
 
@@ -20,6 +20,7 @@ def run_doctor(profile_name: str | None = None) -> dict[str, Any]:
         "token_configured": bool(selected and token_store.has_token(selected)),
         "account_selected": False,
         "default_mailbox_selected": False,
+        "mail_password_configured": False,
         "default_drive_selected": False,
     }
 
@@ -29,6 +30,7 @@ def run_doctor(profile_name: str | None = None) -> dict[str, Any]:
         profile_data = profile.to_dict()
         checks["account_selected"] = bool(profile.account_id or profile.account_name)
         checks["default_mailbox_selected"] = bool(profile.default_mailbox)
+        checks["mail_password_configured"] = bool(selected and MailPasswordStore().has_password(selected))
         checks["default_drive_selected"] = bool(profile.default_drive_id or profile.default_drive_name)
 
     return {

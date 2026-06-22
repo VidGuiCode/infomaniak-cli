@@ -22,6 +22,8 @@ class Profile:
     ksuite_id: str | None = None
     mail_hosting_id: str | None = None
     default_mailbox: str | None = None
+    imap_host: str | None = None
+    imap_port: int | None = None
     default_drive_id: str | None = None
     default_drive_name: str | None = None
     kchat_team_id: str | None = None
