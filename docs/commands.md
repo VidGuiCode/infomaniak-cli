@@ -71,11 +71,14 @@ ik auth status
 ik auth logout
 ik auth refresh
 ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
+ik auth calendar --url <caldav-calendar-url> --username user@example.com --password <caldav-password>
 ```
 
 `auth login` should route to setup if needed.
 
 `auth contacts` stores explicit CardDAV contacts credentials. It does not reuse mail credentials automatically.
+
+`auth calendar` stores explicit CalDAV calendar credentials. It does not reuse mail or contacts credentials automatically.
 
 ## Account / environment discovery
 
@@ -169,7 +172,7 @@ ik drive info <file_id>
 
 `ik drive search <query>` is currently implemented by listing files and filtering by file/folder name client-side because no separate search endpoint has been confirmed. `ik drive info <file_id>` is currently implemented by finding the item in the list endpoint response because no single-file metadata endpoint has been confirmed.
 
-Not implemented in v0.1.5: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
+Not implemented in v0.1.6: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
 
 ## kChat
 
@@ -216,12 +219,27 @@ Not implemented in v0.1.5: contact create, update, delete, import, bulk export, 
 
 ## Calendar
 
-Later via CalDAV/CardDAV:
+Read-only commands:
 
 ```bash
+ik auth calendar --url <caldav-calendar-url> --username user@example.com --password <caldav-password>
+
+ik calendar list
+ik calendar list --json
 ik calendar today
+ik calendar today --calendar <calendar_id_or_url> --json
 ik calendar upcoming --days 14
+ik calendar upcoming --days 30 --limit 20 --json
+ik calendar search "invoice" --days 30 --json
+ik calendar show <event_id> --json
+ik calendar show <event_id> --json --raw
 ```
+
+`ik calendar list`, `ik calendar upcoming`, `ik calendar today`, `ik calendar search`, and `ik calendar show` use a configured CalDAV calendar collection URL. JSON output defaults to stable slim calendar/event schemas. Add `--raw` with `--json` to include full parsed calendar/event payloads, including raw ICS text for events when available.
+
+Search is client-side and matches available summary, description, location, organizer, and attendee fields case-insensitively.
+
+Not implemented in v0.1.6: event create, update, delete, RSVP, invites, reminder writes, or sync writes.
 
 ## Output modes
 

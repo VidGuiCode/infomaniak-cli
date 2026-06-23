@@ -4,7 +4,7 @@ import sys
 
 from infomaniak_cli import cli
 from infomaniak_cli.api import InformaniakAPIError
-from infomaniak_cli.auth import ContactsPasswordStore, TokenStore
+from infomaniak_cli.auth import CalendarPasswordStore, ContactsPasswordStore, TokenStore
 from infomaniak_cli.profiles import ProfileManager
 
 
@@ -82,6 +82,44 @@ def test_auth_contacts_requires_url_and_username_first_time(tmp_path, monkeypatc
     captured = capsys.readouterr()
     assert "--url is required" in captured.err
     assert not ContactsPasswordStore().has_password("work")
+
+
+def test_auth_calendar_stdin_saves_password_and_metadata_without_echo(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    password = "secret-calendar-password"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {password}\n\n"))
+
+    assert cli.main(
+        [
+            "auth",
+            "calendar",
+            "--url",
+            "https://sync.example.test/calendars/user/work/",
+            "--username",
+            "user@example.com",
+            "--stdin",
+        ]
+    ) == 0
+
+    captured = capsys.readouterr()
+    assert password not in captured.out
+    assert password not in captured.err
+    assert CalendarPasswordStore().load_password("work") == password
+    profile = ProfileManager().get("work")
+    assert profile.calendar_url == "https://sync.example.test/calendars/user/work/"
+    assert profile.calendar_username == "user@example.com"
+
+
+def test_auth_calendar_requires_url_and_username_first_time(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+
+    assert cli.main(["auth", "calendar", "--password", "pw"]) == 2
+
+    captured = capsys.readouterr()
+    assert "--url is required" in captured.err
+    assert not CalendarPasswordStore().has_password("work")
 
 
 def test_auth_check_json_uses_token_base_url_and_resolves_user(tmp_path, monkeypatch, capsys):

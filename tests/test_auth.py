@@ -1,4 +1,4 @@
-from infomaniak_cli.auth import ContactsPasswordStore, TokenStore
+from infomaniak_cli.auth import CalendarPasswordStore, ContactsPasswordStore, TokenStore
 
 
 
@@ -17,4 +17,13 @@ def test_contacts_password_store_redacts_and_detects_password(tmp_path):
 
     assert store.has_password("work") is True
     assert store.load_password("work") == "secret-contacts-password"
+    assert store.redacted_password("work") == "secr…word"
+
+
+def test_calendar_password_store_redacts_and_detects_password(tmp_path):
+    store = CalendarPasswordStore(config_dir=tmp_path)
+    store.save_password("work", "secret-calendar-password")
+
+    assert store.has_password("work") is True
+    assert store.load_password("work") == "secret-calendar-password"
     assert store.redacted_password("work") == "secr…word"

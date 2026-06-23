@@ -9,12 +9,22 @@ from typing import Any, Mapping
 from . import __version__
 from . import update as update_module
 from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError
-from .auth import ContactsPasswordStore, MailPasswordStore, TokenStore
+from .auth import CalendarPasswordStore, ContactsPasswordStore, MailPasswordStore, TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .debug import probe_profile
 from .doctor import run_doctor
 from .profiles import ProfileManager
 from .services.account import list_accounts, list_products, list_services, slim_accounts
+from .services.calendar import (
+    CalendarClient,
+    CalendarError,
+    find_event,
+    search_events,
+    slim_calendar,
+    slim_calendars,
+    slim_event,
+    slim_events,
+)
 from .services.contacts import (
     ContactError,
     ContactsClient,
@@ -102,6 +112,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "default_drive_name": profile.default_drive_name,
         "contacts_url": profile.contacts_url,
         "contacts_username": profile.contacts_username,
+        "calendar_url": profile.calendar_url,
+        "calendar_username": profile.calendar_username,
         "kchat_team_id": profile.kchat_team_id,
     }
     if args.json:
@@ -113,6 +125,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         print(f"Default mailbox: {profile.default_mailbox or 'not selected'}")
         print(f"Default kDrive: {profile.default_drive_name or profile.default_drive_id or 'not selected'}")
         print(f"Contacts: {profile.contacts_username or profile.contacts_url or 'not selected'}")
+        print(f"Calendar: {profile.calendar_username or profile.calendar_url or 'not selected'}")
         print(f"kChat team: {profile.kchat_team_id or 'not selected'}")
     return 0
 
@@ -422,6 +435,37 @@ def cmd_auth_contacts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auth_calendar(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        print("No profile selected.", file=sys.stderr)
+        return 1
+    if args.stdin and args.password:
+        print("error: use either --password or --stdin, not both", file=sys.stderr)
+        return 2
+
+    profile = manager.get(name)
+    calendar_url = (args.url or profile.calendar_url or "").strip()
+    calendar_username = (args.username or profile.calendar_username or "").strip()
+    if not calendar_url:
+        print("error: --url is required the first time calendar is configured", file=sys.stderr)
+        return 2
+    if not calendar_username:
+        print("error: --username is required the first time calendar is configured", file=sys.stderr)
+        return 2
+
+    if args.stdin:
+        password = sys.stdin.read().strip()
+    else:
+        password = args.password.strip() if args.password else input("Calendar CalDAV password: ").strip()
+    CalendarPasswordStore().save_password(name, password)
+    manager.create_or_update(name, calendar_url=calendar_url, calendar_username=calendar_username)
+
+    print(f"Calendar password saved for profile: {name}")
+    return 0
+
+
 def _mail_profile_or_error(args: argparse.Namespace) -> tuple[Any, str, str, str]:
     """Resolve profile and return (profile, host, port, username, password).
 
@@ -486,9 +530,37 @@ def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, Contact
     return profile, ContactsClient(profile.contacts_url, profile.contacts_username, contacts_store.load_password(name))
 
 
+def _calendar_profile_and_client(args: argparse.Namespace) -> tuple[Any, CalendarClient]:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        raise ValueError("No profile configured. Run `ik setup --profile <name>` first.")
+
+    profile = manager.get(name)
+    if not profile.calendar_url or not profile.calendar_username:
+        raise ValueError(
+            f"No calendar configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth calendar --url <caldav-url> --username <email>` first."
+        )
+
+    calendar_store = CalendarPasswordStore()
+    if not calendar_store.has_password(name):
+        raise ValueError(
+            f"No calendar password configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth calendar --url <caldav-url> --username <email>` first."
+        )
+
+    return profile, CalendarClient(profile.calendar_url, profile.calendar_username, calendar_store.load_password(name))
+
+
 def _today() -> datetime.date:
     """Return today's date. Inject-able for tests."""
     return datetime.date.today()
+
+
+def _now_utc() -> datetime.datetime:
+    """Return current UTC datetime. Inject-able for tests."""
+    return datetime.datetime.now(datetime.UTC)
 
 
 def _resolve_mail_dates(args: argparse.Namespace) -> tuple[str | None, str | None, str | None]:
@@ -825,6 +897,22 @@ def _display_contact(contact: Mapping[str, Any]) -> str:
     return f"{contact_id}\t{name}\t{email}\t{organization}"
 
 
+def _display_calendar(calendar: Mapping[str, Any]) -> str:
+    calendar_id = calendar.get("id") or "-"
+    name = calendar.get("name") or "unnamed"
+    url = calendar.get("url") or ""
+    return f"{calendar_id}\t{name}\t{url}"
+
+
+def _display_event(event: Mapping[str, Any]) -> str:
+    event_id = event.get("id") or event.get("uid") or "-"
+    starts_at = event.get("starts_at") or ""
+    ends_at = event.get("ends_at") or ""
+    summary = event.get("summary") or "(no summary)"
+    location = event.get("location") or ""
+    return f"{event_id}\t{starts_at}\t{ends_at}\t{summary}\t{location}"
+
+
 def _drive_404_error(drive_id: str) -> ValueError:
     path = f"/2/drive/{drive_id}/files"
     return ValueError(
@@ -1120,6 +1208,142 @@ def cmd_contacts_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_calendar_list(args: argparse.Namespace) -> int:
+    profile, client = _calendar_profile_and_client(args)
+    calendars = client.list_calendars()
+
+    if args.json:
+        output_calendars = calendars if args.raw else slim_calendars(calendars)
+        print_json({"profile": profile.name, "count": len(calendars), "calendars": output_calendars})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Calendars: {len(calendars)}")
+        if not calendars:
+            print("No calendars found.")
+        for calendar in calendars:
+            print(_display_calendar(calendar))
+    return 0
+
+
+def cmd_calendar_upcoming(args: argparse.Namespace) -> int:
+    profile, client = _calendar_profile_and_client(args)
+    start = _now_utc()
+    end = start + datetime.timedelta(days=args.days)
+    events = client.list_events(calendar=args.calendar, start=start, end=end, limit=args.limit)
+
+    if args.json:
+        output_events = events if args.raw else slim_events(events)
+        print_json(
+            {
+                "profile": profile.name,
+                "calendar": args.calendar,
+                "days": args.days,
+                "count": len(events),
+                "events": output_events,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        if args.calendar:
+            print(f"Calendar: {args.calendar}")
+        print(f"Upcoming days: {args.days}")
+        print(f"Events: {len(events)}")
+        if not events:
+            print("No events found.")
+        for event in events:
+            print(_display_event(event))
+    return 0
+
+
+def cmd_calendar_today(args: argparse.Namespace) -> int:
+    profile, client = _calendar_profile_and_client(args)
+    today = _today()
+    start = datetime.datetime.combine(today, datetime.time.min, tzinfo=datetime.UTC)
+    end = start + datetime.timedelta(days=1)
+    events = client.list_events(calendar=args.calendar, start=start, end=end, limit=args.limit)
+
+    if args.json:
+        output_events = events if args.raw else slim_events(events)
+        print_json(
+            {
+                "profile": profile.name,
+                "calendar": args.calendar,
+                "date": today.isoformat(),
+                "count": len(events),
+                "events": output_events,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        if args.calendar:
+            print(f"Calendar: {args.calendar}")
+        print(f"Date: {today.isoformat()}")
+        print(f"Events: {len(events)}")
+        if not events:
+            print("No events found.")
+        for event in events:
+            print(_display_event(event))
+    return 0
+
+
+def cmd_calendar_search(args: argparse.Namespace) -> int:
+    profile, client = _calendar_profile_and_client(args)
+    start = _now_utc()
+    end = start + datetime.timedelta(days=args.days)
+    events = search_events(client.list_events(calendar=args.calendar, start=start, end=end), args.query, limit=args.limit)
+
+    if args.json:
+        output_events = events if args.raw else slim_events(events)
+        print_json(
+            {
+                "profile": profile.name,
+                "calendar": args.calendar,
+                "query": args.query,
+                "days": args.days,
+                "count": len(events),
+                "events": output_events,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        if args.calendar:
+            print(f"Calendar: {args.calendar}")
+        print(f"Query: {args.query}")
+        print(f"Events: {len(events)}")
+        if not events:
+            print("No matching events found.")
+        for event in events:
+            print(_display_event(event))
+    return 0
+
+
+def cmd_calendar_show(args: argparse.Namespace) -> int:
+    profile, client = _calendar_profile_and_client(args)
+    event = find_event(client.list_events(calendar=args.calendar), args.event_id)
+    if event is None:
+        raise ValueError(f"Calendar event not found: {args.event_id}")
+
+    output_event = event if args.raw else slim_event(event)
+    if args.json:
+        print_json({"profile": profile.name, "calendar": args.calendar, "event_id": args.event_id, "event": output_event})
+    else:
+        print(f"Profile: {profile.name}")
+        if args.calendar:
+            print(f"Calendar: {args.calendar}")
+        print(f"Event ID: {args.event_id}")
+        print(f"Summary: {output_event.get('summary') or '(no summary)'}")
+        starts_at = output_event.get("starts_at")
+        if starts_at:
+            print(f"Starts: {starts_at}")
+        ends_at = output_event.get("ends_at")
+        if ends_at:
+            print(f"Ends: {ends_at}")
+        location = output_event.get("location")
+        if location:
+            print(f"Location: {location}")
+    return 0
+
+
 def cmd_debug_probe(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     result = probe_profile(profile.name, profile.account_id, client)
@@ -1271,6 +1495,12 @@ def build_parser() -> argparse.ArgumentParser:
     auth_contacts.add_argument("--password", help="CardDAV password. Omit to prompt.")
     auth_contacts.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
     auth_contacts.set_defaults(func=cmd_auth_contacts)
+    auth_calendar = auth_sub.add_parser("calendar", help="Store CalDAV calendar credentials for a profile")
+    auth_calendar.add_argument("--url", help="CalDAV calendar collection URL.")
+    auth_calendar.add_argument("--username", help="CalDAV username, usually the full email address.")
+    auth_calendar.add_argument("--password", help="CalDAV password. Omit to prompt.")
+    auth_calendar.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
+    auth_calendar.set_defaults(func=cmd_auth_calendar)
 
     mail = sub.add_parser("mail", help="Read-only IMAP mail commands")
     mail_sub = mail.add_subparsers(dest="mail_command", required=True)
@@ -1352,6 +1582,40 @@ def build_parser() -> argparse.ArgumentParser:
     contacts_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw contact payload.")
     contacts_show.set_defaults(func=cmd_contacts_show)
 
+    calendar = sub.add_parser("calendar", help="Read-only CalDAV calendar commands")
+    calendar_sub = calendar.add_subparsers(dest="calendar_command", required=True)
+    calendar_list = calendar_sub.add_parser("list", help="List calendars")
+    calendar_list.add_argument("--json", action="store_true")
+    calendar_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw calendar payload.")
+    calendar_list.set_defaults(func=cmd_calendar_list)
+    calendar_upcoming = calendar_sub.add_parser("upcoming", help="List upcoming calendar events")
+    calendar_upcoming.add_argument("--days", type=int, default=14, help="Days to include from now. Defaults to 14.")
+    calendar_upcoming.add_argument("--calendar", help="Calendar ID or URL to query.")
+    calendar_upcoming.add_argument("--limit", type=int, help="Maximum events to fetch.")
+    calendar_upcoming.add_argument("--json", action="store_true")
+    calendar_upcoming.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
+    calendar_upcoming.set_defaults(func=cmd_calendar_upcoming)
+    calendar_today = calendar_sub.add_parser("today", help="List today's calendar events")
+    calendar_today.add_argument("--calendar", help="Calendar ID or URL to query.")
+    calendar_today.add_argument("--limit", type=int, help="Maximum events to fetch.")
+    calendar_today.add_argument("--json", action="store_true")
+    calendar_today.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
+    calendar_today.set_defaults(func=cmd_calendar_today)
+    calendar_search = calendar_sub.add_parser("search", help="Search calendar events")
+    calendar_search.add_argument("query", help="Case-insensitive event search query.")
+    calendar_search.add_argument("--days", type=int, default=30, help="Days to search from now. Defaults to 30.")
+    calendar_search.add_argument("--calendar", help="Calendar ID or URL to query.")
+    calendar_search.add_argument("--limit", type=int, help="Maximum matching events to show.")
+    calendar_search.add_argument("--json", action="store_true")
+    calendar_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
+    calendar_search.set_defaults(func=cmd_calendar_search)
+    calendar_show = calendar_sub.add_parser("show", help="Show one calendar event by ID or UID")
+    calendar_show.add_argument("event_id", help="Event ID or UID.")
+    calendar_show.add_argument("--calendar", help="Calendar ID or URL to query.")
+    calendar_show.add_argument("--json", action="store_true")
+    calendar_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
+    calendar_show.set_defaults(func=cmd_calendar_show)
+
     return parser
 
 
@@ -1360,7 +1624,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (BootstrapError, ContactError, InformaniakAPIError, KeyError, MailError, ValueError) as exc:
+    except (BootstrapError, CalendarError, ContactError, InformaniakAPIError, KeyError, MailError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

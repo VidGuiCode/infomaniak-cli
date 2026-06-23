@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.6 - Read-only Calendar
+
+- Added explicit CalDAV calendar setup with `ik auth calendar`.
+- Added read-only calendar commands: `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, and `calendar show`.
+- Added conservative stdlib CalDAV/ICS parsing for common calendar and VEVENT fields.
+- Added stable slim JSON output with `--raw` for full parsed calendar/event payloads.
+- Kept Calendar operations read-only; no create, update, delete, RSVP, invite, reminder write, or sync write behavior.
+
 ## v0.1.5 - Read-only Contacts
 
 - Added explicit CardDAV contacts setup with `ik auth contacts`.
