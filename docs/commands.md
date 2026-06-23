@@ -127,6 +127,8 @@ Read-only commands:
 ```bash
 ik auth mail --mailbox user@example.com --password <app-password>
 
+ik mail mailboxes           # or ik mail accounts
+ik mail hostings --json
 ik mail folders              # or ik mail labels
 ik mail list                 # both read and unread; default folder INBOX
 ik mail list --folder Spam --days 5 --json
@@ -139,6 +141,12 @@ ik mail search "invoice" --days 30 --json
 ik mail read <uid> --folder Spam --json --raw
 ik mail threads --folder Sent --days 7 --json
 ```
+
+`ik mail mailboxes` lists configured/discovered mailbox addresses. Without an API token it can still show the profile's configured default mailbox. With a main Informaniak API token and a discovered mail hosting ID, it uses the confirmed read-only `GET /1/mail_hostings/{mail_hosting_id}/mailboxes` endpoint. `ik mail accounts` is an alias.
+
+`ik mail hostings` lists mail hosting resources from the selected account's confirmed products/services discovery endpoints. `ik mail aliases` is deferred until a safe alias endpoint is confirmed.
+
+Mailbox discovery is separate from IMAP content access: `ik mail list`, `ik mail unread`, `ik mail read`, `ik mail search`, and `ik mail threads` still require `ik auth mail` with the mailbox device password from the mail setup flow.
 
 `ik mail list` defaults to the `INBOX` folder and shows both read and unread messages. Limited mail results are newest-first by default; add `--oldest-first` to show the oldest matching messages first. Each message in JSON output includes a `seen` boolean. `--days N` is a convenience shortcut for `--since` set to `today - N days`.
 

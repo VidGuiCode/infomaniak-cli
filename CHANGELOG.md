@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.9 - Mailbox/account discovery polish
+
+- Added read-only mailbox discovery commands: `mail mailboxes` and alias `mail accounts`.
+- Added `mail hostings` using confirmed account product/service discovery data.
+- Improved bootstrap default mailbox selection to prefer the authenticated user's mailbox when discovered.
+- Improved `whoami` and `doctor` mail state output for IMAP readiness and REST discovery readiness.
+- Deferred `mail aliases` until a safe alias endpoint is confirmed.
+- Kept mail content commands read-only; no SMTP/send, mark-as-read, delete, move, or archive behavior.
+
 ## v0.1.8 - kChat setup discovery
 
 - Improved kChat auth UX: `ik auth chat --url <url>` can save URL-only config for trusted `*.kchat.infomaniak.com` hosts when a main Informaniak API token exists.

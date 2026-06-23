@@ -127,6 +127,35 @@ def test_bootstrap_enriches_mailbox_and_drive_defaults_from_optional_endpoints(t
     assert profile.kchat_team_id is None
 
 
+def test_bootstrap_prefers_profile_user_mailbox_when_discovered(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+    api = FakeAPI(
+        {
+            "/2/profile": {"result": "success", "data": {"email": "user@example.com"}},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
+            "/1/accounts/42/products": {
+                "result": "success",
+                "data": [{"id": "mail-hosting-1", "name": "Example Mail", "type": "mail_hosting"}],
+            },
+            "/1/accounts/42/services": {"result": "success", "data": []},
+            "/1/mail_hostings/mail-hosting-1/mailboxes": {
+                "result": "success",
+                "data": [
+                    {"id": "mbox-1", "email": "admin@example.com"},
+                    {"id": "mbox-2", "email": "user@example.com"},
+                ],
+            },
+            "/2/drive": {"result": "success", "data": []},
+        }
+    )
+
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
+
+    assert result["default_mailbox"] == "user@example.com"
+    assert manager.get("work").default_mailbox == "user@example.com"
+
+
 def test_bootstrap_finds_drive_with_account_filtered_drive_endpoint(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update("work", make_default=True)

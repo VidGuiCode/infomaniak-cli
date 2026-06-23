@@ -16,6 +16,16 @@ from infomaniak_cli.profiles import ProfileManager
 from infomaniak_cli.services.mail import MailError
 
 
+class FakeRestAPI:
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def get(self, path, params=None):
+        self.calls.append((path, params))
+        return self.responses[path]
+
+
 def _validate_iso_date(value):
     if value is None:
         return
@@ -186,6 +196,162 @@ class TestAuthMail:
         assert profile.default_mailbox == "user@example.com"
         assert profile.imap_host == "imap.example.com"
         assert profile.imap_port == 995
+
+
+class TestMailDiscovery:
+    def test_mail_mailboxes_lists_configured_profile_mailbox_without_api_token(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+
+        assert cli.main(["mail", "mailboxes", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output == {
+            "profile": "work",
+            "account_id": None,
+            "mail_hosting_id": None,
+            "default_mailbox": "user@example.com",
+            "count": 1,
+            "mailboxes": [
+                {
+                    "id": None,
+                    "email": "user@example.com",
+                    "name": "user@example.com",
+                    "login": None,
+                    "mail_hosting_id": None,
+                    "source": "profile",
+                }
+            ],
+        }
+
+    def test_mail_mailboxes_lists_api_mailboxes_when_hosting_and_token_exist(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update(
+            "work",
+            account_id="42",
+            mail_hosting_id="mail-1",
+            default_mailbox="user@example.com",
+            make_default=True,
+        )
+        TokenStore().save_token("work", "secret-token")
+        api = FakeRestAPI(
+            {
+                "/1/mail_hostings/mail-1/mailboxes": {
+                    "result": "success",
+                    "data": [
+                        {"id": "box-1", "email": "user@example.com"},
+                        {"id": "box-2", "email": "admin@example.com"},
+                    ],
+                }
+            }
+        )
+
+        monkeypatch.setattr(cli, "_make_api_client", lambda token, base_url: api)
+
+        assert cli.main(["mail", "mailboxes", "--json"]) == 0
+
+        captured = capsys.readouterr()
+        assert "secret-token" not in captured.out
+        output = json.loads(captured.out)
+        assert output["profile"] == "work"
+        assert output["account_id"] == "42"
+        assert output["mail_hosting_id"] == "mail-1"
+        assert output["default_mailbox"] == "user@example.com"
+        assert output["count"] == 2
+        assert output["mailboxes"][0]["email"] == "user@example.com"
+        assert output["mailboxes"][0]["source"] == "api"
+        assert api.calls == [("/1/mail_hostings/mail-1/mailboxes", None)]
+
+    def test_mail_accounts_aliases_mailboxes(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+
+        assert cli.main(["mail", "accounts", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["mailboxes"][0]["email"] == "user@example.com"
+
+    def test_mail_mailboxes_guides_when_nothing_is_configured(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", make_default=True)
+
+        assert cli.main(["mail", "mailboxes"]) == 1
+
+        captured = capsys.readouterr()
+        assert "No configured or discovered mailboxes" in captured.err
+        assert "bootstrap" in captured.err
+        assert "auth mail" in captured.err
+
+    def test_mail_hostings_lists_catalog_mail_hostings(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", account_id="42", make_default=True)
+        TokenStore().save_token("work", "secret-token")
+        api = FakeRestAPI(
+            {
+                "/1/accounts/42/products": {
+                    "result": "success",
+                    "data": [{"id": "mail-1", "name": "Example Mail", "type": "mail_hosting"}],
+                },
+                "/1/accounts/42/services": {
+                    "result": "success",
+                    "data": [{"id": "mail-2", "name": "Example MX", "service_name": "email_hosting"}],
+                },
+            }
+        )
+        monkeypatch.setattr(cli, "_make_api_client", lambda token, base_url: api)
+
+        assert cli.main(["mail", "hostings", "--json"]) == 0
+
+        captured = capsys.readouterr()
+        assert "secret-token" not in captured.out
+        output = json.loads(captured.out)
+        assert output["profile"] == "work"
+        assert output["account_id"] == "42"
+        assert output["count"] == 2
+        assert [item["id"] for item in output["hostings"]] == ["mail-1", "mail-2"]
+
+    def test_mail_hostings_requires_account_context(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", make_default=True)
+        TokenStore().save_token("work", "secret-token")
+
+        assert cli.main(["mail", "hostings"]) == 1
+
+        captured = capsys.readouterr()
+        assert "No account selected" in captured.err
+        assert "bootstrap" in captured.err
+
+    def test_whoami_and_doctor_show_mail_state(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update(
+            "work",
+            account_id="42",
+            mail_hosting_id="mail-1",
+            default_mailbox="user@example.com",
+            imap_host="imap.example.com",
+            imap_port=995,
+            make_default=True,
+        )
+        MailPasswordStore().save_password("work", "secret-mail-password")
+
+        assert cli.main(["whoami", "--json"]) == 0
+        whoami = json.loads(capsys.readouterr().out)
+        assert whoami["mail"] == {
+            "default_mailbox": "user@example.com",
+            "mail_hosting_id": "mail-1",
+            "imap_host": "imap.example.com",
+            "imap_port": 995,
+            "mail_password_configured": True,
+            "imap_ready": True,
+            "rest_discovery_ready": False,
+        }
+        assert "secret-mail-password" not in json.dumps(whoami)
+
+        assert cli.main(["doctor", "--json"]) == 0
+        doctor = json.loads(capsys.readouterr().out)
+        checks = doctor["checks"]
+        assert checks["mail_imap_ready"] is True
+        assert checks["mail_rest_discovery_ready"] is False
 
 
 class TestMailUnread:

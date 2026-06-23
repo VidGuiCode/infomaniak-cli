@@ -21,6 +21,8 @@ def run_doctor(profile_name: str | None = None) -> dict[str, Any]:
         "account_selected": False,
         "default_mailbox_selected": False,
         "mail_password_configured": False,
+        "mail_imap_ready": False,
+        "mail_rest_discovery_ready": False,
         "default_drive_selected": False,
     }
 
@@ -31,6 +33,10 @@ def run_doctor(profile_name: str | None = None) -> dict[str, Any]:
         checks["account_selected"] = bool(profile.account_id or profile.account_name)
         checks["default_mailbox_selected"] = bool(profile.default_mailbox)
         checks["mail_password_configured"] = bool(selected and MailPasswordStore().has_password(selected))
+        checks["mail_imap_ready"] = bool(checks["default_mailbox_selected"] and checks["mail_password_configured"])
+        checks["mail_rest_discovery_ready"] = bool(
+            checks["token_configured"] and profile.account_id and profile.mail_hosting_id
+        )
         checks["default_drive_selected"] = bool(profile.default_drive_id or profile.default_drive_name)
 
     return {

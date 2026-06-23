@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 from .api import InformaniakAPIError
 from .profiles import ProfileManager
+from .services.mail_discovery import mailbox_address, select_default_mailbox
 
 
 class BootstrapError(RuntimeError):
@@ -54,7 +55,7 @@ def bootstrap_profile(
 
     # TODO: prompt/select among multiple drives once drive UX exists.
     drive = _first_item(drives)
-    default_mailbox = _mailbox_address(_first_item(mailboxes))
+    default_mailbox = select_default_mailbox(mailboxes, _profile_user(profile_data))
 
     metadata = {
         "informaniak_user": _profile_user(profile_data),
@@ -213,13 +214,7 @@ def _drive_id(item: Mapping[str, Any] | None) -> str | None:
 
 
 def _mailbox_address(item: Mapping[str, Any] | None) -> str | None:
-    if not item:
-        return None
-    for key in ("email", "mailbox", "mailbox_name", "address", "name", "login"):
-        value = item.get(key)
-        if value:
-            return str(value)
-    return None
+    return mailbox_address(item)
 
 
 def _profile_user(profile_data: Any) -> str | None:

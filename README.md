@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.8-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.9-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -86,6 +86,8 @@ ik drive search "invoice" --json
 ik drive info <file_id> --json
 
 ik mail folders --json
+ik mail mailboxes --json
+ik mail hostings --json
 ik mail list --days 7 --json
 ik mail unread
 ik mail search "invoice" --days 30 --json
@@ -117,8 +119,11 @@ Then:
 
 ```bash
 ik auth mail --mailbox you@example.com --password "<config.infomaniak.com device password>"
+ik mail mailboxes --json
 ik mail unread --json
 ```
+
+`ik mail mailboxes` discovers which mailbox addresses are visible from the profile/bootstrap/API context. Reading actual message content still uses IMAP, so `ik auth mail` is still required before `ik mail unread`, `ik mail list`, `ik mail read`, or `ik mail threads`.
 
 Use the full email address as the mailbox username.
 
@@ -180,7 +185,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
 | kDrive | `drive list`, `drive folders`, `drive tree`, `drive search`, `drive info` |
-| Mail | `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
+| Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
 | Contacts | `contacts list`, `contacts search`, `contacts show` |
 | Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show` |
 | kChat | `chat teams`, `chat channels`, `chat users` |
@@ -212,6 +217,8 @@ ik drive search "invoice" --json
 ik drive info <file_id> --json
 
 ik mail folders --json
+ik mail mailboxes --json
+ik mail hostings --json
 ik mail list --days 7 --json
 ik mail unread --folder INBOX --days 7 --json
 ik mail search "invoice" --days 30 --json

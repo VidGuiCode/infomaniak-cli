@@ -54,6 +54,12 @@ from .services.drive import (
     slim_folder_tree,
 )
 from .services.mail import IMAPClient, MailError, slim_message
+from .services.mail_discovery import (
+    list_mail_hostings,
+    list_mailboxes,
+    slim_mail_hosting,
+    slim_mailbox,
+)
 
 
 def print_json(data: Any) -> None:
@@ -95,6 +101,21 @@ def _kchat_main_token_fallback_possible(profile: Any, profile_name: str) -> bool
         and is_trusted_infomaniak_kchat_url(profile.kchat_url)
         and TokenStore().has_token(profile_name)
     )
+
+
+def _mail_state(profile: Any, profile_name: str) -> dict[str, Any]:
+    mail_password_configured = MailPasswordStore().has_password(profile_name)
+    imap_host = profile.imap_host or "mail.infomaniak.com"
+    imap_port = profile.imap_port or 993
+    return {
+        "default_mailbox": profile.default_mailbox,
+        "mail_hosting_id": profile.mail_hosting_id,
+        "imap_host": imap_host,
+        "imap_port": imap_port,
+        "mail_password_configured": mail_password_configured,
+        "imap_ready": bool(profile.default_mailbox and mail_password_configured),
+        "rest_discovery_ready": bool(profile.account_id and profile.mail_hosting_id and TokenStore().has_token(profile_name)),
+    }
 
 
 def _kchat_metadata(input_url: str, base_url: str | None, parsed_url: Any, team_id: str | None) -> dict[str, str]:
@@ -153,6 +174,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         return 1
 
     profile = manager.get(profile_name)
+    mail_state = _mail_state(profile, profile.name)
     chat_store = ChatTokenStore()
     chat_url_configured = bool(profile.kchat_url)
     chat_explicit_token_configured = chat_store.has_token(profile.name)
@@ -163,6 +185,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "account_id": profile.account_id,
         "account_name": profile.account_name,
         "default_mailbox": profile.default_mailbox,
+        "mail": mail_state,
         "default_drive_id": profile.default_drive_id,
         "default_drive_name": profile.default_drive_name,
         "contacts_url": profile.contacts_url,
@@ -185,7 +208,13 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         print(f"Profile: {profile.name}")
         print(f"Informaniak user: {profile.informaniak_user or 'not configured'}")
         print(f"Account: {profile.account_name or profile.account_id or 'not selected'}")
-        print(f"Default mailbox: {profile.default_mailbox or 'not selected'}")
+        if mail_state["imap_ready"]:
+            mail_status = f"{profile.default_mailbox} (IMAP ready via {mail_state['imap_host']}:{mail_state['imap_port']})"
+        elif profile.default_mailbox:
+            mail_status = f"{profile.default_mailbox} (mail password needed)"
+        else:
+            mail_status = "not selected"
+        print(f"Mail: {mail_status}")
         print(f"Default kDrive: {profile.default_drive_name or profile.default_drive_id or 'not selected'}")
         print(f"Contacts: {profile.contacts_username or profile.contacts_url or 'not selected'}")
         print(f"Calendar: {profile.calendar_username or profile.calendar_url or 'not selected'}")
@@ -1008,6 +1037,94 @@ def cmd_mail_threads(args: argparse.Namespace) -> int:
     return 0
 
 
+def _profile_for_mail_discovery(args: argparse.Namespace) -> Any:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        raise ValueError("No profile selected. Run `ik setup --profile <name>` first.")
+    return manager.get(name)
+
+
+def _profile_mailbox_item(profile: Any) -> dict[str, Any] | None:
+    if not profile.default_mailbox:
+        return None
+    return {"email": profile.default_mailbox, "mail_hosting_id": profile.mail_hosting_id}
+
+
+def cmd_mail_mailboxes(args: argparse.Namespace) -> int:
+    profile = _profile_for_mail_discovery(args)
+    token_store = TokenStore()
+    source = "profile"
+    mailboxes: list[Mapping[str, Any]] = []
+
+    if profile.mail_hosting_id and token_store.has_token(profile.name):
+        client = _make_api_client(token_store.load_token(profile.name), args.base_url)
+        mailboxes = list_mailboxes(client, str(profile.mail_hosting_id))
+        source = "api"
+    else:
+        profile_item = _profile_mailbox_item(profile)
+        if profile_item:
+            mailboxes = [profile_item]
+
+    if not mailboxes:
+        raise ValueError(
+            f"No configured or discovered mailboxes for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} bootstrap` to discover mailboxes, or "
+            f"`ik --profile {profile.name} auth mail --mailbox <email>` to configure one manually."
+        )
+
+    if args.json:
+        output_mailboxes = mailboxes if args.raw else [
+            slim_mailbox(mailbox, mail_hosting_id=profile.mail_hosting_id, source=source) for mailbox in mailboxes
+        ]
+        print_json(
+            {
+                "profile": profile.name,
+                "account_id": profile.account_id,
+                "mail_hosting_id": profile.mail_hosting_id,
+                "default_mailbox": profile.default_mailbox,
+                "count": len(mailboxes),
+                "mailboxes": output_mailboxes,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Mail hosting ID: {profile.mail_hosting_id or 'not selected'}")
+        print(f"Default mailbox: {profile.default_mailbox or 'not selected'}")
+        print(f"Mailboxes: {len(mailboxes)}")
+        for mailbox in mailboxes:
+            slim = slim_mailbox(mailbox, mail_hosting_id=profile.mail_hosting_id, source=source)
+            print(f"{slim['id'] or '-'}\t{slim['email'] or '-'}\t{slim['source'] or '-'}")
+    return 0
+
+
+def cmd_mail_hostings(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    account_id = _account_id_or_error(args, profile)
+    hostings = list_mail_hostings(client, account_id)
+
+    if args.json:
+        output_hostings = hostings if args.raw else [slim_mail_hosting(hosting) for hosting in hostings]
+        print_json(
+            {
+                "profile": profile.name,
+                "account_id": account_id,
+                "count": len(hostings),
+                "hostings": output_hostings,
+            }
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Account ID: {account_id}")
+        print(f"Mail hostings: {len(hostings)}")
+        if not hostings:
+            print("No mail hostings found.")
+        for hosting in hostings:
+            slim = slim_mail_hosting(hosting)
+            print(f"{slim['id'] or '-'}\t{slim['name'] or '-'}\t{slim['type'] or '-'}")
+    return 0
+
+
 def cmd_bootstrap(args: argparse.Namespace) -> int:
     manager = ProfileManager()
     name = args.profile or manager.get_current_name()
@@ -1813,6 +1930,19 @@ def build_parser() -> argparse.ArgumentParser:
     mail_labels.add_argument("--json", action="store_true")
     mail_labels.add_argument("--raw", action="store_true")
     mail_labels.set_defaults(func=cmd_mail_folders)
+    mail_mailboxes = mail_sub.add_parser("mailboxes", help="List configured/discovered mailboxes")
+    mail_mailboxes.add_argument("--json", action="store_true")
+    mail_mailboxes.add_argument("--raw", action="store_true", help="With --json, emit the full raw mailbox payload.")
+    mail_mailboxes.set_defaults(func=cmd_mail_mailboxes)
+    mail_accounts = mail_sub.add_parser("accounts", help="Alias for 'mailboxes'")
+    mail_accounts.add_argument("--json", action="store_true")
+    mail_accounts.add_argument("--raw", action="store_true")
+    mail_accounts.set_defaults(func=cmd_mail_mailboxes)
+    mail_hostings = mail_sub.add_parser("hostings", help="List mail hostings from account product/service discovery")
+    mail_hostings.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
+    mail_hostings.add_argument("--json", action="store_true")
+    mail_hostings.add_argument("--raw", action="store_true", help="With --json, emit the full raw hosting payload.")
+    mail_hostings.set_defaults(func=cmd_mail_hostings)
     mail_list = mail_sub.add_parser("list", help="List messages in a folder")
     mail_list.add_argument("--folder", "-f", default="INBOX", help="Folder to list. Defaults to INBOX.")
     mail_list.add_argument("--limit", "-n", type=int, default=20, help="Maximum messages. Defaults to 20.")
