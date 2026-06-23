@@ -149,6 +149,36 @@ def test_auth_chat_stdin_saves_token_and_metadata_without_echo(tmp_path, monkeyp
     assert profile.kchat_team_id == "team-1"
 
 
+def test_auth_chat_url_uses_main_token_fallback_for_trusted_host(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    token = "secret-main-token"
+    TokenStore().save_token("work", token)
+
+    assert cli.main(["auth", "chat", "--url", "https://cylro.kchat.infomaniak.com"]) == 0
+
+    captured = capsys.readouterr()
+    assert token not in captured.out
+    assert token not in captured.err
+    assert not ChatTokenStore().has_token("work")
+    profile = ProfileManager().get("work")
+    assert profile.kchat_url == "https://cylro.kchat.infomaniak.com"
+    assert "main Informaniak API token fallback" in captured.out
+
+
+def test_auth_chat_url_needs_token_or_main_fallback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+
+    assert cli.main(["auth", "chat", "--url", "https://cylro.kchat.infomaniak.com"]) == 2
+
+    captured = capsys.readouterr()
+    assert "--token" in captured.err
+    assert "trusted Infomaniak kChat host" in captured.err
+    assert not ChatTokenStore().has_token("work")
+    assert ProfileManager().get("work").kchat_url is None
+
+
 def test_auth_chat_requires_url_first_time(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("work", make_default=True)

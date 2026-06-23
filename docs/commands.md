@@ -81,7 +81,7 @@ ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 
 `auth calendar` stores explicit CalDAV calendar credentials. It does not reuse mail or contacts credentials automatically.
 
-`auth chat` stores explicit kChat/Mattermost-compatible connection settings. It does not reuse Informaniak API, mail, contacts, or calendar credentials automatically.
+`auth chat` stores kChat/Mattermost-compatible connection settings. A dedicated kChat token is preferred. For trusted Infomaniak kChat hosts matching `https://*.kchat.infomaniak.com`, `ik auth chat --url <url>` may save URL-only config and try the existing main Informaniak API token as bearer auth. The main token is never sent to arbitrary user-provided hosts.
 
 ## Account / environment discovery
 
@@ -185,6 +185,7 @@ Read-only commands:
 
 ```bash
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
+ik auth chat --url https://<workspace>.kchat.infomaniak.com
 
 ik chat teams
 ik chat teams --json
@@ -192,11 +193,13 @@ ik chat channels --team-id <team_id> --limit 50 --json
 ik chat users --team-id <team_id> --limit 50 --json
 ```
 
-`ik chat teams` uses the configured kChat base URL/token and calls the Mattermost-compatible `GET /api/v4/users/me/teams` endpoint.
+`ik chat teams` uses the configured kChat base URL and calls the Mattermost-compatible `GET /api/v4/users/me/teams` endpoint. Authentication order is explicit saved kChat token first, then the saved main Informaniak API token only for trusted `*.kchat.infomaniak.com` hosts.
 
 `ik chat channels` lists channels for a team using `GET /api/v4/teams/{team_id}/channels`. If no team is saved and the profile has access to exactly one team, that team is used. Otherwise pass `--team-id <id>` or save one with `ik auth chat --team-id <id>`.
 
 `ik chat users` lists users for a team using `GET /api/v4/users?in_team={team_id}`.
+
+If the trusted-host fallback is rejected, save a dedicated token with `ik auth chat --url <url> --stdin`.
 
 Not implemented in v0.1.7: posting, reactions, edits, deletes, channel creation, membership changes, webhooks, post search, or thread display.
 

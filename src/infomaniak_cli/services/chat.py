@@ -22,9 +22,11 @@ class ChatClient:
         token: str,
         *,
         opener: Callable[..., Any] | None = None,
+        auth_source: str = "explicit_chat_token",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token.strip()
+        self.auth_source = auth_source
         self._opener = opener or urllib.request.urlopen
 
     def list_teams(self) -> list[Mapping[str, Any]]:
@@ -59,8 +61,13 @@ class ChatClient:
             with self._opener(request, timeout=30) as response:
                 text = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
             if exc.code in (401, 403):
+                if self.auth_source == "main_token_fallback":
+                    raise ChatError(
+                        "kChat rejected the main Informaniak API token. "
+                        "Run ik auth chat --url <url> --stdin to save a dedicated kChat token."
+                    ) from exc
                 raise ChatError(
                     f"kChat request failed: authentication failed or insufficient scope (HTTP {exc.code})"
                 ) from exc
@@ -76,6 +83,12 @@ class ChatClient:
             return json.loads(text)
         except json.JSONDecodeError as exc:
             raise ChatError("Unexpected kChat response: invalid JSON") from exc
+
+
+def is_trusted_infomaniak_kchat_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url.strip())
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return parsed.scheme == "https" and host.endswith(".kchat.infomaniak.com") and host != "kchat.infomaniak.com"
 
 
 def slim_team(team: Mapping[str, Any]) -> dict[str, Any]:

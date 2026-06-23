@@ -2,9 +2,9 @@ import json
 import urllib.error
 
 from infomaniak_cli import cli
-from infomaniak_cli.auth import ChatTokenStore
+from infomaniak_cli.auth import ChatTokenStore, TokenStore
 from infomaniak_cli.profiles import ProfileManager
-from infomaniak_cli.services.chat import ChatClient, ChatError, slim_channel, slim_team, slim_user
+from infomaniak_cli.services.chat import ChatClient, ChatError, is_trusted_infomaniak_kchat_url, slim_channel, slim_team, slim_user
 
 
 TEAMS = [
@@ -56,9 +56,10 @@ USERS = [
 
 
 class FakeChatClient:
-    def __init__(self, base_url, token):
+    def __init__(self, base_url, token, **kwargs):
         self.base_url = base_url
         self.token = token
+        self.kwargs = kwargs
         self.calls = []
 
     def list_teams(self):
@@ -172,12 +173,54 @@ def test_chat_client_errors_are_redacted():
     assert "token=***" in message
 
 
+def test_trusted_infomaniak_kchat_host_detection():
+    assert is_trusted_infomaniak_kchat_url("https://cylro.kchat.infomaniak.com")
+    assert is_trusted_infomaniak_kchat_url("https://team-name.kchat.infomaniak.com/")
+    assert not is_trusted_infomaniak_kchat_url("https://kchat.infomaniak.com")
+    assert not is_trusted_infomaniak_kchat_url("https://example.com")
+    assert not is_trusted_infomaniak_kchat_url("https://cylro.kchat.infomaniak.com.example.com")
+
+
+def test_chat_client_fallback_rejection_is_actionable_and_redacted():
+    token = "secret-main-token"
+
+    def opener(request, timeout=30):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            401,
+            "Unauthorized",
+            {},
+            None,
+        )
+
+    client = ChatClient(
+        "https://cylro.kchat.infomaniak.com",
+        token,
+        opener=opener,
+        auth_source="main_token_fallback",
+    )
+
+    try:
+        client.list_teams()
+    except ChatError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected ChatError")
+
+    assert message == (
+        "kChat rejected the main Informaniak API token. "
+        "Run ik auth chat --url <url> --stdin to save a dedicated kChat token."
+    )
+    assert token not in message
+
+
 def test_cli_chat_teams_slim_json(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch)
     created_clients = []
 
-    def make_client(base_url, token):
+    def make_client(base_url, token, **kwargs):
         client = FakeChatClient(base_url, token)
+        client.kwargs = kwargs
         created_clients.append(client)
         return client
 
@@ -198,6 +241,130 @@ def test_cli_chat_teams_slim_json(tmp_path, monkeypatch, capsys):
     assert created_clients[0].token == "secret-chat-token"
 
 
+def test_cli_chat_uses_explicit_chat_token_before_main_token(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work",
+        kchat_url="https://cylro.kchat.infomaniak.com",
+        make_default=True,
+    )
+    TokenStore().save_token("work", "secret-main-token")
+    ChatTokenStore().save_token("work", "secret-chat-token")
+    created_clients = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        client.kwargs = kwargs
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+
+    assert cli.main(["chat", "teams", "--json"]) == 0
+
+    captured = capsys.readouterr()
+    assert "secret-main-token" not in captured.out
+    assert "secret-main-token" not in captured.err
+    assert created_clients[0].token == "secret-chat-token"
+    assert created_clients[0].kwargs["auth_source"] == "explicit_chat_token"
+
+
+def test_cli_chat_uses_main_token_fallback_for_trusted_host(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work",
+        kchat_url="https://cylro.kchat.infomaniak.com",
+        make_default=True,
+    )
+    TokenStore().save_token("work", "secret-main-token")
+    created_clients = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        client.kwargs = kwargs
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+
+    assert cli.main(["chat", "teams", "--json"]) == 0
+
+    captured = capsys.readouterr()
+    assert "secret-main-token" not in captured.out
+    assert "secret-main-token" not in captured.err
+    assert created_clients[0].base_url == "https://cylro.kchat.infomaniak.com"
+    assert created_clients[0].token == "secret-main-token"
+    assert created_clients[0].kwargs["auth_source"] == "main_token_fallback"
+
+
+def test_cli_chat_refuses_main_token_fallback_for_untrusted_host(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work",
+        kchat_url="https://example.com",
+        make_default=True,
+    )
+    TokenStore().save_token("work", "secret-main-token")
+
+    def fail_client(*args, **kwargs):
+        raise AssertionError("main token must not be sent to untrusted hosts")
+
+    monkeypatch.setattr(cli, "ChatClient", fail_client)
+
+    assert cli.main(["chat", "teams", "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert "secret-main-token" not in captured.out
+    assert "secret-main-token" not in captured.err
+    assert "No kChat token configured for profile: work" in captured.err
+    assert "trusted Infomaniak kChat host" in captured.err
+
+
+def test_cli_chat_fallback_rejection_does_not_leak_token(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work",
+        kchat_url="https://cylro.kchat.infomaniak.com",
+        make_default=True,
+    )
+    TokenStore().save_token("work", "secret-main-token")
+
+    class RejectingClient(FakeChatClient):
+        def list_teams(self):
+            raise ChatError(
+                "kChat rejected the main Informaniak API token. "
+                "Run ik auth chat --url <url> --stdin to save a dedicated kChat token."
+            )
+
+    monkeypatch.setattr(cli, "ChatClient", RejectingClient)
+
+    assert cli.main(["chat", "teams", "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert "secret-main-token" not in captured.out
+    assert "secret-main-token" not in captured.err
+    assert "kChat rejected the main Informaniak API token" in captured.err
+
+
+def test_whoami_distinguishes_chat_auth_state(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work",
+        kchat_url="https://cylro.kchat.infomaniak.com",
+        make_default=True,
+    )
+    TokenStore().save_token("work", "secret-main-token")
+
+    assert cli.main(["whoami", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["kchat_url"] == "https://cylro.kchat.infomaniak.com"
+    assert output["kchat_url_configured"] is True
+    assert output["kchat_explicit_token_configured"] is False
+    assert output["kchat_main_token_fallback_possible"] is True
+    assert "secret-main-token" not in json.dumps(output)
+
+
 def test_cli_chat_teams_raw_json(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, "ChatClient", FakeChatClient)
@@ -212,8 +379,9 @@ def test_cli_chat_channels_uses_configured_team_id_and_limit(tmp_path, monkeypat
     _configured_profile(tmp_path, monkeypatch, team_id="team-1")
     created_clients = []
 
-    def make_client(base_url, token):
+    def make_client(base_url, token, **kwargs):
         client = FakeChatClient(base_url, token)
+        client.kwargs = kwargs
         created_clients.append(client)
         return client
 
@@ -233,8 +401,9 @@ def test_cli_chat_channels_team_id_override(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch, team_id="team-1")
     created_clients = []
 
-    def make_client(base_url, token):
+    def make_client(base_url, token, **kwargs):
         client = FakeChatClient(base_url, token)
+        client.kwargs = kwargs
         created_clients.append(client)
         return client
 

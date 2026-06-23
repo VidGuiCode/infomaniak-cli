@@ -28,6 +28,7 @@ from .services.calendar import (
 from .services.chat import (
     ChatClient,
     ChatError,
+    is_trusted_infomaniak_kchat_url,
     slim_channels,
     slim_teams,
     slim_users,
@@ -86,6 +87,14 @@ def _profile_user(profile_data: Any) -> str | None:
     return None
 
 
+def _kchat_main_token_fallback_possible(profile: Any, profile_name: str) -> bool:
+    return bool(
+        profile.kchat_url
+        and is_trusted_infomaniak_kchat_url(profile.kchat_url)
+        and TokenStore().has_token(profile_name)
+    )
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     profile_name = args.profile
     if not profile_name and not args.non_interactive:
@@ -109,6 +118,10 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         return 1
 
     profile = manager.get(profile_name)
+    chat_store = ChatTokenStore()
+    chat_url_configured = bool(profile.kchat_url)
+    chat_explicit_token_configured = chat_store.has_token(profile.name)
+    chat_main_token_fallback_possible = _kchat_main_token_fallback_possible(profile, profile.name)
     data = {
         "profile": profile.name,
         "informaniak_user": profile.informaniak_user,
@@ -123,6 +136,9 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "calendar_username": profile.calendar_username,
         "kchat_url": profile.kchat_url,
         "kchat_team_id": profile.kchat_team_id,
+        "kchat_url_configured": chat_url_configured,
+        "kchat_explicit_token_configured": chat_explicit_token_configured,
+        "kchat_main_token_fallback_possible": chat_main_token_fallback_possible,
     }
     if args.json:
         print_json(data)
@@ -134,8 +150,15 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         print(f"Default kDrive: {profile.default_drive_name or profile.default_drive_id or 'not selected'}")
         print(f"Contacts: {profile.contacts_username or profile.contacts_url or 'not selected'}")
         print(f"Calendar: {profile.calendar_username or profile.calendar_url or 'not selected'}")
-        chat_status = profile.kchat_url or profile.kchat_team_id
-        print(f"kChat: {chat_status or 'not selected'}")
+        if not chat_url_configured:
+            chat_status = "not selected"
+        elif chat_explicit_token_configured:
+            chat_status = f"{profile.kchat_url} (explicit token configured)"
+        elif chat_main_token_fallback_possible:
+            chat_status = f"{profile.kchat_url} (main-token fallback possible)"
+        else:
+            chat_status = f"{profile.kchat_url} (token needed)"
+        print(f"kChat: {chat_status}")
     return 0
 
 
@@ -491,18 +514,45 @@ def cmd_auth_chat(args: argparse.Namespace) -> int:
         print("error: --url is required the first time kChat is configured", file=sys.stderr)
         return 2
 
+    token = None
     if args.stdin:
         token = sys.stdin.read().strip()
-    else:
-        token = args.token.strip() if args.token else input("kChat token: ").strip()
-    ChatTokenStore().save_token(name, token)
+    elif args.token:
+        token = args.token.strip()
+
     metadata = {"kchat_url": chat_url}
     if args.team_id:
         metadata["kchat_team_id"] = args.team_id.strip()
-    manager.create_or_update(name, **metadata)
 
-    print(f"kChat token saved for profile: {name}")
-    return 0
+    if token:
+        ChatTokenStore().save_token(name, token)
+        manager.create_or_update(name, **metadata)
+        print(f"kChat token saved for profile: {name}")
+        return 0
+
+    chat_store = ChatTokenStore()
+    if chat_store.has_token(name):
+        manager.create_or_update(name, **metadata)
+        print(f"kChat settings saved for profile: {name}")
+        return 0
+
+    if is_trusted_infomaniak_kchat_url(chat_url) and TokenStore().has_token(name):
+        manager.create_or_update(name, **metadata)
+        print(f"kChat URL saved for profile: {name} (main Informaniak API token fallback will be tried)")
+        return 0
+
+    if is_trusted_infomaniak_kchat_url(chat_url):
+        print(
+            "error: --token or --stdin is required unless this profile already has a main Informaniak API token "
+            "for trusted Infomaniak kChat host fallback.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "error: --token or --stdin is required for kChat URLs that are not trusted Infomaniak kChat hosts.",
+            file=sys.stderr,
+        )
+    return 2
 
 
 def _mail_profile_or_error(args: argparse.Namespace) -> tuple[Any, str, str, str]:
@@ -602,17 +652,39 @@ def _chat_profile_and_client(args: argparse.Namespace) -> tuple[Any, ChatClient]
     if not profile.kchat_url:
         raise ValueError(
             f"No kChat configured for profile: {profile.name}. "
-            f"Run `ik --profile {profile.name} auth chat --url <kchat-base-url> --token <token>` first."
+            f"Run `ik --profile {profile.name} auth chat --url <kchat-base-url> --stdin`, "
+            "or omit the token only for trusted Infomaniak kChat hosts with a main API token configured."
         )
 
     chat_store = ChatTokenStore()
-    if not chat_store.has_token(name):
-        raise ValueError(
-            f"No kChat token configured for profile: {profile.name}. "
-            f"Run `ik --profile {profile.name} auth chat --url <kchat-base-url> --token <token>` first."
+    if chat_store.has_token(name):
+        return profile, ChatClient(
+            profile.kchat_url,
+            chat_store.load_token(name),
+            auth_source="explicit_chat_token",
         )
 
-    return profile, ChatClient(profile.kchat_url, chat_store.load_token(name))
+    trusted_host = is_trusted_infomaniak_kchat_url(profile.kchat_url)
+    token_store = TokenStore()
+    if trusted_host and token_store.has_token(name):
+        return profile, ChatClient(
+            profile.kchat_url,
+            token_store.load_token(name),
+            auth_source="main_token_fallback",
+        )
+
+    if trusted_host:
+        raise ValueError(
+            f"No kChat token configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth chat --url <kchat-base-url> --stdin`, "
+            "or configure a main Informaniak API token for trusted Infomaniak kChat host fallback."
+        )
+
+    raise ValueError(
+        f"No kChat token configured for profile: {profile.name}. "
+        "Main-token fallback is only allowed for trusted Infomaniak kChat hosts. "
+        f"Run `ik --profile {profile.name} auth chat --url <kchat-base-url> --stdin` first."
+    )
 
 
 def _chat_team_id_or_error(args: argparse.Namespace, profile: Any, client: ChatClient) -> str:
@@ -1658,7 +1730,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_calendar.set_defaults(func=cmd_auth_calendar)
     auth_chat = auth_sub.add_parser("chat", help="Store kChat/Mattermost connection settings for a profile")
     auth_chat.add_argument("--url", help="kChat base URL.")
-    auth_chat.add_argument("--token", help="kChat token. Omit to prompt.")
+    auth_chat.add_argument("--token", help="kChat token. Omit only for trusted main-token fallback.")
     auth_chat.add_argument("--stdin", action="store_true", help="Read the token from standard input.")
     auth_chat.add_argument("--team-id", help="Default kChat team ID.")
     auth_chat.set_defaults(func=cmd_auth_chat)
