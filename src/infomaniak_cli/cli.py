@@ -28,7 +28,9 @@ from .services.calendar import (
 from .services.chat import (
     ChatClient,
     ChatError,
+    derive_kchat_api_base_candidates,
     is_trusted_infomaniak_kchat_url,
+    parse_ksuite_kchat_url,
     slim_channels,
     slim_teams,
     slim_users,
@@ -95,6 +97,39 @@ def _kchat_main_token_fallback_possible(profile: Any, profile_name: str) -> bool
     )
 
 
+def _kchat_metadata(input_url: str, base_url: str | None, parsed_url: Any, team_id: str | None) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    if base_url:
+        metadata["kchat_url"] = base_url
+    if parsed_url:
+        metadata.update(
+            {
+                "kchat_ksuite_url": parsed_url.original_url,
+                "kchat_ksuite_account_id": parsed_url.account_id,
+                "kchat_workspace_slug": parsed_url.workspace_slug,
+            }
+        )
+        if parsed_url.channel_slug:
+            metadata["kchat_default_channel_slug"] = parsed_url.channel_slug
+    elif input_url:
+        metadata["kchat_url"] = base_url or input_url
+    if team_id:
+        metadata["kchat_team_id"] = team_id.strip()
+    return metadata
+
+
+def _discover_kchat_api_base(candidates: list[str], token: str) -> str | None:
+    for candidate in candidates:
+        if not is_trusted_infomaniak_kchat_url(candidate):
+            continue
+        try:
+            ChatClient(candidate, token, auth_source="main_token_fallback").list_teams()
+        except ChatError:
+            continue
+        return candidate
+    return None
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     profile_name = args.profile
     if not profile_name and not args.non_interactive:
@@ -135,6 +170,10 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "calendar_url": profile.calendar_url,
         "calendar_username": profile.calendar_username,
         "kchat_url": profile.kchat_url,
+        "kchat_ksuite_url": profile.kchat_ksuite_url,
+        "kchat_ksuite_account_id": profile.kchat_ksuite_account_id,
+        "kchat_workspace_slug": profile.kchat_workspace_slug,
+        "kchat_default_channel_slug": profile.kchat_default_channel_slug,
         "kchat_team_id": profile.kchat_team_id,
         "kchat_url_configured": chat_url_configured,
         "kchat_explicit_token_configured": chat_explicit_token_configured,
@@ -509,8 +548,8 @@ def cmd_auth_chat(args: argparse.Namespace) -> int:
         return 2
 
     profile = manager.get(name)
-    chat_url = (args.url or profile.kchat_url or "").strip()
-    if not chat_url:
+    input_url = (args.url or profile.kchat_url or "").strip()
+    if not input_url:
         print("error: --url is required the first time kChat is configured", file=sys.stderr)
         return 2
 
@@ -520,9 +559,10 @@ def cmd_auth_chat(args: argparse.Namespace) -> int:
     elif args.token:
         token = args.token.strip()
 
-    metadata = {"kchat_url": chat_url}
-    if args.team_id:
-        metadata["kchat_team_id"] = args.team_id.strip()
+    parsed_ksuite_url = parse_ksuite_kchat_url(input_url)
+    candidates = derive_kchat_api_base_candidates(input_url)
+    base_url = candidates[0] if candidates else input_url
+    metadata = _kchat_metadata(input_url, base_url, parsed_ksuite_url, args.team_id)
 
     if token:
         ChatTokenStore().save_token(name, token)
@@ -536,12 +576,38 @@ def cmd_auth_chat(args: argparse.Namespace) -> int:
         print(f"kChat settings saved for profile: {name}")
         return 0
 
-    if is_trusted_infomaniak_kchat_url(chat_url) and TokenStore().has_token(name):
+    token_store = TokenStore()
+    if parsed_ksuite_url and token_store.has_token(name):
+        discovered_base_url = _discover_kchat_api_base(candidates, token_store.load_token(name))
+        if discovered_base_url:
+            manager.create_or_update(
+                name,
+                **_kchat_metadata(input_url, discovered_base_url, parsed_ksuite_url, args.team_id),
+            )
+            print(f"kChat API URL discovered and saved for profile: {name}")
+            return 0
+
+        manager.create_or_update(name, **_kchat_metadata(input_url, None, parsed_ksuite_url, args.team_id))
+        print(
+            "error: Could not confirm a working kChat API base URL from the kSuite URL. "
+            f"Run `ik --profile {name} auth chat --url {input_url} --stdin` to save a dedicated kChat token.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if is_trusted_infomaniak_kchat_url(base_url) and token_store.has_token(name):
         manager.create_or_update(name, **metadata)
         print(f"kChat URL saved for profile: {name} (main Informaniak API token fallback will be tried)")
         return 0
 
-    if is_trusted_infomaniak_kchat_url(chat_url):
+    if parsed_ksuite_url:
+        manager.create_or_update(name, **_kchat_metadata(input_url, None, parsed_ksuite_url, args.team_id))
+        print(
+            "error: --token or --stdin is required to confirm the kChat API URL from this kSuite browser URL "
+            "unless this profile already has a main Informaniak API token.",
+            file=sys.stderr,
+        )
+    elif is_trusted_infomaniak_kchat_url(base_url):
         print(
             "error: --token or --stdin is required unless this profile already has a main Informaniak API token "
             "for trusted Infomaniak kChat host fallback.",

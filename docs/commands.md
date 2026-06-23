@@ -81,7 +81,7 @@ ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 
 `auth calendar` stores explicit CalDAV calendar credentials. It does not reuse mail or contacts credentials automatically.
 
-`auth chat` stores kChat/Mattermost-compatible connection settings. A dedicated kChat token is preferred. For trusted Infomaniak kChat hosts matching `https://*.kchat.infomaniak.com`, `ik auth chat --url <url>` may save URL-only config and try the existing main Informaniak API token as bearer auth. The main token is never sent to arbitrary user-provided hosts.
+`auth chat` stores kChat/Mattermost-compatible connection settings. It accepts either the kSuite browser URL or a direct trusted API base. For kSuite URLs like `https://ksuite.infomaniak.com/<account_id>/kchat/<workspace>/channels/<channel>`, the CLI parses the account ID, workspace slug, and optional channel slug, derives `https://<workspace>.kchat.infomaniak.com`, and confirms it with read-only `GET /api/v4/users/me/teams` when a main Informaniak API token exists. The main token is never sent to arbitrary user-provided hosts.
 
 ## Account / environment discovery
 
@@ -184,6 +184,7 @@ Not implemented in v0.1.7: download, upload, move, delete, share changes, trash,
 Read-only commands:
 
 ```bash
+ik auth chat --url https://ksuite.infomaniak.com/<account_id>/kchat/<workspace>/channels/<channel>
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 ik auth chat --url https://<workspace>.kchat.infomaniak.com
 
@@ -193,7 +194,7 @@ ik chat channels --team-id <team_id> --limit 50 --json
 ik chat users --team-id <team_id> --limit 50 --json
 ```
 
-`ik chat teams` uses the configured kChat base URL and calls the Mattermost-compatible `GET /api/v4/users/me/teams` endpoint. Authentication order is explicit saved kChat token first, then the saved main Informaniak API token only for trusted `*.kchat.infomaniak.com` hosts.
+`ik chat teams` uses the configured kChat API base URL and calls the Mattermost-compatible `GET /api/v4/users/me/teams` endpoint. Authentication order is explicit saved kChat token first, then the saved main Informaniak API token only for trusted `*.kchat.infomaniak.com` hosts.
 
 `ik chat channels` lists channels for a team using `GET /api/v4/teams/{team_id}/channels`. If no team is saved and the profile has access to exactly one team, that team is used. Otherwise pass `--team-id <id>` or save one with `ik auth chat --team-id <id>`.
 

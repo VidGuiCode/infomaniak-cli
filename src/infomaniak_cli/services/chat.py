@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,6 +13,14 @@ from ..api import redact_secret
 
 class ChatError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class KSuiteKChatUrl:
+    original_url: str
+    account_id: str
+    workspace_slug: str
+    channel_slug: str | None = None
 
 
 class ChatClient:
@@ -91,6 +101,48 @@ def is_trusted_infomaniak_kchat_url(url: str) -> bool:
     return parsed.scheme == "https" and host.endswith(".kchat.infomaniak.com") and host != "kchat.infomaniak.com"
 
 
+def parse_ksuite_kchat_url(url: str) -> KSuiteKChatUrl | None:
+    clean_url = url.strip()
+    parsed = urllib.parse.urlparse(clean_url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https" or host != "ksuite.infomaniak.com":
+        return None
+
+    parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]
+    if len(parts) < 3 or parts[1] != "kchat":
+        return None
+
+    account_id = parts[0]
+    workspace_slug = parts[2]
+    if not account_id.isdigit() or not _is_safe_kchat_slug(workspace_slug):
+        return None
+
+    channel_slug = None
+    if len(parts) >= 5 and parts[3] == "channels" and _is_safe_kchat_slug(parts[4]):
+        channel_slug = parts[4]
+
+    return KSuiteKChatUrl(
+        original_url=clean_url,
+        account_id=account_id,
+        workspace_slug=workspace_slug,
+        channel_slug=channel_slug,
+    )
+
+
+def derive_kchat_api_base_candidates(url: str) -> list[str]:
+    clean_url = url.strip()
+    if is_trusted_infomaniak_kchat_url(clean_url):
+        parsed = urllib.parse.urlparse(clean_url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        return [f"https://{host}"]
+
+    parsed_ksuite_url = parse_ksuite_kchat_url(clean_url)
+    if parsed_ksuite_url:
+        return [f"https://{parsed_ksuite_url.workspace_slug}.kchat.infomaniak.com"]
+
+    return []
+
+
 def slim_team(team: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": _string_or_none(team.get("id")),
@@ -145,3 +197,7 @@ def _string_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _is_safe_kchat_slug(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", value))

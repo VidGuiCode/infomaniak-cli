@@ -4,7 +4,16 @@ import urllib.error
 from infomaniak_cli import cli
 from infomaniak_cli.auth import ChatTokenStore, TokenStore
 from infomaniak_cli.profiles import ProfileManager
-from infomaniak_cli.services.chat import ChatClient, ChatError, is_trusted_infomaniak_kchat_url, slim_channel, slim_team, slim_user
+from infomaniak_cli.services.chat import (
+    ChatClient,
+    ChatError,
+    derive_kchat_api_base_candidates,
+    is_trusted_infomaniak_kchat_url,
+    parse_ksuite_kchat_url,
+    slim_channel,
+    slim_team,
+    slim_user,
+)
 
 
 TEAMS = [
@@ -179,6 +188,37 @@ def test_trusted_infomaniak_kchat_host_detection():
     assert not is_trusted_infomaniak_kchat_url("https://kchat.infomaniak.com")
     assert not is_trusted_infomaniak_kchat_url("https://example.com")
     assert not is_trusted_infomaniak_kchat_url("https://cylro.kchat.infomaniak.com.example.com")
+
+
+def test_parse_ksuite_browser_kchat_url():
+    parsed = parse_ksuite_kchat_url(
+        "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
+    )
+
+    assert parsed is not None
+    assert parsed.account_id == "1988835"
+    assert parsed.workspace_slug == "cylro"
+    assert parsed.channel_slug == "town-square"
+    assert parsed.original_url == "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
+
+
+def test_ksuite_like_urls_are_not_trusted_on_other_hosts():
+    url = "https://example.com/1988835/kchat/cylro/channels/town-square"
+
+    assert parse_ksuite_kchat_url(url) is None
+    assert derive_kchat_api_base_candidates(url) == []
+
+
+def test_derive_kchat_api_base_candidate_from_ksuite_url():
+    assert derive_kchat_api_base_candidates(
+        "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
+    ) == ["https://cylro.kchat.infomaniak.com"]
+
+
+def test_direct_trusted_kchat_url_candidate_is_normalized():
+    assert derive_kchat_api_base_candidates("https://cylro.kchat.infomaniak.com/some/path") == [
+        "https://cylro.kchat.infomaniak.com"
+    ]
 
 
 def test_chat_client_fallback_rejection_is_actionable_and_redacted():

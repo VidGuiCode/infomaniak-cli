@@ -166,6 +166,111 @@ def test_auth_chat_url_uses_main_token_fallback_for_trusted_host(tmp_path, monke
     assert "main Informaniak API token fallback" in captured.out
 
 
+def test_auth_chat_ksuite_url_discovers_working_api_base(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    token = "secret-main-token"
+    TokenStore().save_token("work", token)
+    seen_clients = []
+
+    class DiscoveryClient:
+        def __init__(self, base_url, client_token, **kwargs):
+            seen_clients.append((base_url, client_token, kwargs))
+
+        def list_teams(self):
+            return [{"id": "team-1"}]
+
+    monkeypatch.setattr(cli, "ChatClient", DiscoveryClient)
+
+    assert cli.main(
+        [
+            "auth",
+            "chat",
+            "--url",
+            "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square",
+        ]
+    ) == 0
+
+    captured = capsys.readouterr()
+    assert token not in captured.out
+    assert token not in captured.err
+    assert seen_clients == [
+        (
+            "https://cylro.kchat.infomaniak.com",
+            token,
+            {"auth_source": "main_token_fallback"},
+        )
+    ]
+    profile = ProfileManager().get("work")
+    assert profile.kchat_url == "https://cylro.kchat.infomaniak.com"
+    assert profile.kchat_ksuite_url == "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
+    assert profile.kchat_ksuite_account_id == "1988835"
+    assert profile.kchat_workspace_slug == "cylro"
+    assert profile.kchat_default_channel_slug == "town-square"
+
+
+def test_auth_chat_ksuite_lookalike_does_not_probe_with_main_token(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    TokenStore().save_token("work", "secret-main-token")
+
+    def fail_client(*args, **kwargs):
+        raise AssertionError("main token must not be sent to untrusted hosts")
+
+    monkeypatch.setattr(cli, "ChatClient", fail_client)
+
+    assert cli.main(
+        [
+            "auth",
+            "chat",
+            "--url",
+            "https://example.com/1988835/kchat/cylro/channels/town-square",
+        ]
+    ) == 2
+
+    captured = capsys.readouterr()
+    assert "secret-main-token" not in captured.out
+    assert "secret-main-token" not in captured.err
+    assert "not trusted Infomaniak kChat hosts" in captured.err
+    assert ProfileManager().get("work").kchat_url is None
+
+
+def test_auth_chat_ksuite_discovery_failure_has_guidance(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    token = "secret-main-token"
+    TokenStore().save_token("work", token)
+
+    class RejectingDiscoveryClient:
+        def __init__(self, base_url, client_token, **kwargs):
+            self.base_url = base_url
+
+        def list_teams(self):
+            raise cli.ChatError("kChat rejected the main Informaniak API token. token=secret-main-token")
+
+    monkeypatch.setattr(cli, "ChatClient", RejectingDiscoveryClient)
+
+    assert cli.main(
+        [
+            "auth",
+            "chat",
+            "--url",
+            "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square",
+        ]
+    ) == 2
+
+    captured = capsys.readouterr()
+    assert token not in captured.out
+    assert token not in captured.err
+    assert "Could not confirm a working kChat API base URL" in captured.err
+    assert "auth chat --url" in captured.err
+    assert "--stdin" in captured.err
+    profile = ProfileManager().get("work")
+    assert profile.kchat_url is None
+    assert profile.kchat_ksuite_account_id == "1988835"
+    assert profile.kchat_workspace_slug == "cylro"
+
+
 def test_auth_chat_url_needs_token_or_main_fallback(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("work", make_default=True)

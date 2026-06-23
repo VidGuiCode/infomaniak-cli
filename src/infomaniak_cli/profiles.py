@@ -31,6 +31,10 @@ class Profile:
     calendar_url: str | None = None
     calendar_username: str | None = None
     kchat_url: str | None = None
+    kchat_ksuite_url: str | None = None
+    kchat_ksuite_account_id: str | None = None
+    kchat_workspace_slug: str | None = None
+    kchat_default_channel_slug: str | None = None
     kchat_team_id: str | None = None
     created_at: str = ""
     updated_at: str = ""

@@ -151,18 +151,24 @@ The CLI does not reuse mail or contacts credentials automatically.
 kChat uses Mattermost-compatible connection settings:
 
 ```bash
-ik auth chat --url "<kchat-base-url>" --token "<kchat-token>" --team-id "<team_id>"
+ik auth chat --url "https://ksuite.infomaniak.com/<account_id>/kchat/<workspace>/channels/<channel>"
 ik chat teams --json
 ```
 
-For trusted Infomaniak kChat hosts such as `https://<workspace>.kchat.infomaniak.com`, you can omit the dedicated token if the profile already has a main Informaniak API token:
+The browser URL is parsed locally, then the CLI tries the trusted API base `https://<workspace>.kchat.infomaniak.com` with your main Informaniak API token. If that token is not accepted, save a dedicated kChat token:
+
+```bash
+ik auth chat --url "https://ksuite.infomaniak.com/<account_id>/kchat/<workspace>/channels/<channel>" --stdin
+```
+
+You can also configure the direct trusted API base:
 
 ```bash
 ik auth chat --url "https://<workspace>.kchat.infomaniak.com"
 ik chat teams --json
 ```
 
-The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or `--token` for non-Infomaniak hosts or when kChat rejects the main token.
+The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or `--token` for non-Infomaniak hosts.
 
 ## Commands
 
