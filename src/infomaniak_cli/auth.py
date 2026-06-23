@@ -151,3 +151,39 @@ class CalendarPasswordStore:
         if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
             raise ValueError(f"Invalid profile name: {profile!r}")
         return self.tokens_dir / f"{safe_profile}.calendar"
+
+
+class ChatTokenStore:
+    """Stores kChat/Mattermost tokens separately from other profile credentials."""
+
+    def __init__(self, config_dir: Path | None = None) -> None:
+        self.config_dir = config_dir or get_config_dir()
+        self.tokens_dir = get_tokens_dir(self.config_dir)
+
+    def save_token(self, profile: str, token: str) -> None:
+        clean_token = token.strip()
+        if not clean_token:
+            raise ValueError("Chat token is required")
+        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        self._token_path(profile).write_text(clean_token, encoding="utf-8")
+
+    def load_token(self, profile: str) -> str:
+        return self._token_path(profile).read_text(encoding="utf-8").strip()
+
+    def has_token(self, profile: str) -> bool:
+        path = self._token_path(profile)
+        return path.exists() and bool(path.read_text(encoding="utf-8").strip())
+
+    def redacted_token(self, profile: str) -> str | None:
+        if not self.has_token(profile):
+            return None
+        return _redact(self.load_token(profile))
+
+    def delete_token(self, profile: str) -> None:
+        self._token_path(profile).unlink(missing_ok=True)
+
+    def _token_path(self, profile: str) -> Path:
+        safe_profile = profile.strip()
+        if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
+            raise ValueError(f"Invalid profile name: {profile!r}")
+        return self.tokens_dir / f"{safe_profile}.chat"

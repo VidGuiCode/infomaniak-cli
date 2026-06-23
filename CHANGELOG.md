@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.1.7 - Read-only kChat discovery
 
+- Added explicit kChat/Mattermost-compatible setup with `ik auth chat`.
+- Added read-only kChat commands: `chat teams`, `chat channels`, and `chat users`.
+- Added stable slim JSON output with `--raw` for full team/channel/user payloads.
+- Kept kChat operations read-only; no posting, reactions, edits, deletes, channel creation, membership changes, or webhooks.
 - Changed `mail list`, `mail unread`, and `mail search` limits to default to newest matching messages first.
 - Added `--oldest-first` for mail listing/search commands when oldest matching messages are desired.
 

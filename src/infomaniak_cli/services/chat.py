@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Callable, Mapping
+
+from ..api import redact_secret
+
+
+class ChatError(ValueError):
+    pass
+
+
+class ChatClient:
+    """Small read-only Mattermost-compatible client for kChat discovery."""
+
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        opener: Callable[..., Any] | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token.strip()
+        self._opener = opener or urllib.request.urlopen
+
+    def list_teams(self) -> list[Mapping[str, Any]]:
+        payload = self._get("/api/v4/users/me/teams")
+        return _items(payload, "teams")
+
+    def list_channels(self, team_id: str, *, limit: int | None = None) -> list[Mapping[str, Any]]:
+        channels = _items(self._get(f"/api/v4/teams/{urllib.parse.quote(str(team_id), safe='')}/channels"), "channels")
+        if limit is not None:
+            return channels[:limit]
+        return channels
+
+    def list_users(self, team_id: str, *, limit: int | None = None) -> list[Mapping[str, Any]]:
+        users = _items(self._get("/api/v4/users", params={"in_team": team_id}), "users")
+        if limit is not None:
+            return users[:limit]
+        return users
+
+    def _get(self, path: str, *, params: Mapping[str, Any] | None = None) -> Any:
+        url = f"{self.base_url}{path}"
+        if params:
+            url = f"{url}?{urllib.parse.urlencode(params)}"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self.token}",
+            },
+            method="GET",
+        )
+        try:
+            with self._opener(request, timeout=30) as response:
+                text = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if exc.code in (401, 403):
+                raise ChatError(
+                    f"kChat request failed: authentication failed or insufficient scope (HTTP {exc.code})"
+                ) from exc
+            raise ChatError(f"kChat request failed: HTTP {exc.code}: {redact_secret(body, secrets=[self.token])}") from exc
+        except urllib.error.URLError as exc:
+            raise ChatError(
+                f"kChat request failed: {redact_secret(str(exc.reason), secrets=[self.token])}"
+            ) from exc
+        except OSError as exc:
+            raise ChatError(f"kChat request failed: {redact_secret(str(exc), secrets=[self.token])}") from exc
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ChatError("Unexpected kChat response: invalid JSON") from exc
+
+
+def slim_team(team: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _string_or_none(team.get("id")),
+        "name": _string_or_none(team.get("name")),
+        "display_name": _string_or_none(team.get("display_name")),
+        "description": _string_or_none(team.get("description")),
+    }
+
+
+def slim_teams(teams: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [slim_team(team) for team in teams]
+
+
+def slim_channel(channel: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _string_or_none(channel.get("id")),
+        "team_id": _string_or_none(channel.get("team_id")),
+        "name": _string_or_none(channel.get("name")),
+        "display_name": _string_or_none(channel.get("display_name")),
+        "type": _string_or_none(channel.get("type")),
+        "purpose": _string_or_none(channel.get("purpose")),
+        "header": _string_or_none(channel.get("header")),
+    }
+
+
+def slim_channels(channels: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [slim_channel(channel) for channel in channels]
+
+
+def slim_user(user: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _string_or_none(user.get("id")),
+        "username": _string_or_none(user.get("username")),
+        "nickname": _string_or_none(user.get("nickname")),
+        "first_name": _string_or_none(user.get("first_name")),
+        "last_name": _string_or_none(user.get("last_name")),
+        "email": _string_or_none(user.get("email")),
+    }
+
+
+def slim_users(users: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [slim_user(user) for user in users]
+
+
+def _items(payload: Any, label: str) -> list[Mapping[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, Mapping)]
+    raise ChatError(f"Unexpected kChat {label} response: expected JSON list")
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)

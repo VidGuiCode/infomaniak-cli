@@ -1,4 +1,4 @@
-from infomaniak_cli.auth import CalendarPasswordStore, ContactsPasswordStore, TokenStore
+from infomaniak_cli.auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, TokenStore
 
 
 
@@ -27,3 +27,12 @@ def test_calendar_password_store_redacts_and_detects_password(tmp_path):
     assert store.has_password("work") is True
     assert store.load_password("work") == "secret-calendar-password"
     assert store.redacted_password("work") == "secr…word"
+
+
+def test_chat_token_store_redacts_and_detects_token(tmp_path):
+    store = ChatTokenStore(config_dir=tmp_path)
+    store.save_token("work", "secret-chat-token")
+
+    assert store.has_token("work") is True
+    assert store.load_token("work") == "secret-chat-token"
+    assert store.redacted_token("work") == "secr…oken"

@@ -9,7 +9,7 @@ from typing import Any, Mapping
 from . import __version__
 from . import update as update_module
 from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError
-from .auth import CalendarPasswordStore, ContactsPasswordStore, MailPasswordStore, TokenStore
+from .auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, MailPasswordStore, TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .debug import probe_profile
 from .doctor import run_doctor
@@ -24,6 +24,13 @@ from .services.calendar import (
     slim_calendars,
     slim_event,
     slim_events,
+)
+from .services.chat import (
+    ChatClient,
+    ChatError,
+    slim_channels,
+    slim_teams,
+    slim_users,
 )
 from .services.contacts import (
     ContactError,
@@ -114,6 +121,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "contacts_username": profile.contacts_username,
         "calendar_url": profile.calendar_url,
         "calendar_username": profile.calendar_username,
+        "kchat_url": profile.kchat_url,
         "kchat_team_id": profile.kchat_team_id,
     }
     if args.json:
@@ -126,7 +134,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         print(f"Default kDrive: {profile.default_drive_name or profile.default_drive_id or 'not selected'}")
         print(f"Contacts: {profile.contacts_username or profile.contacts_url or 'not selected'}")
         print(f"Calendar: {profile.calendar_username or profile.calendar_url or 'not selected'}")
-        print(f"kChat team: {profile.kchat_team_id or 'not selected'}")
+        chat_status = profile.kchat_url or profile.kchat_team_id
+        print(f"kChat: {chat_status or 'not selected'}")
     return 0
 
 
@@ -466,6 +475,36 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auth_chat(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        print("No profile selected.", file=sys.stderr)
+        return 1
+    if args.stdin and args.token:
+        print("error: use either --token or --stdin, not both", file=sys.stderr)
+        return 2
+
+    profile = manager.get(name)
+    chat_url = (args.url or profile.kchat_url or "").strip()
+    if not chat_url:
+        print("error: --url is required the first time kChat is configured", file=sys.stderr)
+        return 2
+
+    if args.stdin:
+        token = sys.stdin.read().strip()
+    else:
+        token = args.token.strip() if args.token else input("kChat token: ").strip()
+    ChatTokenStore().save_token(name, token)
+    metadata = {"kchat_url": chat_url}
+    if args.team_id:
+        metadata["kchat_team_id"] = args.team_id.strip()
+    manager.create_or_update(name, **metadata)
+
+    print(f"kChat token saved for profile: {name}")
+    return 0
+
+
 def _mail_profile_or_error(args: argparse.Namespace) -> tuple[Any, str, str, str]:
     """Resolve profile and return (profile, host, port, username, password).
 
@@ -551,6 +590,42 @@ def _calendar_profile_and_client(args: argparse.Namespace) -> tuple[Any, Calenda
         )
 
     return profile, CalendarClient(profile.calendar_url, profile.calendar_username, calendar_store.load_password(name))
+
+
+def _chat_profile_and_client(args: argparse.Namespace) -> tuple[Any, ChatClient]:
+    manager = ProfileManager()
+    name = args.profile or manager.get_current_name()
+    if not name:
+        raise ValueError("No profile configured. Run `ik setup --profile <name>` first.")
+
+    profile = manager.get(name)
+    if not profile.kchat_url:
+        raise ValueError(
+            f"No kChat configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth chat --url <kchat-base-url> --token <token>` first."
+        )
+
+    chat_store = ChatTokenStore()
+    if not chat_store.has_token(name):
+        raise ValueError(
+            f"No kChat token configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth chat --url <kchat-base-url> --token <token>` first."
+        )
+
+    return profile, ChatClient(profile.kchat_url, chat_store.load_token(name))
+
+
+def _chat_team_id_or_error(args: argparse.Namespace, profile: Any, client: ChatClient) -> str:
+    team_id = getattr(args, "team_id", None) or profile.kchat_team_id
+    if team_id:
+        return str(team_id)
+    teams = client.list_teams()
+    if len(teams) == 1 and teams[0].get("id"):
+        return str(teams[0]["id"])
+    raise ValueError(
+        f"No kChat team configured for profile: {profile.name}. "
+        "Run `ik chat teams --json` and rerun with --team-id <id>, or save one with `ik auth chat --team-id <id>`."
+    )
 
 
 def _today() -> datetime.date:
@@ -913,6 +988,29 @@ def _display_event(event: Mapping[str, Any]) -> str:
     summary = event.get("summary") or "(no summary)"
     location = event.get("location") or ""
     return f"{event_id}\t{starts_at}\t{ends_at}\t{summary}\t{location}"
+
+
+def _display_chat_team(team: Mapping[str, Any]) -> str:
+    team_id = team.get("id") or "-"
+    name = team.get("name") or "-"
+    display_name = team.get("display_name") or ""
+    return f"{team_id}\t{name}\t{display_name}"
+
+
+def _display_chat_channel(channel: Mapping[str, Any]) -> str:
+    channel_id = channel.get("id") or "-"
+    name = channel.get("name") or "-"
+    display_name = channel.get("display_name") or ""
+    channel_type = channel.get("type") or ""
+    return f"{channel_id}\t{channel_type}\t{name}\t{display_name}"
+
+
+def _display_chat_user(user: Mapping[str, Any]) -> str:
+    user_id = user.get("id") or "-"
+    username = user.get("username") or "-"
+    name = " ".join(str(part) for part in (user.get("first_name"), user.get("last_name")) if part)
+    email = user.get("email") or ""
+    return f"{user_id}\t{username}\t{name}\t{email}"
 
 
 def _drive_404_error(drive_id: str) -> ValueError:
@@ -1346,6 +1444,61 @@ def cmd_calendar_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chat_teams(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    teams = client.list_teams()
+
+    if args.json:
+        output_teams = teams if args.raw else slim_teams(teams)
+        print_json({"profile": profile.name, "count": len(teams), "teams": output_teams})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Teams: {len(teams)}")
+        if not teams:
+            print("No teams found.")
+        for team in teams:
+            print(_display_chat_team(team))
+    return 0
+
+
+def cmd_chat_channels(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    team_id = _chat_team_id_or_error(args, profile, client)
+    channels = client.list_channels(team_id, limit=args.limit)
+
+    if args.json:
+        output_channels = channels if args.raw else slim_channels(channels)
+        print_json({"profile": profile.name, "team_id": team_id, "count": len(channels), "channels": output_channels})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Team ID: {team_id}")
+        print(f"Channels: {len(channels)}")
+        if not channels:
+            print("No channels found.")
+        for channel in channels:
+            print(_display_chat_channel(channel))
+    return 0
+
+
+def cmd_chat_users(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    team_id = _chat_team_id_or_error(args, profile, client)
+    users = client.list_users(team_id, limit=args.limit)
+
+    if args.json:
+        output_users = users if args.raw else slim_users(users)
+        print_json({"profile": profile.name, "team_id": team_id, "count": len(users), "users": output_users})
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Team ID: {team_id}")
+        print(f"Users: {len(users)}")
+        if not users:
+            print("No users found.")
+        for user in users:
+            print(_display_chat_user(user))
+    return 0
+
+
 def cmd_debug_probe(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     result = probe_profile(profile.name, profile.account_id, client)
@@ -1503,6 +1656,12 @@ def build_parser() -> argparse.ArgumentParser:
     auth_calendar.add_argument("--password", help="CalDAV password. Omit to prompt.")
     auth_calendar.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
     auth_calendar.set_defaults(func=cmd_auth_calendar)
+    auth_chat = auth_sub.add_parser("chat", help="Store kChat/Mattermost connection settings for a profile")
+    auth_chat.add_argument("--url", help="kChat base URL.")
+    auth_chat.add_argument("--token", help="kChat token. Omit to prompt.")
+    auth_chat.add_argument("--stdin", action="store_true", help="Read the token from standard input.")
+    auth_chat.add_argument("--team-id", help="Default kChat team ID.")
+    auth_chat.set_defaults(func=cmd_auth_chat)
 
     mail = sub.add_parser("mail", help="Read-only IMAP mail commands")
     mail_sub = mail.add_subparsers(dest="mail_command", required=True)
@@ -1621,6 +1780,25 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
     calendar_show.set_defaults(func=cmd_calendar_show)
 
+    chat = sub.add_parser("chat", help="Read-only kChat discovery commands")
+    chat_sub = chat.add_subparsers(dest="chat_command", required=True)
+    chat_teams = chat_sub.add_parser("teams", help="List kChat teams")
+    chat_teams.add_argument("--json", action="store_true")
+    chat_teams.add_argument("--raw", action="store_true", help="With --json, emit the full raw team payload.")
+    chat_teams.set_defaults(func=cmd_chat_teams)
+    chat_channels = chat_sub.add_parser("channels", help="List kChat channels for a team")
+    chat_channels.add_argument("--team-id", help="Team ID. Defaults to saved profile team or the only available team.")
+    chat_channels.add_argument("--limit", type=int, help="Maximum channels to show.")
+    chat_channels.add_argument("--json", action="store_true")
+    chat_channels.add_argument("--raw", action="store_true", help="With --json, emit the full raw channel payload.")
+    chat_channels.set_defaults(func=cmd_chat_channels)
+    chat_users = chat_sub.add_parser("users", help="List kChat users for a team")
+    chat_users.add_argument("--team-id", help="Team ID. Defaults to saved profile team or the only available team.")
+    chat_users.add_argument("--limit", type=int, help="Maximum users to show.")
+    chat_users.add_argument("--json", action="store_true")
+    chat_users.add_argument("--raw", action="store_true", help="With --json, emit the full raw user payload.")
+    chat_users.set_defaults(func=cmd_chat_users)
+
     return parser
 
 
@@ -1629,7 +1807,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (BootstrapError, CalendarError, ContactError, InformaniakAPIError, KeyError, MailError, ValueError) as exc:
+    except (BootstrapError, CalendarError, ChatError, ContactError, InformaniakAPIError, KeyError, MailError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

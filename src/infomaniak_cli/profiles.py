@@ -30,6 +30,7 @@ class Profile:
     contacts_username: str | None = None
     calendar_url: str | None = None
     calendar_username: str | None = None
+    kchat_url: str | None = None
     kchat_team_id: str | None = None
     created_at: str = ""
     updated_at: str = ""

@@ -72,6 +72,7 @@ ik auth logout
 ik auth refresh
 ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
 ik auth calendar --url <caldav-calendar-url> --username user@example.com --password <caldav-password>
+ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 ```
 
 `auth login` should route to setup if needed.
@@ -79,6 +80,8 @@ ik auth calendar --url <caldav-calendar-url> --username user@example.com --passw
 `auth contacts` stores explicit CardDAV contacts credentials. It does not reuse mail credentials automatically.
 
 `auth calendar` stores explicit CalDAV calendar credentials. It does not reuse mail or contacts credentials automatically.
+
+`auth chat` stores explicit kChat/Mattermost-compatible connection settings. It does not reuse Informaniak API, mail, contacts, or calendar credentials automatically.
 
 ## Account / environment discovery
 
@@ -174,19 +177,28 @@ ik drive info <file_id>
 
 `ik drive search <query>` is currently implemented by listing files and filtering by file/folder name client-side because no separate search endpoint has been confirmed. `ik drive info <file_id>` is currently implemented by finding the item in the list endpoint response because no single-file metadata endpoint has been confirmed.
 
-Not implemented in v0.1.6: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
+Not implemented in v0.1.7: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
 
 ## kChat
 
+Read-only commands:
+
 ```bash
+ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
+
 ik chat teams
-ik chat channels
-ik chat post --channel admin "Message"
-ik chat search "Dolibarr"
-ik chat thread <post_id>
+ik chat teams --json
+ik chat channels --team-id <team_id> --limit 50 --json
+ik chat users --team-id <team_id> --limit 50 --json
 ```
 
-Posting should show active profile/team/channel before sending.
+`ik chat teams` uses the configured kChat base URL/token and calls the Mattermost-compatible `GET /api/v4/users/me/teams` endpoint.
+
+`ik chat channels` lists channels for a team using `GET /api/v4/teams/{team_id}/channels`. If no team is saved and the profile has access to exactly one team, that team is used. Otherwise pass `--team-id <id>` or save one with `ik auth chat --team-id <id>`.
+
+`ik chat users` lists users for a team using `GET /api/v4/users?in_team={team_id}`.
+
+Not implemented in v0.1.7: posting, reactions, edits, deletes, channel creation, membership changes, webhooks, post search, or thread display.
 
 ## kMeet
 

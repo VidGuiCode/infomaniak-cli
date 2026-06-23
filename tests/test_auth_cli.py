@@ -4,7 +4,7 @@ import sys
 
 from infomaniak_cli import cli
 from infomaniak_cli.api import InformaniakAPIError
-from infomaniak_cli.auth import CalendarPasswordStore, ContactsPasswordStore, TokenStore
+from infomaniak_cli.auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, TokenStore
 from infomaniak_cli.profiles import ProfileManager
 
 
@@ -120,6 +120,44 @@ def test_auth_calendar_requires_url_and_username_first_time(tmp_path, monkeypatc
     captured = capsys.readouterr()
     assert "--url is required" in captured.err
     assert not CalendarPasswordStore().has_password("work")
+
+
+def test_auth_chat_stdin_saves_token_and_metadata_without_echo(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    token = "secret-chat-token"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {token}\n\n"))
+
+    assert cli.main(
+        [
+            "auth",
+            "chat",
+            "--url",
+            "https://chat.example.test",
+            "--team-id",
+            "team-1",
+            "--stdin",
+        ]
+    ) == 0
+
+    captured = capsys.readouterr()
+    assert token not in captured.out
+    assert token not in captured.err
+    assert ChatTokenStore().load_token("work") == token
+    profile = ProfileManager().get("work")
+    assert profile.kchat_url == "https://chat.example.test"
+    assert profile.kchat_team_id == "team-1"
+
+
+def test_auth_chat_requires_url_first_time(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+
+    assert cli.main(["auth", "chat", "--token", "secret-chat-token"]) == 2
+
+    captured = capsys.readouterr()
+    assert "--url is required" in captured.err
+    assert not ChatTokenStore().has_token("work")
 
 
 def test_auth_check_json_uses_token_base_url_and_resolves_user(tmp_path, monkeypatch, capsys):
