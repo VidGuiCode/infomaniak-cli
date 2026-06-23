@@ -269,14 +269,15 @@ class IMAPClient:
         return items
 
     def fetch_message(self, uid: str, folder: str = "INBOX") -> dict[str, Any]:
-        """Fetch a full message by UID, returning parsed headers + body preview."""
+        """Fetch a full message by UID, returning parsed headers and readable body text."""
         self._examine(folder)
-        typ, data = self._conn.uid("FETCH", uid, "(RFC822)")
+        typ, data = self._conn.uid("FETCH", uid, "(BODY.PEEK[])")
         if typ != "OK" or not data or not data[0]:
             raise MailError(f"Message UID {uid} not found")
         raw_msg = data[0][1] if isinstance(data[0], tuple) else data[0]
         msg = email.message_from_bytes(raw_msg)
         result = _slim_headers(msg, uid=uid)
+        result["body_text"] = _body_text(msg)
         result["body_preview"] = _body_preview(msg)
         return result
 
@@ -332,13 +333,20 @@ def _slim_headers(msg: email.message.Message, uid: str | None = None) -> dict[st
 
 def _body_preview(msg: email.message.Message, max_length: int = 500) -> str | None:
     """Extract a plain-text preview from a message, handling multipart."""
-    body = _extract_text_body(msg)
+    body = _body_text(msg)
     if body is None:
         return None
-    body = body.strip()
     if len(body) > max_length:
         body = body[:max_length] + "…"
     return body
+
+
+def _body_text(msg: email.message.Message) -> str | None:
+    """Extract the full readable text body from a message without truncating it."""
+    body = _extract_text_body(msg)
+    if body is None:
+        return None
+    return body.strip()
 
 
 def _extract_text_body(msg: email.message.Message) -> str | None:
@@ -424,13 +432,16 @@ def _html_to_text(html: str) -> str:
 
 def slim_message(msg: dict[str, Any]) -> dict[str, Any]:
     """Return a slim view suitable for ``--json`` output."""
-    return {
+    result = {
         "uid": msg.get("uid"),
         "from": msg.get("from"),
         "subject": msg.get("subject"),
         "date": msg.get("date"),
         "seen": msg.get("seen", False),
     }
+    if "body_text" in msg:
+        result["body_text"] = msg.get("body_text")
+    return result
 
 
 def _imap_date(date_str: str) -> str:

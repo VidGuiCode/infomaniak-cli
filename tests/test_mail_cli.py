@@ -661,6 +661,7 @@ class TestMailRead:
                     "to": "user@example.com",
                     "subject": "Full message",
                     "date": "Mon",
+                    "body_text": "The full body.",
                     "body_preview": "The full body.",
                 },
             },
@@ -673,7 +674,35 @@ class TestMailRead:
         assert output["uid"] == "555"
         assert output["message"]["uid"] == "555"
         assert output["message"]["from"] == "sender@example.com"
+        assert output["message"]["body_text"] == "The full body."
         assert "body_preview" not in output["message"]  # slim mode by default
+
+    def test_mail_read_json_includes_full_body_without_raw(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+        full_body = "Line " + ("x" * 700)
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "Long message",
+                    "date": "Mon",
+                    "body_text": full_body,
+                    "body_preview": full_body[:500] + "...",
+                },
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "555", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["message"]["body_text"] == full_body
+        assert "body_preview" not in output["message"]
 
     def test_mail_read_raw_json(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
@@ -688,6 +717,7 @@ class TestMailRead:
                     "to": "user@example.com",
                     "subject": "Full",
                     "date": "Mon",
+                    "body_text": "The full body.",
                     "body_preview": "The full body.",
                     "message_id": "<msg@example.com>",
                 },
@@ -698,6 +728,7 @@ class TestMailRead:
         assert cli.main(["mail", "read", "555", "--json", "--raw"]) == 0
 
         output = json.loads(capsys.readouterr().out)
+        assert "body_text" in output["message"]
         assert "body_preview" in output["message"]
 
     def test_mail_read_human_output(self, tmp_path, monkeypatch, capsys):
@@ -713,7 +744,8 @@ class TestMailRead:
                     "to": "user@example.com",
                     "subject": "Subject line",
                     "date": "Mon, 01 Jan 2024",
-                    "body_preview": "Hello world",
+                    "body_text": "Hello world",
+                    "body_preview": "Hello",
                 },
             },
         }
@@ -726,6 +758,61 @@ class TestMailRead:
         assert "From: sender@example.com" in out
         assert "Subject: Subject line" in out
         assert "Hello world" in out
+
+    def test_mail_read_human_output_uses_full_body_not_preview(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+        full_body = "Start " + ("x" * 700) + " End"
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "Long",
+                    "date": "Mon",
+                    "body_text": full_body,
+                    "body_preview": "Start " + ("x" * 100),
+                },
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "555"]) == 0
+
+        out = capsys.readouterr().out
+        assert full_body in out
+        assert " End" in out
+
+    def test_mail_read_human_output_does_not_print_raw_mime_by_default(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "MIME",
+                    "date": "Mon",
+                    "body_text": "Readable body",
+                    "body_preview": "Readable body",
+                    "raw_mime": "Content-Type: multipart/mixed; boundary=abc",
+                },
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "555"]) == 0
+
+        out = capsys.readouterr().out
+        assert "Readable body" in out
+        assert "Content-Type:" not in out
+        assert "boundary=abc" not in out
 
     def test_mail_read_not_found(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))

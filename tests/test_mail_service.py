@@ -13,6 +13,7 @@ from infomaniak_cli.services.mail import (
     IMAPClient,
     MailError,
     _body_preview,
+    _body_text,
     _decode_header_value,
     _extract_text_body,
     _html_to_text,
@@ -430,13 +431,13 @@ class TestIMAPClientSearch:
 
 
 class TestIMAPClientFetchMessage:
-    def test_fetch_message_returns_headers_and_body_preview(self):
+    def test_fetch_message_returns_headers_full_body_and_preview(self):
         raw_msg = _build_raw_message(subject="Full message", body="This is the full body text.")
         fake = FakeIMAP(
             responses={
-                "uid FETCH 555 (RFC822)": (
+                "uid FETCH 555 (BODY.PEEK[])": (
                     "OK",
-                    [(b"555 (RFC822 {180}", raw_msg)],
+                    [(b"555 (BODY[] {180}", raw_msg)],
                 ),
             }
         )
@@ -446,10 +447,53 @@ class TestIMAPClientFetchMessage:
         msg = client.fetch_message("555")
         assert msg["uid"] == "555"
         assert msg["subject"] == "Full message"
+        assert msg["body_text"] == "This is the full body text."
         assert msg["body_preview"] == "This is the full body text."
+        assert ("uid", ("FETCH", "555", "(BODY.PEEK[])")) in fake.calls
+
+    def test_fetch_message_body_text_is_not_truncated(self):
+        full_body = "x" * 700
+        raw_msg = _build_raw_message(subject="Long message", body=full_body)
+        fake = FakeIMAP(
+            responses={
+                "uid FETCH 555 (BODY.PEEK[])": (
+                    "OK",
+                    [(b"555 (BODY[] {900}", raw_msg)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        msg = client.fetch_message("555")
+        assert msg["body_text"] == full_body
+        assert len(msg["body_preview"]) <= 501
+        assert msg["body_preview"] != msg["body_text"]
+
+    def test_fetch_message_html_only_body_text_is_readable(self):
+        raw_msg = _build_raw_message(
+            subject="HTML message",
+            body="<html><body><h1>Hello</h1><p>World</p></body></html>",
+            content_type="text/html",
+        )
+        fake = FakeIMAP(
+            responses={
+                "uid FETCH 555 (BODY.PEEK[])": (
+                    "OK",
+                    [(b"555 (BODY[] {220}", raw_msg)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        msg = client.fetch_message("555")
+        assert "Hello" in msg["body_text"]
+        assert "World" in msg["body_text"]
+        assert "<html>" not in msg["body_text"]
 
     def test_fetch_message_not_found_raises(self):
-        fake = FakeIMAP(responses={"uid FETCH 999 (RFC822)": ("OK", [])})
+        fake = FakeIMAP(responses={"uid FETCH 999 (BODY.PEEK[])": ("OK", [])})
         client = IMAPClient(
             "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
         )
@@ -483,6 +527,11 @@ class TestHeaderDecoding:
 
 
 class TestBodyPreview:
+    def test_body_text_returns_full_plain_text(self):
+        msg = email.message.EmailMessage(policy=email.policy.default)
+        msg.set_content("x" * 700)
+        assert _body_text(msg) == "x" * 700
+
     def test_preview_from_plain_text(self):
         msg = email.message.EmailMessage(policy=email.policy.default)
         msg.set_content("Short message body")

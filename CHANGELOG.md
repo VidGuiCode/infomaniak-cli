@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.10 - Mail read full-body UX fix
+
+- `mail read` human output now prints the full readable body text instead of a truncated preview.
+- `mail read --json` slim output now includes full `body_text` without requiring `--raw`.
+- `body_preview` remains available in raw parsed message payloads and preview-oriented flows.
+- HTML-only messages still render as readable text without tags.
+- Kept mail read-only with `BODY.PEEK[]`; no SMTP/send, mark-as-read, delete, move, or archive behavior.
+
 ## v0.1.9 - Mailbox/account discovery polish
 
 - Added read-only mailbox discovery commands: `mail mailboxes` and alias `mail accounts`.

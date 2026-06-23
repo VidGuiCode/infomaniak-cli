@@ -981,11 +981,11 @@ def cmd_mail_read(args: argparse.Namespace) -> int:
         print(f"Subject: {msg.get('subject') or '(no subject)'}")
         print(f"Date: {msg.get('date') or ''}")
         print()
-        preview = msg.get("body_preview")
-        if preview:
-            print(preview)
+        body = msg.get("body_text") or msg.get("body_preview")
+        if body:
+            print(body)
         else:
-            print("(no body preview available)")
+            print("(no body text available)")
     return 0
 
 

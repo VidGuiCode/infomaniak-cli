@@ -1,6 +1,6 @@
 [project]
 name = "infomaniak-cli"
-version = "0.1.9"
+version = "0.1.10"
 description = "Unified CLI bridge for Informaniak/kSuite with profiles and optional future MCP support."
 readme = "README.md"
 requires-python = ">=3.11"

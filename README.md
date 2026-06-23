@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.9-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.10-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -222,7 +222,7 @@ ik mail hostings --json
 ik mail list --days 7 --json
 ik mail unread --folder INBOX --days 7 --json
 ik mail search "invoice" --days 30 --json
-ik mail read <uid> --json --raw
+ik mail read <uid> --json
 ik mail threads --folder Sent --days 7 --json
 
 ik contacts list --json
@@ -240,7 +240,7 @@ ik chat channels --json
 ik chat users --json
 ```
 
-Use `--json` for structured output. Use `--raw` for full API/message payloads, including `body_preview` on `mail read`. Use `--profile` to target a specific account.
+Use `--json` for structured output. `ik mail read --json` includes full readable `body_text` without `--raw`; `--raw` keeps fuller parsed message metadata such as `body_preview`. Use `--profile` to target a specific account.
 
 ## Configuration
 

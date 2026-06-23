@@ -92,7 +92,9 @@ ik mail threads [--folder/-f <name>] [--days N] [--since YYYY-MM-DD] [--before Y
 - `--unread` filters to unread messages only.
 - `ik mail list` shows **both** read and unread messages by default; each message has a `seen` flag in JSON output.
 - Limited `mail list`, `mail unread`, and `mail search` results are newest-first by default. Add `--oldest-first` for the oldest matching messages.
-- `ik mail read --json` returns slim message metadata. Add `--raw` to include `body_preview`.
+- `ik mail read` prints the full readable message body.
+- `ik mail read --json` returns slim message metadata with full `body_text`.
+- Add `--raw` when you also need fuller parsed message metadata such as `body_preview`.
 
 `<uid>` is a number from the `unread`/`search` output. In PowerShell do NOT type the angle
 brackets — `<` is a reserved operator. Use the bare number:
@@ -110,7 +112,7 @@ ik mail list --folder Spam --days 5 --json
 ik mail list --since 2026-06-01 --before 2026-06-15 --json
 ik mail unread --folder INBOX --days 7 --json
 ik mail search "invoice" --days 30 --json
-ik mail read 123 --json --raw
+ik mail read 123 --json
 ik mail read 123 --folder Spam --json
 ik mail threads --days 7 --json
 ik mail threads --folder Sent --since 2026-06-01 --json
