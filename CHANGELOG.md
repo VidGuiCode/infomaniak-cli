@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.8 - kChat setup discovery
 
 - Improved kChat auth UX: `ik auth chat --url <url>` can save URL-only config for trusted `*.kchat.infomaniak.com` hosts when a main Informaniak API token exists.
 - `ik auth chat --url <url>` now accepts kSuite browser kChat URLs, derives the trusted kChat API base, and confirms it with read-only team discovery when possible.
