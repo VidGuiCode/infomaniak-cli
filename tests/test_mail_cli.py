@@ -50,6 +50,7 @@ class FakeIMAP:
         since=None,
         before=None,
         on=None,
+        order="newest",
     ):
         for value in (since, before, on):
             _validate_iso_date(value)
@@ -70,13 +71,14 @@ class FakeIMAP:
             since,
             before,
             on,
+            order,
         ))
         return items
 
-    def list_unread(self, limit=None):
-        return self.list_messages(folder="INBOX", limit=limit, unread_only=True)
+    def list_unread(self, limit=None, order="newest"):
+        return self.list_messages(folder="INBOX", limit=limit, unread_only=True, order=order)
 
-    def search(self, query, folder="INBOX", limit=None, unread_only=False, since=None, before=None, on=None):
+    def search(self, query, folder="INBOX", limit=None, unread_only=False, since=None, before=None, on=None, order="newest"):
         for value in (since, before, on):
             _validate_iso_date(value)
         self._select(folder)
@@ -92,6 +94,7 @@ class FakeIMAP:
             since,
             before,
             on,
+            order,
         ))
         return items
 
@@ -131,10 +134,15 @@ class FakeIMAP:
 
 
 def _fake_imap_factory(responses):
+    instances = []
+
     def make_client(host, port, username, password, *, imap_factory=None):
         fake = FakeIMAP(responses)
         fake.calls.append(("init", host, port, username, password))
+        instances.append(fake)
         return fake
+
+    make_client.instances = instances
     return make_client
 
 
@@ -284,7 +292,7 @@ class TestMailUnread:
 
         output = json.loads(capsys.readouterr().out)
         assert output["folder"] == "Sent"
-        assert ("list_messages", "Sent", 20, True, None, None, None) in created_clients[0].calls
+        assert ("list_messages", "Sent", 20, True, None, None, None, "newest") in created_clients[0].calls
 
     def test_mail_unread_accepts_folder_short_option(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
@@ -304,7 +312,7 @@ class TestMailUnread:
 
         output = json.loads(capsys.readouterr().out)
         assert output["folder"] == "Archive"
-        assert ("list_messages", "Archive", 20, True, None, None, None) in created_clients[0].calls
+        assert ("list_messages", "Archive", 20, True, None, None, None, "newest") in created_clients[0].calls
 
     def test_mail_unread_accepts_days_filter(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
@@ -324,7 +332,7 @@ class TestMailUnread:
 
         output = json.loads(capsys.readouterr().out)
         assert output["folder"] == "INBOX"
-        assert ("list_messages", "INBOX", 20, True, "2026-06-15", None, None) in created_clients[0].calls
+        assert ("list_messages", "INBOX", 20, True, "2026-06-15", None, None, "newest") in created_clients[0].calls
 
     def test_mail_unread_accepts_since_and_before_filters(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
@@ -356,6 +364,7 @@ class TestMailUnread:
             "2026-06-01",
             "2026-06-15",
             None,
+            "newest",
         ) in created_clients[0].calls
 
     def test_mail_unread_accepts_limit_short_option(self, tmp_path, monkeypatch, capsys):
@@ -375,7 +384,26 @@ class TestMailUnread:
 
         output = json.loads(capsys.readouterr().out)
         assert output["count"] == 0
-        assert ("list_messages", "INBOX", 3, True, None, None, None) in created_clients[0].calls
+        assert ("list_messages", "INBOX", 3, True, None, None, None, "newest") in created_clients[0].calls
+
+    def test_mail_unread_accepts_oldest_first_option(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+        created_clients = []
+
+        def make_client(host, port, username, password, *, imap_factory=None):
+            fake = FakeIMAP({"list_unread": []})
+            created_clients.append(fake)
+            return fake
+
+        monkeypatch.setattr(cli, "IMAPClient", make_client)
+
+        assert cli.main(["mail", "unread", "--oldest-first", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["count"] == 0
+        assert ("list_messages", "INBOX", 20, True, None, None, None, "oldest") in created_clients[0].calls
 
     def test_mail_unread_human_output(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
@@ -663,6 +691,34 @@ class TestMailList:
         assert output["folder"] == "INBOX"
         assert output["count"] == 2
         assert output["messages"][0]["seen"] is True
+
+    def test_mail_list_defaults_to_newest_order(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_messages": []}
+        factory = _fake_imap_factory(fake_responses)
+        monkeypatch.setattr(cli, "IMAPClient", factory)
+
+        assert cli.main(["mail", "list", "--limit", "10", "--json"]) == 0
+
+        fake = factory.instances[0]
+        assert fake.calls[-2] == ("list_messages", "INBOX", 10, False, None, None, None, "newest")
+
+    def test_mail_list_oldest_first_option(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {"list_messages": []}
+        factory = _fake_imap_factory(fake_responses)
+        monkeypatch.setattr(cli, "IMAPClient", factory)
+
+        assert cli.main(["mail", "list", "--limit", "10", "--oldest-first", "--json"]) == 0
+
+        fake = factory.instances[0]
+        assert fake.calls[-2] == ("list_messages", "INBOX", 10, False, None, None, None, "oldest")
 
     def test_mail_list_folder_option(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))

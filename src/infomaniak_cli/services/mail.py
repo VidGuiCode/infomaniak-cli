@@ -200,12 +200,15 @@ class IMAPClient:
         since: str | None = None,
         before: str | None = None,
         on: str | None = None,
+        order: str = "newest",
     ) -> list[dict[str, Any]]:
         """List messages in a folder, optionally filtered by date and read status.
 
         Uses EXAMINE for read-only access so messages are never marked as seen.
         Results are sorted by UID descending (newest first).
         """
+        if order not in {"newest", "oldest"}:
+            raise ValueError("order must be 'newest' or 'oldest'")
         self._examine(folder)
         criteria: list[str] = []
         if unread_only:
@@ -220,16 +223,15 @@ class IMAPClient:
             criteria = ["ALL"]
 
         msg_ids = self._search(criteria)
-        if limit is not None:
-            msg_ids = msg_ids[:limit]
+        msg_ids = _limit_msg_ids(msg_ids, limit=limit, order=order)
 
         items = self._fetch_headers_and_flags(msg_ids)
-        items.sort(key=lambda x: int(x.get("uid", 0)), reverse=True)
+        items.sort(key=lambda x: int(x.get("uid", 0)), reverse=(order == "newest"))
         return items
 
-    def list_unread(self, limit: int | None = None) -> list[dict[str, Any]]:
+    def list_unread(self, limit: int | None = None, order: str = "newest") -> list[dict[str, Any]]:
         """Return unread message summaries (slim headers)."""
-        return self.list_messages(folder="INBOX", limit=limit, unread_only=True)
+        return self.list_messages(folder="INBOX", limit=limit, unread_only=True, order=order)
 
     def search(
         self,
@@ -240,11 +242,14 @@ class IMAPClient:
         since: str | None = None,
         before: str | None = None,
         on: str | None = None,
+        order: str = "newest",
     ) -> list[dict[str, Any]]:
         """Search messages by a free-text query in a folder.
 
         Uses IMAP OR search on SUBJECT and FROM, combined with optional filters.
         """
+        if order not in {"newest", "oldest"}:
+            raise ValueError("order must be 'newest' or 'oldest'")
         self._examine(folder)
         criteria = ["OR", "SUBJECT", query, "FROM", query]
         if unread_only:
@@ -257,11 +262,10 @@ class IMAPClient:
             criteria.extend(["ON", _imap_date(on)])
 
         msg_ids = self._search(criteria)
-        if limit is not None:
-            msg_ids = msg_ids[:limit]
+        msg_ids = _limit_msg_ids(msg_ids, limit=limit, order=order)
 
         items = self._fetch_headers_and_flags(msg_ids)
-        items.sort(key=lambda x: int(x.get("uid", 0)), reverse=True)
+        items.sort(key=lambda x: int(x.get("uid", 0)), reverse=(order == "newest"))
         return items
 
     def fetch_message(self, uid: str, folder: str = "INBOX") -> dict[str, Any]:
@@ -436,6 +440,14 @@ def _imap_date(date_str: str) -> str:
     except ValueError as exc:
         raise MailError(f"invalid date: {date_str}. Expected YYYY-MM-DD.") from exc
     return dt.strftime("%d-%b-%Y")
+
+
+def _limit_msg_ids(msg_ids: list[str], *, limit: int | None, order: str) -> list[str]:
+    if limit is None:
+        return msg_ids
+    if limit <= 0:
+        return []
+    return msg_ids[-limit:] if order == "newest" else msg_ids[:limit]
 
 
 def _parse_fetch_meta(raw_meta: bytes) -> dict[str, Any]:

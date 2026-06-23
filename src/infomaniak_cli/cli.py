@@ -641,6 +641,7 @@ def cmd_mail_list(args: argparse.Namespace) -> int:
                 since=since,
                 before=before,
                 on=on,
+                order="oldest" if args.oldest_first else "newest",
             )
     except MailError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -686,6 +687,7 @@ def cmd_mail_search(args: argparse.Namespace) -> int:
                 since=since,
                 before=before,
                 on=on,
+                order="oldest" if args.oldest_first else "newest",
             )
     except MailError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1521,6 +1523,7 @@ def build_parser() -> argparse.ArgumentParser:
     mail_list.add_argument("--since", help="Start date (YYYY-MM-DD, inclusive).")
     mail_list.add_argument("--before", help="End date (YYYY-MM-DD, exclusive).")
     mail_list.add_argument("--days", type=int, help="Convenience: messages since today - N days.")
+    mail_list.add_argument("--oldest-first", action="store_true", help="Show oldest matching messages first.")
     mail_list.add_argument("--json", action="store_true")
     mail_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_list.set_defaults(func=cmd_mail_list)
@@ -1530,6 +1533,7 @@ def build_parser() -> argparse.ArgumentParser:
     mail_unread.add_argument("--since", help="Start date (YYYY-MM-DD, inclusive).")
     mail_unread.add_argument("--before", help="End date (YYYY-MM-DD, exclusive).")
     mail_unread.add_argument("--days", type=int, help="Convenience: messages since today - N days.")
+    mail_unread.add_argument("--oldest-first", action="store_true", help="Show oldest matching messages first.")
     mail_unread.add_argument("--json", action="store_true")
     mail_unread.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_unread.set_defaults(func=cmd_mail_unread)
@@ -1541,6 +1545,7 @@ def build_parser() -> argparse.ArgumentParser:
     mail_search.add_argument("--since", help="Start date (YYYY-MM-DD, inclusive).")
     mail_search.add_argument("--before", help="End date (YYYY-MM-DD, exclusive).")
     mail_search.add_argument("--days", type=int, help="Convenience: messages since today - N days.")
+    mail_search.add_argument("--oldest-first", action="store_true", help="Show oldest matching messages first.")
     mail_search.add_argument("--json", action="store_true")
     mail_search.add_argument(
         "--raw", action="store_true", help="With --json, emit the full raw message payload."

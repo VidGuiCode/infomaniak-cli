@@ -251,6 +251,24 @@ class TestIMAPClientListMessages:
         fake = FakeIMAP(
             responses={
                 "ALL": ("OK", [b"1 2 3"]),
+                _header_fetch_key("3"): (
+                    "OK",
+                    [(b"3 (UID 103 FLAGS (\\Seen))", raw_msg)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.list_messages(limit=1)
+        assert len(items) == 1
+        assert items[0]["uid"] == "103"
+
+    def test_list_messages_oldest_first_preserves_ascending_limit(self):
+        raw_msg = _build_raw_message()
+        fake = FakeIMAP(
+            responses={
+                "ALL": ("OK", [b"1 2 3"]),
                 _header_fetch_key("1"): (
                     "OK",
                     [(b"1 (UID 101 FLAGS (\\Seen))", raw_msg)],
@@ -260,7 +278,7 @@ class TestIMAPClientListMessages:
         client = IMAPClient(
             "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
         )
-        items = client.list_messages(limit=1)
+        items = client.list_messages(limit=1, order="oldest")
         assert len(items) == 1
         assert items[0]["uid"] == "101"
 
@@ -306,9 +324,9 @@ class TestIMAPClientListUnread:
         fake = FakeIMAP(
             responses={
                 "UNSEEN": ("OK", [b"1 2 3"]),
-                _header_fetch_key("1"): (
+                _header_fetch_key("3"): (
                     "OK",
-                    [(b"1 (UID 101 FLAGS (\\Recent))", raw_msg)],
+                    [(b"3 (UID 103 FLAGS (\\Recent))", raw_msg)],
                 ),
             }
         )
@@ -317,7 +335,7 @@ class TestIMAPClientListUnread:
         )
         items = client.list_unread(limit=1)
         assert len(items) == 1
-        assert items[0]["uid"] == "101"
+        assert items[0]["uid"] == "103"
 
     def test_list_unread_empty_inbox(self):
         fake = FakeIMAP(responses={"UNSEEN": ("OK", [b""])})
@@ -354,6 +372,24 @@ class TestIMAPClientSearch:
         fake = FakeIMAP(
             responses={
                 "OR SUBJECT query FROM query": ("OK", [b"1 2 3"]),
+                _header_fetch_key("3"): (
+                    "OK",
+                    [(b"3 (UID 303 FLAGS (\\Recent))", raw_msg)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.search("query", limit=1)
+        assert len(items) == 1
+        assert items[0]["uid"] == "303"
+
+    def test_search_oldest_first_preserves_ascending_limit(self):
+        raw_msg = _build_raw_message()
+        fake = FakeIMAP(
+            responses={
+                "OR SUBJECT query FROM query": ("OK", [b"1 2 3"]),
                 _header_fetch_key("1"): (
                     "OK",
                     [(b"1 (UID 301 FLAGS (\\Recent))", raw_msg)],
@@ -363,7 +399,7 @@ class TestIMAPClientSearch:
         client = IMAPClient(
             "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
         )
-        items = client.search("query", limit=1)
+        items = client.search("query", limit=1, order="oldest")
         assert len(items) == 1
         assert items[0]["uid"] == "301"
 

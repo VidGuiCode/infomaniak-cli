@@ -127,6 +127,8 @@ ik auth mail --mailbox user@example.com --password <app-password>
 ik mail folders              # or ik mail labels
 ik mail list                 # both read and unread; default folder INBOX
 ik mail list --folder Spam --days 5 --json
+ik mail list --limit 10      # newest 10 matching messages by default
+ik mail list --limit 10 --oldest-first
 ik mail list --since 2026-06-01 --before 2026-06-15 --json
 ik mail unread               # shortcut for ik mail list --unread
 ik mail unread --folder Sent --since 2026-06-01 --json
@@ -135,9 +137,9 @@ ik mail read <uid> --folder Spam --json --raw
 ik mail threads --folder Sent --days 7 --json
 ```
 
-`ik mail list` defaults to the `INBOX` folder and shows both read and unread messages. Each message in JSON output includes a `seen` boolean. `--days N` is a convenience shortcut for `--since` set to `today - N days`.
+`ik mail list` defaults to the `INBOX` folder and shows both read and unread messages. Limited mail results are newest-first by default; add `--oldest-first` to show the oldest matching messages first. Each message in JSON output includes a `seen` boolean. `--days N` is a convenience shortcut for `--since` set to `today - N days`.
 
-`ik mail unread` accepts the same folder, limit, and date filters as `ik mail list`. `ik mail read` also accepts `--folder` so you can read messages from any folder by UID; add `--raw` with `--json` to include `body_preview`. `ik mail threads` groups messages into conversation threads using `In-Reply-To` and `References` headers.
+`ik mail unread` accepts the same folder, limit, ordering, and date filters as `ik mail list`. `ik mail read` also accepts `--folder` so you can read messages from any folder by UID; add `--raw` with `--json` to include `body_preview`. `ik mail threads` groups messages into conversation threads using `In-Reply-To` and `References` headers.
 
 Later write commands:
 

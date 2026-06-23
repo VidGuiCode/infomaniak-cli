@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Changed `mail list`, `mail unread`, and `mail search` limits to default to newest matching messages first.
+- Added `--oldest-first` for mail listing/search commands when oldest matching messages are desired.
+
 ## v0.1.6 - Read-only Calendar
 
 - Added explicit CalDAV calendar setup with `ik auth calendar`.

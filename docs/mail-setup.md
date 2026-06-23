@@ -70,15 +70,15 @@ Password  : device password from config.infomaniak.com
 ik mail folders [--json] [--raw]
 ik mail labels   # alias for folders
 
-ik mail list [--folder/-f <name>] [--limit/-n N] [--unread]
+ik mail list [--folder/-f <name>] [--limit/-n N] [--unread] [--oldest-first]
              [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
              [--json] [--raw]
 
-ik mail unread [--folder/-f <name>] [--limit/-n N]
+ik mail unread [--folder/-f <name>] [--limit/-n N] [--oldest-first]
                [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
                [--json] [--raw]   # shortcut for list --unread
 
-ik mail search "query" [--folder/-f <name>] [--limit N] [--unread]
+ik mail search "query" [--folder/-f <name>] [--limit N] [--unread] [--oldest-first]
                        [--since YYYY-MM-DD] [--before YYYY-MM-DD] [--days N]
                        [--json] [--raw]
 
@@ -91,6 +91,7 @@ ik mail threads [--folder/-f <name>] [--days N] [--since YYYY-MM-DD] [--before Y
 - `--since`/`--before` accept dates as `YYYY-MM-DD`.
 - `--unread` filters to unread messages only.
 - `ik mail list` shows **both** read and unread messages by default; each message has a `seen` flag in JSON output.
+- Limited `mail list`, `mail unread`, and `mail search` results are newest-first by default. Add `--oldest-first` for the oldest matching messages.
 - `ik mail read --json` returns slim message metadata. Add `--raw` to include `body_preview`.
 
 `<uid>` is a number from the `unread`/`search` output. In PowerShell do NOT type the angle
