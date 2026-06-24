@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.16 - kChat read polish
+
+- Added `ik chat search "<query>"` to search kChat posts read-only via the Mattermost-compatible post-search endpoint, with `--or`, `--limit`, and `--raw`.
+- Added `--channel <slug>` to `ik chat search` to resolve a channel name read-only and filter results to that channel.
+- Added `ik chat thread <post_id>` to read a thread read-only, preserving the server's post order.
+- Added a stable slim post schema (`id`, `channel_id`, `user_id`, `message`, `type`, `create_at`, ISO-8601 `created_at`).
+- Kept all kChat operations read-only; no posting, reactions, edits, deletes, channel creation, membership changes, or webhooks.
+- Note: search/thread/channel-by-name target standard Mattermost v4 endpoints; live confirmation against Infomaniak kChat is pending.
+
 ## v0.1.15 - kDrive read polish
 
 - Added `ik drive recent` to list files/folders newest-first from the existing read-only files endpoint.

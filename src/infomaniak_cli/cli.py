@@ -34,6 +34,8 @@ from .services.chat import (
     is_trusted_infomaniak_kchat_url,
     parse_ksuite_kchat_url,
     slim_channels,
+    slim_post,
+    slim_posts,
     slim_teams,
     slim_users,
 )
@@ -1528,6 +1530,16 @@ def _display_chat_user(user: Mapping[str, Any]) -> str:
     return f"{user_id}\t{username}\t{name}\t{email}"
 
 
+def _display_chat_post(post: Mapping[str, Any]) -> str:
+    slim = slim_post(post)
+    post_id = slim.get("id") or "-"
+    created = slim.get("created_at") or ""
+    channel_id = slim.get("channel_id") or "-"
+    user_id = slim.get("user_id") or "-"
+    message = (slim.get("message") or "").replace("\n", " ")
+    return f"{post_id}\t{created}\t{channel_id}\t{user_id}\t{message}"
+
+
 def _drive_404_error(drive_id: str) -> ValueError:
     path = f"/2/drive/{drive_id}/files"
     return ValueError(
@@ -2118,6 +2130,80 @@ def cmd_chat_users(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chat_search(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    team_id = _chat_team_id_or_error(args, profile, client)
+
+    channel_id = None
+    channel_slug = getattr(args, "channel", None)
+    if channel_slug:
+        channel = client.get_channel_by_name(team_id, channel_slug)
+        channel_id = channel.get("id")
+
+    limit = getattr(args, "limit", None)
+    posts = client.search_posts(
+        team_id,
+        args.query,
+        is_or_search=bool(getattr(args, "or_search", False)),
+        limit=None if channel_id else limit,
+    )
+    if channel_id is not None:
+        posts = [post for post in posts if post.get("channel_id") == channel_id]
+        if limit is not None:
+            posts = posts[:limit]
+
+    if _machine_output(args):
+        output_posts = posts if _raw_output(args) else slim_posts(posts)
+        print_machine(
+            {
+                "profile": profile.name,
+                "team_id": team_id,
+                "query": args.query,
+                "count": len(posts),
+                "posts": output_posts,
+            },
+            args,
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Team ID: {team_id}")
+        if channel_slug:
+            print(f"Channel: {channel_slug}")
+        print(f"Query: {args.query}")
+        print(f"Posts: {len(posts)}")
+        if not posts:
+            print("No posts found.")
+        for post in posts:
+            print(_display_chat_post(post))
+    return 0
+
+
+def cmd_chat_thread(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    posts = client.get_thread(args.post_id)
+
+    if _machine_output(args):
+        output_posts = posts if _raw_output(args) else slim_posts(posts)
+        print_machine(
+            {
+                "profile": profile.name,
+                "post_id": args.post_id,
+                "count": len(posts),
+                "posts": output_posts,
+            },
+            args,
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Post ID: {args.post_id}")
+        print(f"Posts: {len(posts)}")
+        if not posts:
+            print("No posts found.")
+        for post in posts:
+            print(_display_chat_post(post))
+    return 0
+
+
 def cmd_debug_probe(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     result = probe_profile(profile.name, profile.account_id, client)
@@ -2492,6 +2578,22 @@ def build_parser() -> argparse.ArgumentParser:
     chat_users.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     chat_users.add_argument("--raw", action="store_true", help="With --json, emit the full raw user payload.")
     chat_users.set_defaults(func=cmd_chat_users)
+    chat_search = chat_sub.add_parser("search", help="Search kChat posts (read-only)")
+    chat_search.add_argument("query", help="Search terms.")
+    chat_search.add_argument("--team-id", help="Team ID. Defaults to saved profile team or the only available team.")
+    chat_search.add_argument("--channel", help="Channel slug to resolve read-only and filter results to.")
+    chat_search.add_argument("--or", dest="or_search", action="store_true", help="Match any term (is_or_search) instead of all terms.")
+    chat_search.add_argument("--limit", type=int, help="Maximum posts to show.")
+    chat_search.add_argument("--json", action="store_true")
+    chat_search.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    chat_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw post payload.")
+    chat_search.set_defaults(func=cmd_chat_search)
+    chat_thread = chat_sub.add_parser("thread", help="Read a kChat thread by post id (read-only)")
+    chat_thread.add_argument("post_id", help="Root or reply post id whose thread to read.")
+    chat_thread.add_argument("--json", action="store_true")
+    chat_thread.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    chat_thread.add_argument("--raw", action="store_true", help="With --json, emit the full raw post payload.")
+    chat_thread.set_defaults(func=cmd_chat_thread)
 
     return parser
 

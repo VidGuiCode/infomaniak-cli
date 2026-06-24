@@ -204,6 +204,9 @@ ik chat teams
 ik chat teams --json
 ik chat channels --team-id <team_id> --limit 50 --json
 ik chat users --team-id <team_id> --limit 50 --json
+ik chat search "invoice" --json
+ik chat search "invoice" --channel <channel_slug> --limit 20 --json
+ik chat thread <post_id> --json
 ```
 
 `ik chat teams` uses the configured kChat API base URL and calls the Mattermost-compatible `GET /api/v4/users/me/teams` endpoint. Authentication order is explicit saved kChat token first, then the saved main Informaniak API token only for trusted `*.kchat.infomaniak.com` hosts.
@@ -212,9 +215,15 @@ ik chat users --team-id <team_id> --limit 50 --json
 
 `ik chat users` lists users for a team using `GET /api/v4/users?in_team={team_id}`.
 
+`ik chat search "<query>"` searches posts read-only via `POST /api/v4/teams/{team_id}/posts/search`. Use `--or` to match any term instead of all terms, `--limit` to cap results, and `--channel <slug>` to resolve a channel name read-only (`GET /api/v4/teams/{team_id}/channels/name/{name}`) and filter results to that channel.
+
+`ik chat thread <post_id>` reads a thread read-only via `GET /api/v4/posts/{post_id}/thread`, preserving the server's post order.
+
 If the trusted-host fallback is rejected, save a dedicated token with `ik auth chat --url <url> --stdin`.
 
-Not implemented in v0.1.7: posting, reactions, edits, deletes, channel creation, membership changes, webhooks, post search, or thread display.
+Note: `search`, `thread`, and the `--channel` resolver target the documented standard Mattermost v4 endpoints; live confirmation against Infomaniak kChat is pending.
+
+Not implemented in v0.1.x: posting, reactions, edits, deletes, channel creation, membership changes, or webhooks.
 
 ## kMeet
 

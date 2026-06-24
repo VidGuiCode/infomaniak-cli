@@ -11,6 +11,7 @@ from infomaniak_cli.services.chat import (
     is_trusted_infomaniak_kchat_url,
     parse_ksuite_kchat_url,
     slim_channel,
+    slim_post,
     slim_team,
     slim_user,
 )
@@ -64,6 +65,27 @@ USERS = [
 ]
 
 
+POSTS = [
+    {
+        "id": "post-1",
+        "channel_id": "channel-1",
+        "user_id": "user-1",
+        "message": "Invoice 1001 is ready",
+        "type": "",
+        "create_at": 1700000000000,
+        "raw": True,
+    },
+    {
+        "id": "post-2",
+        "channel_id": "channel-2",
+        "user_id": "user-2",
+        "message": "Reply about the invoice",
+        "type": "",
+        "create_at": 1700000100000,
+    },
+]
+
+
 class FakeChatClient:
     def __init__(self, base_url, token, **kwargs):
         self.base_url = base_url
@@ -82,6 +104,18 @@ class FakeChatClient:
     def list_users(self, team_id, *, limit=None):
         self.calls.append(("list_users", team_id, limit))
         return USERS[:limit] if limit is not None else USERS
+
+    def search_posts(self, team_id, terms, *, is_or_search=False, limit=None):
+        self.calls.append(("search_posts", team_id, terms, is_or_search, limit))
+        return POSTS[:limit] if limit is not None else list(POSTS)
+
+    def get_thread(self, post_id):
+        self.calls.append(("get_thread", post_id))
+        return list(POSTS)
+
+    def get_channel_by_name(self, team_id, channel_name):
+        self.calls.append(("get_channel_by_name", team_id, channel_name))
+        return {"id": "channel-2", "team_id": team_id, "name": channel_name}
 
 
 class FakeResponse:
@@ -140,6 +174,143 @@ def test_slim_user_projects_stable_fields():
         "last_name": "Admin",
         "email": "alice@example.com",
     }
+
+
+def test_slim_post_projects_stable_fields():
+    assert slim_post(POSTS[0]) == {
+        "id": "post-1",
+        "channel_id": "channel-1",
+        "user_id": "user-1",
+        "message": "Invoice 1001 is ready",
+        "type": "",
+        "create_at": 1700000000000,
+        "created_at": "2023-11-14T22:13:20+00:00",
+    }
+
+
+def test_slim_post_is_none_safe_for_missing_timestamp():
+    slim = slim_post({"id": "post-9"})
+    assert slim["create_at"] is None
+    assert slim["created_at"] is None
+    assert slim["message"] is None
+
+
+def test_search_posts_constructs_post_request_and_orders():
+    seen_requests = []
+
+    def opener(request, timeout=30):
+        seen_requests.append(request)
+        assert request.full_url.endswith("/api/v4/teams/team-1/posts/search")
+        return FakeResponse(
+            json.dumps(
+                {
+                    "order": ["post-2", "post-1"],
+                    "posts": {"post-1": POSTS[0], "post-2": POSTS[1]},
+                }
+            ).encode("utf-8")
+        )
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    posts = client.search_posts("team-1", "invoice")
+
+    assert [post["id"] for post in posts] == ["post-2", "post-1"]
+    request = seen_requests[0]
+    assert request.get_method() == "POST"
+    assert request.headers["Authorization"] == "Bearer secret-chat-token"
+    assert json.loads(request.data.decode("utf-8")) == {"terms": "invoice", "is_or_search": False}
+
+
+def test_search_posts_passes_or_flag_and_limit():
+    captured = {}
+
+    def opener(request, timeout=30):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(
+            json.dumps(
+                {
+                    "order": ["post-1", "post-2"],
+                    "posts": {"post-1": POSTS[0], "post-2": POSTS[1]},
+                }
+            ).encode("utf-8")
+        )
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    posts = client.search_posts("team-1", "invoice", is_or_search=True, limit=1)
+
+    assert captured["body"] == {"terms": "invoice", "is_or_search": True}
+    assert [post["id"] for post in posts] == ["post-1"]
+
+
+def test_search_posts_errors_are_redacted():
+    def opener(request, timeout=30):
+        raise urllib.error.URLError("token=secret-chat-token refused")
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    try:
+        client.search_posts("team-1", "invoice")
+    except ChatError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected ChatError")
+
+    assert "secret-chat-token" not in message
+    assert "token=***" in message
+
+
+def test_get_thread_orders_posts():
+    seen_requests = []
+
+    def opener(request, timeout=30):
+        seen_requests.append(request)
+        return FakeResponse(
+            json.dumps(
+                {
+                    "order": ["post-1", "post-2"],
+                    "posts": {"post-1": POSTS[0], "post-2": POSTS[1]},
+                }
+            ).encode("utf-8")
+        )
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    posts = client.get_thread("post-1")
+
+    assert seen_requests[0].get_method() == "GET"
+    assert seen_requests[0].full_url.endswith("/api/v4/posts/post-1/thread")
+    assert [slim_post(post)["id"] for post in posts] == ["post-1", "post-2"]
+
+
+def test_get_channel_by_name_constructs_url_and_returns_channel():
+    seen_requests = []
+
+    def opener(request, timeout=30):
+        seen_requests.append(request)
+        return FakeResponse(json.dumps(CHANNELS[1]).encode("utf-8"))
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    channel = client.get_channel_by_name("team-1", "dev")
+
+    assert seen_requests[0].get_method() == "GET"
+    assert seen_requests[0].full_url.endswith("/api/v4/teams/team-1/channels/name/dev")
+    assert channel["id"] == "channel-2"
+
+
+def test_get_channel_by_name_404_is_clear():
+    def opener(request, timeout=30):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    try:
+        client.get_channel_by_name("team-1", "missing")
+    except ChatError as exc:
+        assert str(exc) == "kChat channel not found: missing"
+    else:
+        raise AssertionError("expected ChatError")
 
 
 def test_chat_client_constructs_teams_channels_and_users_requests():
@@ -530,10 +701,146 @@ def test_cli_chat_requires_configuration(tmp_path, monkeypatch, capsys):
     assert "auth chat" in captured.err
 
 
+def test_cli_chat_search_slim_json_with_limit(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created_clients = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        client.kwargs = kwargs
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+
+    assert cli.main(["chat", "search", "invoice", "--limit", "1", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["profile"] == "work"
+    assert output["team_id"] == "team-1"
+    assert output["query"] == "invoice"
+    assert output["count"] == 1
+    assert output["posts"] == [
+        {
+            "id": "post-1",
+            "channel_id": "channel-1",
+            "user_id": "user-1",
+            "message": "Invoice 1001 is ready",
+            "type": "",
+            "create_at": 1700000000000,
+            "created_at": "2023-11-14T22:13:20+00:00",
+        }
+    ]
+    assert created_clients[0].calls == [("search_posts", "team-1", "invoice", False, 1)]
+
+
+def test_cli_chat_search_resolves_channel_and_filters(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created_clients = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        client.kwargs = kwargs
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+
+    assert cli.main(["chat", "search", "invoice", "--channel", "dev", "--or", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["count"] == 1
+    assert [post["id"] for post in output["posts"]] == ["post-2"]
+    assert created_clients[0].calls == [
+        ("get_channel_by_name", "team-1", "dev"),
+        ("search_posts", "team-1", "invoice", True, None),
+    ]
+
+
+def test_cli_chat_search_raw_json(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    monkeypatch.setattr(cli, "ChatClient", FakeChatClient)
+
+    assert cli.main(["chat", "search", "invoice", "--json", "--raw"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["posts"][0]["raw"] is True
+
+
+def test_cli_chat_search_requires_team(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id=None)
+    monkeypatch.setattr(cli, "ChatClient", FakeChatClient)
+
+    assert cli.main(["chat", "search", "invoice", "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert "No kChat team configured for profile: work" in captured.err
+
+
+def test_cli_chat_search_requires_configuration(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+
+    assert cli.main(["chat", "search", "invoice"]) == 1
+
+    captured = capsys.readouterr()
+    assert "No kChat configured for profile: work" in captured.err
+
+
+def test_cli_chat_thread_slim_json(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created_clients = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        client.kwargs = kwargs
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+
+    assert cli.main(["chat", "thread", "post-1", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["profile"] == "work"
+    assert output["post_id"] == "post-1"
+    assert output["count"] == 2
+    assert [post["id"] for post in output["posts"]] == ["post-1", "post-2"]
+    assert "created_at" in output["posts"][0]
+    assert created_clients[0].calls == [("get_thread", "post-1")]
+
+
+def test_cli_chat_thread_does_not_leak_token(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work",
+        kchat_url="https://workspace.kchat.infomaniak.com",
+        kchat_team_id="team-1",
+        make_default=True,
+    )
+    TokenStore().save_token("work", "secret-main-token")
+
+    class RejectingClient(FakeChatClient):
+        def get_thread(self, post_id):
+            raise ChatError(
+                "kChat rejected the main Informaniak API token. "
+                "Run ik auth chat --url <url> --stdin to save a dedicated kChat token."
+            )
+
+    monkeypatch.setattr(cli, "ChatClient", RejectingClient)
+
+    assert cli.main(["chat", "thread", "post-1", "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert "secret-main-token" not in captured.out
+    assert "secret-main-token" not in captured.err
+    assert "kChat rejected the main Informaniak API token" in captured.err
+
+
 def test_chat_parser_exposes_no_write_commands():
     parser = cli.build_parser()
     chat_parser = parser._subparsers._group_actions[0].choices["chat"]
     choices = chat_parser._subparsers._group_actions[0].choices
 
-    assert set(choices) == {"teams", "channels", "users"}
+    assert set(choices) == {"teams", "channels", "users", "search", "thread"}
     assert not {"post", "create", "delete", "edit", "react", "webhook"} & set(choices)

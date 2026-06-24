@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,23 +56,72 @@ class ChatClient:
             return users[:limit]
         return users
 
-    def _get(self, path: str, *, params: Mapping[str, Any] | None = None) -> Any:
+    def search_posts(
+        self,
+        team_id: str,
+        terms: str,
+        *,
+        is_or_search: bool = False,
+        limit: int | None = None,
+    ) -> list[Mapping[str, Any]]:
+        payload = self._post(
+            f"/api/v4/teams/{urllib.parse.quote(str(team_id), safe='')}/posts/search",
+            {"terms": terms, "is_or_search": bool(is_or_search)},
+        )
+        return _ordered_posts(payload, limit=limit)
+
+    def get_thread(self, post_id: str) -> list[Mapping[str, Any]]:
+        payload = self._get(f"/api/v4/posts/{urllib.parse.quote(str(post_id), safe='')}/thread")
+        return _ordered_posts(payload)
+
+    def get_channel_by_name(self, team_id: str, channel_name: str) -> Mapping[str, Any]:
+        payload = self._get(
+            f"/api/v4/teams/{urllib.parse.quote(str(team_id), safe='')}"
+            f"/channels/name/{urllib.parse.quote(str(channel_name), safe='')}",
+            not_found=f"kChat channel not found: {channel_name}",
+        )
+        if not isinstance(payload, Mapping):
+            raise ChatError("Unexpected kChat channel response: expected a JSON object")
+        return payload
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.token}",
+        }
+
+    def _get(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        not_found: str | None = None,
+    ) -> Any:
         url = f"{self.base_url}{path}"
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
+        request = urllib.request.Request(url, headers=self._headers(), method="GET")
+        return self._send(request, not_found=not_found)
+
+    def _post(self, path: str, body: Mapping[str, Any]) -> Any:
+        headers = self._headers()
+        headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {self.token}",
-            },
-            method="GET",
+            f"{self.base_url}{path}",
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
         )
+        return self._send(request)
+
+    def _send(self, request: urllib.request.Request, *, not_found: str | None = None) -> Any:
         try:
             with self._opener(request, timeout=30) as response:
                 text = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            if exc.code == 404 and not_found is not None:
+                raise ChatError(not_found) from exc
             if exc.code in (401, 403):
                 if self.auth_source == "main_token_fallback":
                     raise ChatError(
@@ -187,10 +237,57 @@ def slim_users(users: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [slim_user(user) for user in users]
 
 
+def slim_post(post: Mapping[str, Any]) -> dict[str, Any]:
+    create_at = post.get("create_at")
+    return {
+        "id": _string_or_none(post.get("id")),
+        "channel_id": _string_or_none(post.get("channel_id")),
+        "user_id": _string_or_none(post.get("user_id")),
+        "message": _string_or_none(post.get("message")),
+        "type": _string_or_none(post.get("type")),
+        "create_at": create_at if _is_real_number(create_at) else None,
+        "created_at": _iso_from_millis(create_at),
+    }
+
+
+def slim_posts(posts: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [slim_post(post) for post in posts]
+
+
 def _items(payload: Any, label: str) -> list[Mapping[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, Mapping)]
     raise ChatError(f"Unexpected kChat {label} response: expected JSON list")
+
+
+def _ordered_posts(payload: Any, *, limit: int | None = None) -> list[Mapping[str, Any]]:
+    if not isinstance(payload, Mapping):
+        raise ChatError("Unexpected kChat posts response: expected a post list object")
+    order = payload.get("order")
+    posts = payload.get("posts")
+    if not isinstance(order, list) or not isinstance(posts, Mapping):
+        raise ChatError("Unexpected kChat posts response: missing order/posts")
+    ordered: list[Mapping[str, Any]] = []
+    for post_id in order:
+        post = posts.get(post_id)
+        if isinstance(post, Mapping):
+            ordered.append(post)
+    if limit is not None:
+        return ordered[:limit]
+    return ordered
+
+
+def _is_real_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _iso_from_millis(value: Any) -> str | None:
+    if not _is_real_number(value):
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _string_or_none(value: Any) -> str | None:
