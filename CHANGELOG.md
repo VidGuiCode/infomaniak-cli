@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.17 - Contacts/Calendar setup discovery polish
+
+- Added read-only CardDAV/CalDAV collection discovery (`services/dav_discovery.py`) using standard DAV principal -> home-set -> Depth:1 enumeration (RFC 5397/6352/4791).
+- `ik auth contacts` now auto-discovers the address-book collection from the default sync base and saves it; with multiple address books it picks a sensible default and lists the rest.
+- `ik auth calendar` auto-discovers the calendar collection the same way.
+- Added `--no-discover` to save a `--url` verbatim; `--url` remains an explicit override, and discovery never loses the saved password/username.
+- Improved "no contacts/calendar configured" errors to mention auto-discovery and the explicit `--url` fallback.
+- Kept everything read-only (PROPFIND only); no contact/calendar create/update/delete, RSVP/invite, or bulk import/export. Basic-auth credentials are redacted on every error path.
+- Note: DAV discovery targets the standard RFC shapes; live confirmation against `sync.infomaniak.com` is pending.
+
 ## v0.1.16 - kChat read polish
 
 - Added `ik chat search "<query>"` to search kChat posts read-only via the Mattermost-compatible post-search endpoint, with `--or`, `--limit`, and `--raw`.

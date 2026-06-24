@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.16-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.17-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -135,25 +135,25 @@ Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.m
 
 ## Contacts setup
 
-Contacts use CardDAV through Infomaniak sync. Use your sync username, for example `VG04107`, then paste the application password into stdin:
+Contacts use CardDAV through Infomaniak sync. Use your sync username, then paste the application password into stdin:
 
 ```bash
-ik --profile cylro auth contacts --username VG04107 --stdin
+ik --profile <profile> auth contacts --username <sync-username> --stdin
 ik contacts list --json
 ```
 
-The default DAV URL is `https://sync.infomaniak.com/`. Use `--url` only for custom or advanced DAV endpoints. The CLI does not reuse mail credentials automatically.
+From the default DAV base `https://sync.infomaniak.com/`, `ik auth contacts` auto-discovers your address-book collection (standard CardDAV principal/home-set discovery) and saves it. If several address books exist it picks a sensible default and prints the rest so you can re-run with `--url <collection-url>`. Pass `--url` to set a collection explicitly, or `--no-discover` to save the URL verbatim. The CLI does not reuse mail credentials automatically.
 
 ## Calendar setup
 
-Calendar uses CalDAV through Infomaniak sync. Use your sync username, for example `VG04107`, then paste the application password into stdin:
+Calendar uses CalDAV through Infomaniak sync. Use your sync username, then paste the application password into stdin:
 
 ```bash
-ik --profile cylro auth calendar --username VG04107 --stdin
+ik --profile <profile> auth calendar --username <sync-username> --stdin
 ik calendar upcoming --days 14 --json
 ```
 
-The default DAV URL is `https://sync.infomaniak.com/`. Use `--url` only for custom or advanced DAV endpoints. The CLI does not reuse mail or contacts credentials automatically.
+From the default DAV base `https://sync.infomaniak.com/`, `ik auth calendar` auto-discovers your calendar collection and saves it; with multiple calendars it picks a default and lists the rest for re-running with `--url <collection-url>`. Pass `--url` to set a collection explicitly, or `--no-discover` to save the URL verbatim. The CLI does not reuse mail or contacts credentials automatically.
 
 ## kChat setup
 

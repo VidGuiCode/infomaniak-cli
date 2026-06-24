@@ -78,8 +78,8 @@ ik auth status
 ik auth logout
 ik auth logout --all --yes
 ik auth mail --mailbox user@example.com --password <mailbox-device-password>
-ik auth contacts --username VG04107 --stdin
-ik auth calendar --username VG04107 --stdin
+ik auth contacts --username <sync-username> --stdin
+ik auth calendar --username <sync-username> --stdin
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 ```
 
@@ -87,9 +87,9 @@ ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 
 `auth logout` removes the selected profile's main Informaniak API token by default. Add `--all` to also remove local mail, contacts, calendar, and chat secrets for that profile. It never contacts or changes remote services.
 
-`auth contacts` stores explicit CardDAV contacts credentials. The default DAV URL is `https://sync.infomaniak.com/`; pass `--url` only for custom endpoints. Use the Infomaniak sync username, for example `VG04107`.
+`auth contacts` stores CardDAV contacts credentials. From the default DAV base `https://sync.infomaniak.com/`, it auto-discovers the address-book collection via standard CardDAV principal/home-set discovery and saves it; with multiple address books it picks a sensible default and prints the rest. Pass `--url <collection-url>` to set a collection explicitly, or `--no-discover` to save the URL verbatim. Use the Infomaniak sync username.
 
-`auth calendar` stores explicit CalDAV calendar credentials. The default DAV URL is `https://sync.infomaniak.com/`; pass `--url` only for custom endpoints. Use the Infomaniak sync username, for example `VG04107`.
+`auth calendar` stores CalDAV calendar credentials. From the default DAV base `https://sync.infomaniak.com/`, it auto-discovers the calendar collection and saves it; with multiple calendars it picks a default and lists the rest. Pass `--url <collection-url>` to set a collection explicitly, or `--no-discover` to save the URL verbatim. Use the Infomaniak sync username.
 
 `auth chat` stores kChat/Mattermost-compatible connection settings. It accepts either the kSuite browser URL or a direct trusted API base. For kSuite URLs like `https://ksuite.infomaniak.com/<account_id>/kchat/<workspace>/channels/<channel>`, the CLI parses the account ID, workspace slug, and optional channel slug, derives `https://<workspace>.kchat.infomaniak.com`, and confirms it with read-only `GET /api/v4/users/me/teams` when a main Informaniak API token exists. The main token is never sent to arbitrary user-provided hosts.
 
@@ -240,7 +240,7 @@ Lower priority.
 Read-only commands:
 
 ```bash
-ik auth contacts --username VG04107 --stdin
+ik auth contacts --username <sync-username> --stdin
 
 ik contacts list
 ik contacts list --limit 50 --json
@@ -250,18 +250,18 @@ ik contacts show <contact_id> --json
 ik contacts show <contact_id> --json --raw
 ```
 
-`ik contacts list`, `ik contacts search`, and `ik contacts show` use the configured CardDAV URL. For Infomaniak, `ik auth contacts` defaults to `https://sync.infomaniak.com/`; use `--url` only for custom/advanced DAV endpoints. JSON output defaults to a stable slim contact schema. Add `--raw` with `--json` to include the full parsed contact payload, including the raw vCard text when available.
+`ik contacts list`, `ik contacts search`, and `ik contacts show` use the configured CardDAV collection URL. `ik auth contacts` auto-discovers that collection from the default DAV base `https://sync.infomaniak.com/`; pass `--url` to override or `--no-discover` to save a URL verbatim. JSON output defaults to a stable slim contact schema. Add `--raw` with `--json` to include the full parsed contact payload, including the raw vCard text when available.
 
 Search is client-side and matches available name, email, phone, and organization fields case-insensitively.
 
-Not implemented in v0.1.5: contact create, update, delete, import, bulk export, sync writes, or groups. `contacts groups` is deferred until address-book/group discovery is confirmed cleanly.
+Not implemented in v0.1.x: contact create, update, delete, import, bulk export, sync writes, or groups. `contacts groups` is deferred until address-book/group discovery is confirmed cleanly.
 
 ## Calendar
 
 Read-only commands:
 
 ```bash
-ik auth calendar --username VG04107 --stdin
+ik auth calendar --username <sync-username> --stdin
 
 ik calendar list
 ik calendar list --json
@@ -274,11 +274,11 @@ ik calendar show <event_id> --json
 ik calendar show <event_id> --json --raw
 ```
 
-`ik calendar list`, `ik calendar upcoming`, `ik calendar today`, `ik calendar search`, and `ik calendar show` use the configured CalDAV URL. For Infomaniak, `ik auth calendar` defaults to `https://sync.infomaniak.com/`; use `--url` only for custom/advanced DAV endpoints. JSON output defaults to stable slim calendar/event schemas. Add `--raw` with `--json` to include full parsed calendar/event payloads, including raw ICS text for events when available.
+`ik calendar list`, `ik calendar upcoming`, `ik calendar today`, `ik calendar search`, and `ik calendar show` use the configured CalDAV collection URL. `ik auth calendar` auto-discovers that collection from the default DAV base `https://sync.infomaniak.com/`; pass `--url` to override or `--no-discover` to save a URL verbatim. JSON output defaults to stable slim calendar/event schemas. Add `--raw` with `--json` to include full parsed calendar/event payloads, including raw ICS text for events when available.
 
 Search is client-side and matches available summary, description, location, organizer, and attendee fields case-insensitively.
 
-Not implemented in v0.1.6: event create, update, delete, RSVP, invites, reminder writes, or sync writes.
+Not implemented in v0.1.x: event create, update, delete, RSVP, invites, reminder writes, or sync writes.
 
 ## Output modes
 

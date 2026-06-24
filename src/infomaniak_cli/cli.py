@@ -4,11 +4,12 @@ import argparse
 import datetime
 import os
 import sys
-from typing import Any, Mapping
+import urllib.parse
+from typing import Any, Callable, Mapping
 
 from . import __version__
 from . import update as update_module
-from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError
+from .api import DEFAULT_BASE_URL, InformaniakAPIClient, InformaniakAPIError, redact_secret
 from .auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, MailPasswordStore, TokenStore
 from .bootstrap import BootstrapError, bootstrap_profile
 from .debug import probe_profile
@@ -46,6 +47,11 @@ from .services.contacts import (
     search_contacts,
     slim_contact,
     slim_contacts,
+)
+from .services.dav_discovery import (
+    DavDiscoveryError,
+    discover_addressbooks,
+    discover_calendars,
 )
 from .services.drive import (
     build_folder_tree,
@@ -712,7 +718,16 @@ def cmd_auth_contacts(args: argparse.Namespace) -> int:
     else:
         password = args.password.strip() if args.password else input("Contacts CardDAV password: ").strip()
     ContactsPasswordStore().save_password(name, password)
-    manager.create_or_update(name, contacts_url=contacts_url, contacts_username=contacts_username)
+
+    resolved_url = _resolve_dav_collection_url(
+        args,
+        contacts_url,
+        contacts_username,
+        password,
+        kind="address book",
+        discover=discover_addressbooks,
+    )
+    manager.create_or_update(name, contacts_url=resolved_url, contacts_username=contacts_username)
 
     print(f"Contacts password saved for profile: {name}")
     return 0
@@ -737,10 +752,84 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
     else:
         password = args.password.strip() if args.password else input("Calendar CalDAV password: ").strip()
     CalendarPasswordStore().save_password(name, password)
-    manager.create_or_update(name, calendar_url=calendar_url, calendar_username=calendar_username)
+
+    resolved_url = _resolve_dav_collection_url(
+        args,
+        calendar_url,
+        calendar_username,
+        password,
+        kind="calendar",
+        discover=discover_calendars,
+    )
+    manager.create_or_update(name, calendar_url=resolved_url, calendar_username=calendar_username)
 
     print(f"Calendar password saved for profile: {name}")
     return 0
+
+
+def _looks_like_dav_collection(url: str) -> bool:
+    """Heuristic: a URL with >=2 path segments is already a collection, not a base."""
+    path = urllib.parse.urlparse(url).path
+    segments = [segment for segment in path.split("/") if segment]
+    return len(segments) >= 2
+
+
+def _resolve_dav_collection_url(
+    args: argparse.Namespace,
+    url: str,
+    username: str,
+    password: str,
+    *,
+    kind: str,
+    discover: Callable[..., list[dict[str, Any]]],
+) -> str:
+    """Auto-discover the real DAV collection from a base URL, never raising.
+
+    Honors an explicit collection-looking --url and --no-discover by saving the
+    URL verbatim. On discovery failure or no match, keeps the provided URL and
+    prints actionable guidance. Saved password/username are never lost.
+    """
+    if getattr(args, "no_discover", False) or _looks_like_dav_collection(url):
+        return url
+
+    try:
+        collections = discover(url, username, password)
+    except DavDiscoveryError as exc:
+        print(
+            f"note: could not auto-discover a {kind} from {url} "
+            f"({redact_secret(str(exc), secrets=[password])}). "
+            f"Pass --url <collection-url> to set it explicitly.",
+            file=sys.stderr,
+        )
+        return url
+
+    if not collections:
+        print(
+            f"note: no {kind} collection found at {url}; keeping it. "
+            "Pass --url <collection-url> to set the collection explicitly.",
+            file=sys.stderr,
+        )
+        return url
+
+    chosen = _choose_dav_collection(collections)
+    if len(collections) > 1:
+        print(f"Discovered {len(collections)} {kind}s; using {chosen['url']}.")
+        for item in collections:
+            print(f"  {item.get('name') or item['url']}\t{item['url']}")
+        print(f"Re-run `auth` with --url <collection-url> to choose a different {kind}.")
+    else:
+        print(f"Discovered {kind}: {chosen['url']}")
+    return chosen["url"]
+
+
+def _choose_dav_collection(collections: list[dict[str, Any]]) -> dict[str, Any]:
+    """Deterministic default: prefer a default/contacts/personal-looking name, else the first."""
+    for item in collections:
+        name = (item.get("name") or "").casefold()
+        url = (item.get("url") or "").casefold()
+        if any(hint in name or hint in url for hint in ("default", "contacts", "personal")):
+            return item
+    return collections[0]
 
 
 def cmd_auth_chat(args: argparse.Namespace) -> int:
@@ -871,7 +960,8 @@ def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, Contact
     if not profile.contacts_url or not profile.contacts_username:
         raise ValueError(
             f"No contacts configured for profile: {profile.name}. "
-            f"Run `ik --profile {profile.name} auth contacts --username <sync-username> --stdin` first."
+            f"Run `ik --profile {profile.name} auth contacts --username <sync-username> --stdin` first; "
+            "it auto-discovers the address-book collection, or pass --url <collection-url> to set it explicitly."
         )
 
     contacts_store = ContactsPasswordStore()
@@ -892,7 +982,8 @@ def _calendar_profile_and_client(args: argparse.Namespace) -> tuple[Any, Calenda
     if not profile.calendar_url or not profile.calendar_username:
         raise ValueError(
             f"No calendar configured for profile: {profile.name}. "
-            f"Run `ik --profile {profile.name} auth calendar --username <sync-username> --stdin` first."
+            f"Run `ik --profile {profile.name} auth calendar --username <sync-username> --stdin` first; "
+            "it auto-discovers the calendar collection, or pass --url <collection-url> to set it explicitly."
         )
 
     calendar_store = CalendarPasswordStore()
@@ -2396,12 +2487,14 @@ def build_parser() -> argparse.ArgumentParser:
     auth_contacts.add_argument("--username", help="Infomaniak sync username, e.g. VG04107.")
     auth_contacts.add_argument("--password", help="CardDAV password. Omit to prompt.")
     auth_contacts.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
+    auth_contacts.add_argument("--no-discover", action="store_true", help="Skip CardDAV discovery and save --url verbatim.")
     auth_contacts.set_defaults(func=cmd_auth_contacts)
     auth_calendar = auth_sub.add_parser("calendar", help="Store CalDAV calendar credentials for a profile")
     auth_calendar.add_argument("--url", help=f"CalDAV DAV URL. Defaults to {DEFAULT_DAV_URL}.")
     auth_calendar.add_argument("--username", help="Infomaniak sync username, e.g. VG04107.")
     auth_calendar.add_argument("--password", help="CalDAV password. Omit to prompt.")
     auth_calendar.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
+    auth_calendar.add_argument("--no-discover", action="store_true", help="Skip CalDAV discovery and save --url verbatim.")
     auth_calendar.set_defaults(func=cmd_auth_calendar)
     auth_chat = auth_sub.add_parser("chat", help="Store kChat/Mattermost connection settings for a profile")
     auth_chat.add_argument("--url", help="kChat base URL.")

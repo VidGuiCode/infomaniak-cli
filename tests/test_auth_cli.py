@@ -6,6 +6,7 @@ from infomaniak_cli import cli
 from infomaniak_cli.api import InformaniakAPIError
 from infomaniak_cli.auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, MailPasswordStore, TokenStore
 from infomaniak_cli.profiles import ProfileManager
+from infomaniak_cli.services.dav_discovery import DavDiscoveryError
 
 
 class FakeAPI:
@@ -131,6 +132,8 @@ def test_auth_contacts_defaults_to_infomaniak_sync_url(tmp_path, monkeypatch, ca
     ProfileManager().create_or_update("work", make_default=True)
     password = "secret-contacts-password"
     monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {password}\n\n"))
+    # No address book discovered -> keep the default base URL (offline, no network).
+    monkeypatch.setattr(cli, "discover_addressbooks", lambda *a, **k: [])
 
     assert cli.main(["auth", "contacts", "--username", "VG04107", "--stdin"]) == 0
 
@@ -207,6 +210,8 @@ def test_auth_calendar_defaults_to_infomaniak_sync_url(tmp_path, monkeypatch, ca
     ProfileManager().create_or_update("work", make_default=True)
     password = "secret-calendar-password"
     monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {password}\n\n"))
+    # No calendar discovered -> keep the default base URL (offline, no network).
+    monkeypatch.setattr(cli, "discover_calendars", lambda *a, **k: [])
 
     assert cli.main(["auth", "calendar", "--username", "VG04107", "--stdin"]) == 0
 
@@ -249,6 +254,108 @@ def test_auth_calendar_requires_username_first_time(tmp_path, monkeypatch, capsy
     assert "sync username" in captured.err
     assert "VG04107" in captured.err
     assert not CalendarPasswordStore().has_password("work")
+
+
+def test_auth_contacts_autodiscovers_single_collection(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    password = "secret-contacts-password"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(password))
+    collection = "https://sync.example.test/dav/addressbooks/user/default/"
+    seen_args = []
+
+    def fake_discover(url, username, pw):
+        seen_args.append((url, username, pw))
+        return [{"url": collection, "name": "Default"}]
+
+    monkeypatch.setattr(cli, "discover_addressbooks", fake_discover)
+
+    assert cli.main(["auth", "contacts", "--username", "user@example.com", "--stdin"]) == 0
+
+    captured = capsys.readouterr()
+    assert password not in captured.out
+    assert password not in captured.err
+    assert ContactsPasswordStore().load_password("work") == password
+    assert ProfileManager().get("work").contacts_url == collection
+    # Discovery is fed the saved password but it is never echoed.
+    assert seen_args == [("https://sync.infomaniak.com/", "user@example.com", password)]
+
+
+def test_auth_contacts_autodiscovery_multiple_prints_candidates_and_picks_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("secret-contacts-password"))
+    work_url = "https://sync.example.test/dav/addressbooks/user/work/"
+    default_url = "https://sync.example.test/dav/addressbooks/user/default/"
+    monkeypatch.setattr(
+        cli,
+        "discover_addressbooks",
+        lambda *a, **k: [{"url": work_url, "name": "Work"}, {"url": default_url, "name": "Default"}],
+    )
+
+    assert cli.main(["auth", "contacts", "--username", "user@example.com", "--stdin"]) == 0
+
+    out = capsys.readouterr().out
+    assert work_url in out
+    assert default_url in out
+    # Deterministic default prefers the "default"-named collection.
+    assert ProfileManager().get("work").contacts_url == default_url
+
+
+def test_auth_contacts_autodiscovery_failure_preserves_password_and_guides(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    password = "secret-contacts-password"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(password))
+
+    def boom(*a, **k):
+        raise DavDiscoveryError("DAV discovery request failed: HTTP 401")
+
+    monkeypatch.setattr(cli, "discover_addressbooks", boom)
+
+    assert cli.main(["auth", "contacts", "--username", "user@example.com", "--stdin"]) == 0
+
+    captured = capsys.readouterr()
+    assert password not in captured.out
+    assert password not in captured.err
+    assert ContactsPasswordStore().load_password("work") == password
+    assert ProfileManager().get("work").contacts_url == "https://sync.infomaniak.com/"
+    assert "could not auto-discover" in captured.err
+    assert "--url" in captured.err
+
+
+def test_auth_contacts_no_discover_saves_url_verbatim(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("secret-contacts-password"))
+
+    def fail(*a, **k):
+        raise AssertionError("discovery must not run with --no-discover")
+
+    monkeypatch.setattr(cli, "discover_addressbooks", fail)
+
+    assert cli.main(
+        ["auth", "contacts", "--username", "user@example.com", "--url", "https://sync.infomaniak.com/", "--no-discover", "--stdin"]
+    ) == 0
+
+    assert ProfileManager().get("work").contacts_url == "https://sync.infomaniak.com/"
+
+
+def test_auth_calendar_autodiscovers_single_collection(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    password = "secret-calendar-password"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(password))
+    collection = "https://sync.example.test/dav/calendars/user/personal/"
+    monkeypatch.setattr(cli, "discover_calendars", lambda *a, **k: [{"url": collection, "name": "Personal"}])
+
+    assert cli.main(["auth", "calendar", "--username", "user@example.com", "--stdin"]) == 0
+
+    captured = capsys.readouterr()
+    assert password not in captured.out
+    assert password not in captured.err
+    assert CalendarPasswordStore().load_password("work") == password
+    assert ProfileManager().get("work").calendar_url == collection
 
 
 def test_auth_contacts_and_calendar_help_mentions_default_sync_url(capsys):
