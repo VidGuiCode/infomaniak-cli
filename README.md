@@ -69,8 +69,8 @@ ik whoami --json
 ik doctor --json
 
 ik auth mail --mailbox user@example.com --password <app-password>
-ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
-ik auth calendar --url <caldav-calendar-url> --username user@example.com --password <caldav-password>
+ik auth contacts --username <sync-username> --stdin
+ik auth calendar --username <sync-username> --stdin
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 
 ik account list
@@ -133,25 +133,25 @@ Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.m
 
 ## Contacts setup
 
-Contacts use CardDAV. Configure an address-book collection URL and contacts credentials explicitly:
+Contacts use CardDAV through Infomaniak sync. Use your sync username, for example `VG04107`, then paste the application password into stdin:
 
 ```bash
-ik auth contacts --url "<carddav-address-book-url>" --username you@example.com --password "<carddav-password>"
+ik --profile cylro auth contacts --username VG04107 --stdin
 ik contacts list --json
 ```
 
-The CLI does not reuse mail credentials automatically.
+The default DAV URL is `https://sync.infomaniak.com/`. Use `--url` only for custom or advanced DAV endpoints. The CLI does not reuse mail credentials automatically.
 
 ## Calendar setup
 
-Calendar uses CalDAV. Configure a calendar collection URL and calendar credentials explicitly:
+Calendar uses CalDAV through Infomaniak sync. Use your sync username, for example `VG04107`, then paste the application password into stdin:
 
 ```bash
-ik auth calendar --url "<caldav-calendar-url>" --username you@example.com --password "<caldav-password>"
+ik --profile cylro auth calendar --username VG04107 --stdin
 ik calendar upcoming --days 14 --json
 ```
 
-The CLI does not reuse mail or contacts credentials automatically.
+The default DAV URL is `https://sync.infomaniak.com/`. Use `--url` only for custom or advanced DAV endpoints. The CLI does not reuse mail or contacts credentials automatically.
 
 ## kChat setup
 

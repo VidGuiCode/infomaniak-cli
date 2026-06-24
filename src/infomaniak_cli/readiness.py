@@ -29,12 +29,12 @@ def build_readiness(profile: Profile, *, main_token_configured: bool | None = No
     contacts_ready = bool(profile.contacts_url and profile.contacts_username and contacts_password_configured)
     contacts_setup_action = None
     if not contacts_ready:
-        contacts_setup_action = f"ik auth contacts --url <carddav-url> --username {email} --stdin"
+        contacts_setup_action = f"ik auth contacts --username {email} --stdin"
 
     calendar_ready = bool(profile.calendar_url and profile.calendar_username and calendar_password_configured)
     calendar_setup_action = None
     if not calendar_ready:
-        calendar_setup_action = f"ik auth calendar --url <caldav-url> --username {email} --stdin"
+        calendar_setup_action = f"ik auth calendar --username {email} --stdin"
 
     chat_configured = bool(profile.kchat_url)
     chat_ready = bool(chat_configured and (chat_explicit_token_configured or chat_main_token_fallback_possible))

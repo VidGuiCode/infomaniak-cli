@@ -59,8 +59,8 @@ def test_bootstrap_json_outputs_readiness_summary_and_setup_actions(tmp_path, mo
     assert output["calendar"]["configured"] is False
     assert output["chat"]["configured"] is False
     assert output["missing_setup_actions"] == [
-        "ik auth contacts --url <carddav-url> --username user@example.com --stdin",
-        "ik auth calendar --url <caldav-url> --username user@example.com --stdin",
+        "ik auth contacts --username user@example.com --stdin",
+        "ik auth calendar --username user@example.com --stdin",
         "ik auth chat --url <ksuite-kchat-url>",
     ]
 
@@ -140,3 +140,5 @@ def test_doctor_compact_reports_missing_setup_actions(tmp_path, monkeypatch, cap
     assert checks["calendar_configured"] is False
     assert checks["chat_configured"] is False
     assert "ik auth mail --mailbox user@example.com --password <device-password>" in output["missing_setup_actions"]
+    assert "ik auth contacts --username user@example.com --stdin" in output["missing_setup_actions"]
+    assert "ik auth calendar --username user@example.com --stdin" in output["missing_setup_actions"]

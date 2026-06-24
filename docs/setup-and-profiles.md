@@ -159,7 +159,7 @@ It should attempt to find:
 
 If multiple choices exist, ask the user to choose from a list rather than requiring manual ID hunting.
 
-Bootstrap does not guess or store service credentials. For missing optional service auth, it prints commands such as `ik auth mail --mailbox <mailbox> --password <device-password>`, `ik auth contacts --url <carddav-url> --username <email> --stdin`, `ik auth calendar --url <caldav-url> --username <email> --stdin`, and `ik auth chat --url <ksuite-kchat-url>`.
+Bootstrap does not guess or store service credentials. For missing optional service auth, it prints commands such as `ik auth mail --mailbox <mailbox> --password <device-password>`, `ik auth contacts --username <sync-username> --stdin`, `ik auth calendar --username <sync-username> --stdin`, and `ik auth chat --url <ksuite-kchat-url>`. Calendar and Contacts default to the Infomaniak DAV URL `https://sync.infomaniak.com/`; pass `--url` only for custom endpoints.
 
 ## Discovery vs admin naming
 

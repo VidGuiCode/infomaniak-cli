@@ -6,6 +6,7 @@
 - Added `ik bootstrap --compact` for single-line machine-readable readiness JSON.
 - Added actionable missing setup commands for optional service credentials without guessing secrets.
 - Made bootstrap preserve existing service config/defaults when optional discovery cannot refresh them.
+- Simplified Calendar and Contacts auth setup by defaulting to `https://sync.infomaniak.com/` and accepting the Infomaniak sync username directly.
 - Expanded `whoami` and `doctor` readiness output while keeping secrets out of all output.
 - Kept all Informaniak/kSuite service operations read-only.
 

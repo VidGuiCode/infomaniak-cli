@@ -64,6 +64,9 @@ from .services.mail_discovery import (
 )
 
 
+DEFAULT_DAV_URL = "https://sync.infomaniak.com/"
+
+
 def print_json(data: Any) -> None:
     print(pretty_json(data))
 
@@ -694,13 +697,10 @@ def cmd_auth_contacts(args: argparse.Namespace) -> int:
         return 2
 
     profile = manager.get(name)
-    contacts_url = (args.url or profile.contacts_url or "").strip()
+    contacts_url = (args.url or profile.contacts_url or DEFAULT_DAV_URL).strip()
     contacts_username = (args.username or profile.contacts_username or "").strip()
-    if not contacts_url:
-        print("error: --url is required the first time contacts are configured", file=sys.stderr)
-        return 2
     if not contacts_username:
-        print("error: --username is required the first time contacts are configured", file=sys.stderr)
+        print("error: --username is required for contacts; use your Infomaniak sync username, e.g. VG04107", file=sys.stderr)
         return 2
 
     if args.stdin:
@@ -722,13 +722,10 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
         return 2
 
     profile = manager.get(name)
-    calendar_url = (args.url or profile.calendar_url or "").strip()
+    calendar_url = (args.url or profile.calendar_url or DEFAULT_DAV_URL).strip()
     calendar_username = (args.username or profile.calendar_username or "").strip()
-    if not calendar_url:
-        print("error: --url is required the first time calendar is configured", file=sys.stderr)
-        return 2
     if not calendar_username:
-        print("error: --username is required the first time calendar is configured", file=sys.stderr)
+        print("error: --username is required for calendar; use your Infomaniak sync username, e.g. VG04107", file=sys.stderr)
         return 2
 
     if args.stdin:
@@ -870,14 +867,14 @@ def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, Contact
     if not profile.contacts_url or not profile.contacts_username:
         raise ValueError(
             f"No contacts configured for profile: {profile.name}. "
-            f"Run `ik --profile {profile.name} auth contacts --url <carddav-url> --username <email>` first."
+            f"Run `ik --profile {profile.name} auth contacts --username <sync-username> --stdin` first."
         )
 
     contacts_store = ContactsPasswordStore()
     if not contacts_store.has_password(name):
         raise ValueError(
             f"No contacts password configured for profile: {profile.name}. "
-            f"Run `ik --profile {profile.name} auth contacts --url <carddav-url> --username <email>` first."
+            f"Run `ik --profile {profile.name} auth contacts --username <sync-username> --stdin` first."
         )
 
     return profile, ContactsClient(profile.contacts_url, profile.contacts_username, contacts_store.load_password(name))
@@ -891,14 +888,14 @@ def _calendar_profile_and_client(args: argparse.Namespace) -> tuple[Any, Calenda
     if not profile.calendar_url or not profile.calendar_username:
         raise ValueError(
             f"No calendar configured for profile: {profile.name}. "
-            f"Run `ik --profile {profile.name} auth calendar --url <caldav-url> --username <email>` first."
+            f"Run `ik --profile {profile.name} auth calendar --username <sync-username> --stdin` first."
         )
 
     calendar_store = CalendarPasswordStore()
     if not calendar_store.has_password(name):
         raise ValueError(
             f"No calendar password configured for profile: {profile.name}. "
-            f"Run `ik --profile {profile.name} auth calendar --url <caldav-url> --username <email>` first."
+            f"Run `ik --profile {profile.name} auth calendar --username <sync-username> --stdin` first."
         )
 
     return profile, CalendarClient(profile.calendar_url, profile.calendar_username, calendar_store.load_password(name))
@@ -2210,14 +2207,14 @@ def build_parser() -> argparse.ArgumentParser:
     auth_mail.add_argument("--imap-port", type=int, help="IMAP server port. Defaults to 993.")
     auth_mail.set_defaults(func=cmd_auth_mail)
     auth_contacts = auth_sub.add_parser("contacts", help="Store CardDAV contacts credentials for a profile")
-    auth_contacts.add_argument("--url", help="CardDAV address-book collection URL.")
-    auth_contacts.add_argument("--username", help="CardDAV username, usually the full email address.")
+    auth_contacts.add_argument("--url", help=f"CardDAV DAV URL. Defaults to {DEFAULT_DAV_URL}.")
+    auth_contacts.add_argument("--username", help="Infomaniak sync username, e.g. VG04107.")
     auth_contacts.add_argument("--password", help="CardDAV password. Omit to prompt.")
     auth_contacts.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
     auth_contacts.set_defaults(func=cmd_auth_contacts)
     auth_calendar = auth_sub.add_parser("calendar", help="Store CalDAV calendar credentials for a profile")
-    auth_calendar.add_argument("--url", help="CalDAV calendar collection URL.")
-    auth_calendar.add_argument("--username", help="CalDAV username, usually the full email address.")
+    auth_calendar.add_argument("--url", help=f"CalDAV DAV URL. Defaults to {DEFAULT_DAV_URL}.")
+    auth_calendar.add_argument("--username", help="Infomaniak sync username, e.g. VG04107.")
     auth_calendar.add_argument("--password", help="CalDAV password. Omit to prompt.")
     auth_calendar.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
     auth_calendar.set_defaults(func=cmd_auth_calendar)

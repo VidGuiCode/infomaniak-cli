@@ -126,14 +126,52 @@ def test_auth_contacts_stdin_saves_password_and_metadata_without_echo(tmp_path, 
     assert profile.contacts_username == "user@example.com"
 
 
-def test_auth_contacts_requires_url_and_username_first_time(tmp_path, monkeypatch, capsys):
+def test_auth_contacts_defaults_to_infomaniak_sync_url(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    password = "secret-contacts-password"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {password}\n\n"))
+
+    assert cli.main(["auth", "contacts", "--username", "VG04107", "--stdin"]) == 0
+
+    captured = capsys.readouterr()
+    assert password not in captured.out
+    assert password not in captured.err
+    assert ContactsPasswordStore().load_password("work") == password
+    profile = ProfileManager().get("work")
+    assert profile.contacts_url == "https://sync.infomaniak.com/"
+    assert profile.contacts_username == "VG04107"
+
+
+def test_auth_contacts_explicit_url_overrides_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("secret-contacts-password"))
+
+    assert cli.main(
+        [
+            "auth",
+            "contacts",
+            "--url",
+            "https://sync.example.test/addressbooks/user/default/",
+            "--username",
+            "VG04107",
+            "--stdin",
+        ]
+    ) == 0
+
+    assert ProfileManager().get("work").contacts_url == "https://sync.example.test/addressbooks/user/default/"
+
+
+def test_auth_contacts_requires_username_first_time(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("work", make_default=True)
 
     assert cli.main(["auth", "contacts", "--password", "pw"]) == 2
 
     captured = capsys.readouterr()
-    assert "--url is required" in captured.err
+    assert "sync username" in captured.err
+    assert "VG04107" in captured.err
     assert not ContactsPasswordStore().has_password("work")
 
 
@@ -164,15 +202,64 @@ def test_auth_calendar_stdin_saves_password_and_metadata_without_echo(tmp_path, 
     assert profile.calendar_username == "user@example.com"
 
 
-def test_auth_calendar_requires_url_and_username_first_time(tmp_path, monkeypatch, capsys):
+def test_auth_calendar_defaults_to_infomaniak_sync_url(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    password = "secret-calendar-password"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"  {password}\n\n"))
+
+    assert cli.main(["auth", "calendar", "--username", "VG04107", "--stdin"]) == 0
+
+    captured = capsys.readouterr()
+    assert password not in captured.out
+    assert password not in captured.err
+    assert CalendarPasswordStore().load_password("work") == password
+    profile = ProfileManager().get("work")
+    assert profile.calendar_url == "https://sync.infomaniak.com/"
+    assert profile.calendar_username == "VG04107"
+
+
+def test_auth_calendar_explicit_url_overrides_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("secret-calendar-password"))
+
+    assert cli.main(
+        [
+            "auth",
+            "calendar",
+            "--url",
+            "https://sync.example.test/calendars/user/work/",
+            "--username",
+            "VG04107",
+            "--stdin",
+        ]
+    ) == 0
+
+    assert ProfileManager().get("work").calendar_url == "https://sync.example.test/calendars/user/work/"
+
+
+def test_auth_calendar_requires_username_first_time(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("work", make_default=True)
 
     assert cli.main(["auth", "calendar", "--password", "pw"]) == 2
 
     captured = capsys.readouterr()
-    assert "--url is required" in captured.err
+    assert "sync username" in captured.err
+    assert "VG04107" in captured.err
     assert not CalendarPasswordStore().has_password("work")
+
+
+def test_auth_contacts_and_calendar_help_mentions_default_sync_url(capsys):
+    for command in ("contacts", "calendar"):
+        try:
+            cli.main(["auth", command, "--help"])
+        except SystemExit as exc:
+            assert exc.code == 0
+        output = capsys.readouterr().out
+        assert "https://sync.infomaniak.com/" in output
+        assert "VG04107" in output
 
 
 def test_auth_chat_stdin_saves_token_and_metadata_without_echo(tmp_path, monkeypatch, capsys):
