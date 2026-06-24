@@ -9,13 +9,13 @@ Use these command layers consistently:
 - `setup` / `bootstrap` / `whoami` / `doctor`: configure and diagnose the local profile.
 - `account`: discover the logged-in user's accessible Informaniak environment.
 - `mail`, `drive`, `chat`, `meet`, `calendar`, `contacts`: use a service as the selected profile.
-- `admin`: true Informaniak Manager / company-admin operations only, and only when the profile has those rights.
+- Manager/admin operations are deferred until a separate, explicit surface is designed and implemented.
 
 Important naming rule:
 
 ```text
-Discovery of what the current user can access is not admin.
-Admin means real company/account administration.
+Discovery of what the current user can access belongs under `account`.
+Company/account administration is not implemented in this CLI yet.
 ```
 
 ## Setup and diagnostics
@@ -70,18 +70,19 @@ Profile selection precedence is: explicit `--profile`, then `IK_PROFILE`, then t
 ## Auth
 
 ```bash
-ik auth login
-ik auth login --new-profile personal
+ik auth token
+ik auth token --stdin
+ik auth check
 ik auth status
 ik auth logout
 ik auth logout --all --yes
-ik auth refresh
+ik auth mail --mailbox user@example.com --password <mailbox-device-password>
 ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
 ik auth calendar --url <caldav-calendar-url> --username user@example.com --password <caldav-password>
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 ```
 
-`auth login` should route to setup if needed.
+`auth token` stores the selected profile's main Informaniak API token. `auth check` verifies that token with a read-only authenticated API request.
 
 `auth logout` removes the selected profile's main Informaniak API token by default. Add `--all` to also remove local mail, contacts, calendar, and chat secrets for that profile. It never contacts or changes remote services.
 
@@ -103,21 +104,16 @@ ik account services
 ik account services --account-id <id>
 ```
 
-Read-only at first. These replace the earlier misleading `ik admin accounts/products/services` names.
+These commands stay read-only and intentionally cover user-accessible discovery, not company/account administration.
 
 ## Admin / Informaniak Manager
 
 Reserve `admin` for true company/account administration — the things normally done by an Informaniak Manager admin, not normal employee service usage.
 
-Future read-only/admin commands may include:
+Current state:
 
-```bash
-ik admin users
-ik admin permissions
-ik admin mail-hostings
-ik admin mailboxes
-ik admin aliases
-ik admin domains
+```text
+No Manager/admin commands are implemented yet.
 ```
 
 Rules:
@@ -160,15 +156,7 @@ Mailbox discovery is separate from IMAP content access: `ik mail list`, `ik mail
 
 `ik mail unread` accepts the same folder, limit, ordering, and date filters as `ik mail list`. `ik mail read` also accepts `--folder` so you can read messages from any folder by UID. Human output prints the full readable body text, and slim JSON includes full `body_text` without requiring `--raw`; `--raw` keeps fuller parsed message metadata such as `body_preview`. `ik mail threads` groups messages into conversation threads using `In-Reply-To` and `References` headers.
 
-Later write commands:
-
-```bash
-ik mail draft --to accountant@example.com --subject "VAT question" --body-file reply.md
-ik mail send --draft <draft_id>
-ik mail send --to accountant@example.com --subject "VAT question" --body "..."
-```
-
-Sending should confirm profile/from/to unless `--yes` is provided.
+Mail sending, drafts, mark-as-read, delete, move, and archive are not implemented.
 
 ## kDrive
 

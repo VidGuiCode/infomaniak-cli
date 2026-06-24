@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.13 - Help, command parity, and smoke coverage
+
+- Added help smoke coverage for every implemented top-level command group and important subcommand.
+- Made running `ik` without arguments print friendly help and common next steps.
+- Cleaned public docs so they do not advertise unimplemented auth, admin, or mail write commands.
+- Bumped release metadata to 0.1.13.
+- Kept all Informaniak/kSuite service operations read-only.
+
 ## v0.1.12 - Output and error contract
 
 - Added central output helpers for pretty JSON, compact JSON, structured error JSON, and simple human tables.

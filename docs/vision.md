@@ -121,4 +121,4 @@ account/bootstrap discovery = what the logged-in user can access
 admin/manager = real company-account administration requiring admin rights
 ```
 
-So account/product/service discovery should live under `ik account ...`, while `ik admin ...` is reserved for true Informaniak Manager actions such as users, permissions, aliases, domains, and all-company mailbox administration.
+So account/product/service discovery should live under `ik account ...`; true Informaniak Manager actions such as users, permissions, aliases, domains, and all-company mailbox administration are deferred until a separate admin surface exists.

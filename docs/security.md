@@ -65,7 +65,7 @@ Allowed early:
 - profile/default-service discovery through `ik bootstrap`
 - service-level mailbox list for the selected user/mailbox when available
 - unread/search/read email
-- kDrive list/search/download
+- kDrive list/folders/tree/search/info
 - kChat channel list
 
 Protected by confirmation:
@@ -73,7 +73,7 @@ Protected by confirmation:
 - send email
 - post to kChat
 - upload to kDrive
-- true company-admin inventory/actions under `ik admin ...` unless explicitly read-only
+- true company-admin inventory/actions unless explicitly read-only
 - change mailbox settings
 
 Avoid until later:
@@ -153,4 +153,4 @@ Continue? [y/N]
 
 `ik account ...` and `ik bootstrap` describe what the logged-in profile can access. These commands are suitable for normal user/environment discovery.
 
-`ik admin ...` is reserved for true Informaniak Manager / company-admin operations. Admin commands should assume elevated responsibility, show active profile/account context, and avoid writes until explicit confirmation flows exist.
+Manager/admin operations are deferred until a separate, explicit surface exists. Those commands should assume elevated responsibility, show active profile/account context, and avoid writes until explicit confirmation flows exist.

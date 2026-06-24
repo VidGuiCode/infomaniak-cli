@@ -2337,6 +2337,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        print(parser.format_help().rstrip())
+        print()
+        print("Common next steps:")
+        print("  ik setup --profile work")
+        print("  ik whoami")
+        print("  ik doctor")
+        print("  ik account services --json")
+        print("  ik --help")
+        return 0
     args = parser.parse_args(argv)
     try:
         _validate_output_modes(args)

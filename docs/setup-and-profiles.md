@@ -2,7 +2,7 @@
 
 ## Key decision
 
-Profiles should be created during setup/auth login, not as a separate mandatory step.
+Profiles should be created during setup, not as a separate mandatory step.
 
 The normal first command should be:
 
@@ -73,12 +73,6 @@ Final output:
 ik setup --profile personal
 ```
 
-or:
-
-```bash
-ik auth login --new-profile personal
-```
-
 The setup flow should authenticate, discover accounts/products, and save defaults for that profile.
 
 ## Profiles are important
@@ -117,10 +111,11 @@ ik profile show
 ik profile rename old new
 ik profile delete old --yes
 
-ik auth login
+ik auth token
 ik auth logout
 ik auth logout --all --yes
 ik auth status
+ik auth check
 ik bootstrap
 ik doctor
 ik whoami
@@ -145,11 +140,7 @@ If `IK_PROFILE` names a profile that does not exist, commands fail clearly inste
 
 ## Smart auth behavior
 
-`ik auth login` should be smart:
-
-- if no profile exists, redirect to `ik setup`;
-- if a current profile exists, refresh/re-authenticate that profile;
-- if `--new-profile NAME` is given, create/setup that profile.
+`ik setup` creates or updates local profiles. `ik auth token` stores the selected profile's main Informaniak API token, and `ik auth check` verifies it with a read-only authenticated request.
 
 ## Bootstrap/autodiscovery
 
@@ -183,7 +174,7 @@ ik account products
 ik account services
 ```
 
-Reserve `ik admin ...` for true Informaniak Manager / company-admin operations only, such as users, permissions, aliases, domains, and all-company mailbox administration. A normal employee should be able to use `ik setup`, `ik bootstrap`, `ik account ...`, and service commands without touching `ik admin ...`.
+Manager/admin commands are deferred until a separate, explicit surface exists. A normal employee should be able to use `ik setup`, `ik bootstrap`, `ik account ...`, and service commands without touching an admin namespace.
 
 ## Stored profile example
 
