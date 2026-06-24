@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.13-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.14-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -64,14 +64,14 @@ ik setup --profile work
 ik auth token
 # paste your Informaniak Manager personal API token
 
+ik bootstrap --json
+ik whoami --json
+ik doctor --json
+
 ik auth mail --mailbox user@example.com --password <app-password>
 ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
 ik auth calendar --url <caldav-calendar-url> --username user@example.com --password <caldav-password>
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
-
-ik whoami
-ik doctor
-ik bootstrap
 
 ik account list
 ik account products
@@ -110,6 +110,8 @@ ik chat users --json
 ```
 
 Context (profile, account, drive) is sticky — set it once and every command uses it. Profile selection precedence is explicit `--profile`, then `IK_PROFILE`, then the saved current profile.
+
+`ik bootstrap` refreshes safe read-only defaults such as account, mail hosting, default mailbox, and default kDrive. It also prints readiness and missing setup actions for Mail, Contacts, Calendar, and kChat without guessing or storing credentials.
 
 ## Mail setup
 

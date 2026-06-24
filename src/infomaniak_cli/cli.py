@@ -15,6 +15,7 @@ from .debug import probe_profile
 from .doctor import run_doctor
 from .output import compact_json, error_json, pretty_json, redact, render_table
 from .profiles import ProfileManager
+from .readiness import build_readiness
 from .services.account import list_accounts, list_products, list_services, slim_accounts
 from .services.calendar import (
     CalendarClient,
@@ -279,7 +280,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     manager = ProfileManager()
     profile = manager.create_or_update(profile_name, make_default=True)
     print(f"Profile ready: {profile.name}")
-    print("Next: run `ik --profile {} auth token` or `ik bootstrap` once auth is implemented.".format(profile.name))
+    print(f"Next: run `ik --profile {profile.name} auth token`, then `ik --profile {profile.name} bootstrap`.")
     return 0
 
 
@@ -289,6 +290,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
 
     profile = manager.get(profile_name)
     mail_state = _mail_state(profile, profile.name)
+    readiness = build_readiness(profile)
     chat_store = ChatTokenStore()
     chat_url_configured = bool(profile.kchat_url)
     chat_explicit_token_configured = chat_store.has_token(profile.name)
@@ -315,6 +317,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "kchat_url_configured": chat_url_configured,
         "kchat_explicit_token_configured": chat_explicit_token_configured,
         "kchat_main_token_fallback_possible": chat_main_token_fallback_possible,
+        "readiness": readiness,
+        "missing_setup_actions": readiness["missing_setup_actions"],
     }
     if _machine_output(args):
         print_machine(data, args)
@@ -341,6 +345,10 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         else:
             chat_status = f"{profile.kchat_url} (token needed)"
         print(f"kChat: {chat_status}")
+        if readiness["missing_setup_actions"]:
+            print("Missing setup actions:")
+            for action in readiness["missing_setup_actions"]:
+                print(f"  {action}")
     return 0
 
 
@@ -350,8 +358,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if args.profile or os.environ.get("IK_PROFILE"):
         profile_name = _resolve_profile_name(manager, args.profile)
     data = run_doctor(profile_name)
-    if args.json:
-        print_json(data)
+    if _machine_output(args):
+        print_machine(data, args)
         return 0
 
     print(f"Config dir: {data['checks']['config_dir']}")
@@ -361,6 +369,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             continue
         marker = "✓" if ok else "⚠"
         print(f"{marker} {check}: {ok}")
+    if data.get("missing_setup_actions"):
+        print("Missing setup actions:")
+        for action in data["missing_setup_actions"]:
+            print(f"  {action}")
     return 0
 
 
@@ -1330,16 +1342,68 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         account_id=args.account_id,
         non_interactive=args.non_interactive,
     )
-    if args.json:
-        print_json(result)
+    profile = manager.get(name)
+    readiness = build_readiness(profile, main_token_configured=True)
+    output = _bootstrap_readiness_output(result, readiness)
+    if _machine_output(args):
+        print_machine(output, args)
     else:
-        print(f"Profile bootstrapped: {result['profile']}")
-        print(f"Informaniak user: {result['informaniak_user'] or 'not found'}")
-        account = result["account"]
+        print(f"Profile bootstrapped: {output['profile']}")
+        print(f"Informaniak user: {output['informaniak_user'] or 'not found'}")
+        account = output["account"]
         print(f"Account: {account['name'] or account['id'] or 'not selected'}")
-        drive = result["default_drive"]
+        print(f"Products/services: {output['counts']['products']} products, {output['counts']['services']} services")
+        mail = output["mail"]
+        if mail["imap_ready"]:
+            mail_status = f"{mail['default_mailbox']} (IMAP ready)"
+        elif mail["default_mailbox"]:
+            mail_status = f"{mail['default_mailbox']} (mail password needed)"
+        else:
+            mail_status = "not selected"
+        print(f"Mail: {mail_status}")
+        drive = output["drive"]["default_drive"]
         print(f"Default kDrive: {drive['name'] or drive['id'] or 'not selected'}")
+        print(f"Contacts: {'ready' if output['contacts']['ready'] else 'setup needed'}")
+        print(f"Calendar: {'ready' if output['calendar']['ready'] else 'setup needed'}")
+        print(f"kChat: {'ready' if output['chat']['ready'] else 'setup needed'}")
+        if output["missing_setup_actions"]:
+            print("Missing setup actions:")
+            for action in output["missing_setup_actions"]:
+                print(f"  {action}")
     return 0
+
+
+def _bootstrap_readiness_output(result: Mapping[str, Any], readiness: Mapping[str, Any]) -> dict[str, Any]:
+    account = dict(readiness["account"])
+    output = {
+        key: value
+        for key, value in result.items()
+        if key not in {"account", "mail_hosting_id", "default_mailbox", "default_drive", "kchat_team_id"}
+    }
+    output.update(
+        {
+            "account": account,
+            "auth": readiness["auth"],
+            "mail": {
+                **dict(readiness["mail"]),
+                "discovered_mailboxes_count": result.get("counts", {}).get("mailboxes", 0),
+            },
+            "drive": {
+                **dict(readiness["drive"]),
+                "discovered_drives_count": result.get("counts", {}).get("drives", 0),
+            },
+            "contacts": readiness["contacts"],
+            "calendar": readiness["calendar"],
+            "chat": readiness["chat"],
+            "missing_setup_actions": readiness["missing_setup_actions"],
+            "mail_hosting_id": readiness["mail"]["mail_hosting_id"],
+            "default_mailbox": readiness["mail"]["default_mailbox"],
+            "default_drive": readiness["drive"]["default_drive"],
+            "kchat_team_id": readiness["chat"]["team_id"],
+            "readiness": readiness,
+        }
+    )
+    return output
 
 
 def _profile_and_client(profile_name: str | None = None, base_url: str = DEFAULT_BASE_URL) -> tuple[Any, InformaniakAPIClient]:
@@ -2020,6 +2084,7 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--account-id", help="Account ID to select when multiple accounts are available")
     bootstrap.add_argument("--non-interactive", action="store_true", help="Fail instead of prompting")
     bootstrap.add_argument("--json", action="store_true")
+    bootstrap.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     bootstrap.set_defaults(func=cmd_bootstrap)
 
     account = sub.add_parser("account", help="Discover accessible accounts, products, and services")

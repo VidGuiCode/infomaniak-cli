@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.14 - Bootstrap service defaults and setup guidance
+
+- Improved `ik bootstrap` with a service readiness summary across auth, account, mail, kDrive, contacts, calendar, and kChat.
+- Added `ik bootstrap --compact` for single-line machine-readable readiness JSON.
+- Added actionable missing setup commands for optional service credentials without guessing secrets.
+- Made bootstrap preserve existing service config/defaults when optional discovery cannot refresh them.
+- Expanded `whoami` and `doctor` readiness output while keeping secrets out of all output.
+- Kept all Informaniak/kSuite service operations read-only.
+
 ## v0.1.13 - Help, command parity, and smoke coverage
 
 - Added help smoke coverage for every implemented top-level command group and important subcommand.

@@ -26,15 +26,16 @@ ik setup --profile work
 ik whoami
 ik doctor
 ik bootstrap
+ik bootstrap --compact
 ik update
 ```
 
 Expected behavior:
 
 - `setup`: create/update a profile, authenticate, discover services, choose defaults, run doctor.
-- `whoami`: show active profile/account/user/default services.
-- `doctor`: verify auth and configured services.
-- `bootstrap`: rerun autodiscovery and update saved IDs/defaults.
+- `whoami`: show active profile/account/user/default services and readiness.
+- `doctor`: verify auth and configured service setup state.
+- `bootstrap`: rerun autodiscovery, safely update defaults, and show missing setup actions.
 - `update`: check GitHub releases and update supported installs.
 
 Update flags:
@@ -282,6 +283,7 @@ Compact single-line slim JSON:
 
 ```bash
 ik doctor --compact
+ik bootstrap --compact
 ik drive search "invoice" --compact
 ik mail read <uid> --compact
 ```

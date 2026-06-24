@@ -45,12 +45,22 @@ def mailbox_address(item: Mapping[str, Any] | None) -> str | None:
     return None
 
 
-def select_default_mailbox(mailboxes: list[Mapping[str, Any]], preferred_email: str | None = None) -> str | None:
+def select_default_mailbox(
+    mailboxes: list[Mapping[str, Any]],
+    preferred_email: str | None = None,
+    existing_email: str | None = None,
+) -> str | None:
     preferred = (preferred_email or "").strip().lower()
     if preferred:
         for mailbox in mailboxes:
             address = (mailbox_address(mailbox) or "").strip().lower()
             if address == preferred:
+                return mailbox_address(mailbox)
+    existing = (existing_email or "").strip().lower()
+    if existing:
+        for mailbox in mailboxes:
+            address = (mailbox_address(mailbox) or "").strip().lower()
+            if address == existing:
                 return mailbox_address(mailbox)
     if mailboxes:
         return mailbox_address(mailboxes[0])

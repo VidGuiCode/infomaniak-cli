@@ -38,6 +38,7 @@ def bootstrap_profile(
     manager = manager or ProfileManager()
     if not manager.exists(profile_name):
         manager.create_or_update(profile_name, make_default=True)
+    existing_profile = manager.get(profile_name)
 
     profile_data = _unwrap(api.get("/2/profile"))
     accounts = _as_items(_unwrap(api.get("/1/accounts")))
@@ -55,18 +56,26 @@ def bootstrap_profile(
 
     # TODO: prompt/select among multiple drives once drive UX exists.
     drive = _first_item(drives)
-    default_mailbox = select_default_mailbox(mailboxes, _profile_user(profile_data))
+    default_mailbox = select_default_mailbox(
+        mailboxes,
+        _profile_user(profile_data),
+        existing_profile.default_mailbox,
+    )
+    if default_mailbox is None and not mailboxes:
+        default_mailbox = existing_profile.default_mailbox
+    default_drive_id = _drive_id(drive) if drive else existing_profile.default_drive_id
+    default_drive_name = _item_name(drive) if drive else existing_profile.default_drive_name
 
     metadata = {
         "informaniak_user": _profile_user(profile_data),
         "account_id": selected_account_id,
         "account_name": _item_name(account),
-        "ksuite_id": None,
-        "mail_hosting_id": _item_id(mail_hosting) if mail_hosting else None,
+        "ksuite_id": existing_profile.ksuite_id,
+        "mail_hosting_id": _item_id(mail_hosting) if mail_hosting else existing_profile.mail_hosting_id,
         "default_mailbox": default_mailbox,
-        "default_drive_id": _drive_id(drive) if drive else None,
-        "default_drive_name": _item_name(drive) if drive else None,
-        "kchat_team_id": None,
+        "default_drive_id": default_drive_id,
+        "default_drive_name": default_drive_name,
+        "kchat_team_id": existing_profile.kchat_team_id,
     }
     profile = manager.replace_metadata(profile_name, make_default=True, **metadata)
 
@@ -86,6 +95,12 @@ def bootstrap_profile(
             "mailboxes": len(mailboxes),
             "drives": len(drives),
             "kchat_teams": 0,
+        },
+        "discovered": {
+            "products": products,
+            "services": services,
+            "mailboxes": mailboxes,
+            "drives": drives,
         },
     }
 

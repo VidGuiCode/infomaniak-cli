@@ -144,7 +144,7 @@ If `IK_PROFILE` names a profile that does not exist, commands fail clearly inste
 
 ## Bootstrap/autodiscovery
 
-`ik bootstrap` should discover and save IDs automatically.
+`ik bootstrap` discovers and saves safe read-only defaults automatically, then reports service readiness and missing setup actions.
 
 It should attempt to find:
 
@@ -154,13 +154,12 @@ It should attempt to find:
 - kSuite products;
 - mail hostings;
 - mailboxes;
-- aliases;
 - kDrive IDs/names;
-- kChat teams/channels;
-- kMeet rooms/settings if available;
-- domains/DNS services if relevant later.
+- existing contacts/calendar/kChat local config state.
 
 If multiple choices exist, ask the user to choose from a list rather than requiring manual ID hunting.
+
+Bootstrap does not guess or store service credentials. For missing optional service auth, it prints commands such as `ik auth mail --mailbox <mailbox> --password <device-password>`, `ik auth contacts --url <carddav-url> --username <email> --stdin`, `ik auth calendar --url <caldav-url> --username <email> --stdin`, and `ik auth chat --url <ksuite-kchat-url>`.
 
 ## Discovery vs admin naming
 

@@ -156,6 +156,35 @@ def test_bootstrap_prefers_profile_user_mailbox_when_discovered(tmp_path):
     assert manager.get("work").default_mailbox == "user@example.com"
 
 
+def test_bootstrap_preserves_existing_default_mailbox_if_still_discovered(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", default_mailbox="admin@example.com", make_default=True)
+    api = FakeAPI(
+        {
+            "/2/profile": {"result": "success", "data": {"email": "user@example.com"}},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
+            "/1/accounts/42/products": {
+                "result": "success",
+                "data": [{"id": "mail-hosting-1", "name": "Example Mail", "type": "mail_hosting"}],
+            },
+            "/1/accounts/42/services": {"result": "success", "data": []},
+            "/1/mail_hostings/mail-hosting-1/mailboxes": {
+                "result": "success",
+                "data": [
+                    {"id": "mbox-1", "email": "billing@example.com"},
+                    {"id": "mbox-2", "email": "admin@example.com"},
+                ],
+            },
+            "/2/drive": {"result": "success", "data": []},
+        }
+    )
+
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
+
+    assert result["default_mailbox"] == "admin@example.com"
+    assert manager.get("work").default_mailbox == "admin@example.com"
+
+
 def test_bootstrap_finds_drive_with_account_filtered_drive_endpoint(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update("work", make_default=True)
@@ -187,7 +216,7 @@ def test_bootstrap_finds_drive_with_account_filtered_drive_endpoint(tmp_path):
     assert profile.default_drive_name == "Example Drive"
 
 
-def test_bootstrap_keeps_drive_null_when_drive_endpoint_is_empty(tmp_path):
+def test_bootstrap_preserves_existing_drive_when_drive_endpoint_is_empty(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update(
         "work",
@@ -213,13 +242,13 @@ def test_bootstrap_keeps_drive_null_when_drive_endpoint_is_empty(tmp_path):
 
     result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
-    assert result["default_drive"] == {"id": None, "name": None}
+    assert result["default_drive"] == {"id": "40", "name": "drive"}
     profile = manager.get("work")
-    assert profile.default_drive_id is None
-    assert profile.default_drive_name is None
+    assert profile.default_drive_id == "40"
+    assert profile.default_drive_name == "drive"
 
 
-def test_bootstrap_rejects_product_shaped_drive_endpoint_response(tmp_path):
+def test_bootstrap_preserves_existing_drive_when_drive_endpoint_returns_catalog_items(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update(
         "work",
@@ -248,13 +277,13 @@ def test_bootstrap_rejects_product_shaped_drive_endpoint_response(tmp_path):
 
     result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
-    assert result["default_drive"] == {"id": None, "name": None}
+    assert result["default_drive"] == {"id": "3000001", "name": "example.com"}
     profile = manager.get("work")
-    assert profile.default_drive_id is None
-    assert profile.default_drive_name is None
+    assert profile.default_drive_id == "3000001"
+    assert profile.default_drive_name == "example.com"
 
 
-def test_bootstrap_rejects_drive_response_without_real_drive_id(tmp_path):
+def test_bootstrap_preserves_existing_drive_when_drive_response_has_no_real_drive_id(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update("work", default_drive_id="3000001", make_default=True)
     api = FakeAPI(
@@ -272,11 +301,11 @@ def test_bootstrap_rejects_drive_response_without_real_drive_id(tmp_path):
 
     result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
-    assert result["default_drive"] == {"id": None, "name": None}
-    assert manager.get("work").default_drive_id is None
+    assert result["default_drive"] == {"id": "3000001", "name": None}
+    assert manager.get("work").default_drive_id == "3000001"
 
 
-def test_bootstrap_leaves_kchat_team_null_without_probing_main_api(tmp_path):
+def test_bootstrap_preserves_kchat_team_without_probing_main_api(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update("work", kchat_team_id="54", make_default=True)
     api = FakeAPI(
@@ -297,10 +326,10 @@ def test_bootstrap_leaves_kchat_team_null_without_probing_main_api(tmp_path):
 
     result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
-    assert result["kchat_team_id"] is None
+    assert result["kchat_team_id"] == "54"
     assert result["counts"]["kchat_teams"] == 0
     assert all("kchat" not in path.lower() and "api/v4" not in path.lower() for path, _ in api.calls)
-    assert manager.get("work").kchat_team_id is None
+    assert manager.get("work").kchat_team_id == "54"
 
 
 def test_bootstrap_continues_when_optional_service_endpoints_are_missing(tmp_path):
@@ -333,13 +362,48 @@ def test_bootstrap_continues_when_optional_service_endpoints_are_missing(tmp_pat
     assert profile.kchat_team_id is None
 
 
+def test_bootstrap_does_not_wipe_existing_service_config_on_partial_discovery_failure(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update(
+        "work",
+        mail_hosting_id="existing-mail",
+        default_mailbox="existing@example.com",
+        default_drive_id="drive-existing",
+        default_drive_name="Existing Drive",
+        contacts_url="https://sync.example.test/addressbooks/user/default/",
+        contacts_username="existing@example.com",
+        calendar_url="https://sync.example.test/calendars/user/work/",
+        calendar_username="existing@example.com",
+        kchat_url="https://cylro.kchat.infomaniak.com",
+        kchat_team_id="team-existing",
+        make_default=True,
+    )
+    api = FakeAPI(
+        {
+            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
+            "/1/accounts/42/products": {"result": "success", "data": []},
+            "/1/accounts/42/services": {"result": "success", "data": []},
+            "/2/drive": {"result": "success", "data": []},
+        }
+    )
+
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
+
+    assert result["mail_hosting_id"] == "existing-mail"
+    assert result["default_mailbox"] == "existing@example.com"
+    assert result["default_drive"] == {"id": "drive-existing", "name": "Existing Drive"}
+    assert result["kchat_team_id"] == "team-existing"
+    profile = manager.get("work")
+    assert profile.contacts_url == "https://sync.example.test/addressbooks/user/default/"
+    assert profile.calendar_url == "https://sync.example.test/calendars/user/work/"
+    assert profile.kchat_url == "https://cylro.kchat.infomaniak.com"
+
+
 def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_path):
     manager = ProfileManager(config_dir=tmp_path)
     manager.create_or_update(
         "work",
-        default_drive_id="40",
-        default_drive_name="drive",
-        kchat_team_id="54",
         make_default=True,
     )
     api = FakeAPI(
