@@ -2730,7 +2730,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_output_encoding() -> None:
+    """Ensure stdout/stderr can emit the CLI's non-ASCII glyphs (✓, ⚠, …).
+
+    On a default Windows console (cp1252) these characters raise
+    UnicodeEncodeError. Reconfigure the streams to UTF-8 where supported,
+    falling back to errors="replace" so output never crashes.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Stream does not support reconfiguration (e.g. already detached
+            # or a non-text wrapper); leave it as-is.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_output_encoding()
     parser = build_parser()
     if argv is None:
         argv = sys.argv[1:]

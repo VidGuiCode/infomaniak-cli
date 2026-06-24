@@ -8,6 +8,8 @@
 - Broadened `ik update` failure hints with specific recovery guidance for uv tool and pip locked-executable/permission failures, and labeled the "unknown install method" fallback command as best-effort.
 - Added `scripts/smoke_install.sh`: builds the wheel and verifies it in a throwaway venv (never global, never pipx/uv tool, isolated config). Not part of the default offline unit suite.
 - Kept everything read-only except local config; the only PATH-affecting action is the opt-in `--fix-path` preview. Deferred: the environment-mutating `--fix-path` apply (the diagnostic + manual command ship now).
+- Fixed a `UnicodeEncodeError` crash in `ik doctor` (and any command printing ✓/⚠) on a default non-UTF-8 Windows console (cp1252) when `PYTHONIOENCODING` was unset; `main()` now reconfigures stdout/stderr to UTF-8 with `errors="replace"` at startup, guarded for streams that do not support it, with offline regression tests.
+- Documented that the CLI installs from GitHub (not PyPI): `pipx`/`uv tool`/`pip` install from `git+https://…` or a release wheel.
 
 ## v0.1.17 - Contacts/Calendar setup discovery polish
 

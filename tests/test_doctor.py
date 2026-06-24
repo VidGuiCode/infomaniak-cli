@@ -1,3 +1,4 @@
+import io
 import json
 import os
 
@@ -123,6 +124,22 @@ def test_cmd_doctor_fix_path_preview_when_not_on_path(monkeypatch, capsys):
     assert POSIX_SCRIPTS in out
     assert "Run:" in out
     assert "apply is deferred" in out
+
+
+def test_cmd_doctor_does_not_crash_on_cp1252_stdout(monkeypatch):
+    # Simulate a default Windows console (cp1252) which cannot encode ✓/⚠.
+    # Without the startup reconfigure this raises UnicodeEncodeError.
+    monkeypatch.setattr(cli, "run_doctor", lambda *a, **k: _doctor_data(on_path=True))
+    buffer = io.BytesIO()
+    cp1252_stdout = io.TextIOWrapper(buffer, encoding="cp1252", newline="")
+    monkeypatch.setattr(cli.sys, "stdout", cp1252_stdout)
+
+    assert cli.main(["doctor"]) == 0
+
+    cp1252_stdout.flush()
+    out = buffer.getvalue().decode("utf-8")
+    assert "ik on PATH:" in out
+    assert "✓" in out
 
 
 def test_cmd_doctor_fix_path_noop_when_already_on_path(monkeypatch, capsys):

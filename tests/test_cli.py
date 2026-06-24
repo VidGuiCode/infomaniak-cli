@@ -5,6 +5,8 @@ import sys
 
 import pytest
 
+from infomaniak_cli import cli
+
 
 def run_ik(tmp_path, *args):
     env = os.environ.copy()
@@ -147,3 +149,58 @@ def test_public_docs_do_not_advertise_unimplemented_commands():
     assert "ik admin" not in docs
     assert "ik mail send" not in docs
     assert "ik mail draft" not in docs
+
+
+class _ReconfigurableStream:
+    def __init__(self):
+        self.calls = []
+
+    def reconfigure(self, *, encoding=None, errors=None):
+        self.calls.append((encoding, errors))
+
+
+class _PlainStream:
+    """A stream that does not support reconfigure (e.g. a non-text wrapper)."""
+
+
+class _FailingStream:
+    def __init__(self, exc):
+        self._exc = exc
+        self.calls = 0
+
+    def reconfigure(self, *, encoding=None, errors=None):
+        self.calls += 1
+        raise self._exc
+
+
+def test_configure_output_encoding_sets_utf8_replace(monkeypatch):
+    out = _ReconfigurableStream()
+    err = _ReconfigurableStream()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+
+    cli._configure_output_encoding()
+
+    assert out.calls == [("utf-8", "replace")]
+    assert err.calls == [("utf-8", "replace")]
+
+
+def test_configure_output_encoding_ignores_streams_without_reconfigure(monkeypatch):
+    monkeypatch.setattr(sys, "stdout", _PlainStream())
+    monkeypatch.setattr(sys, "stderr", _PlainStream())
+
+    # Streams lacking reconfigure must be skipped without raising.
+    cli._configure_output_encoding()
+
+
+def test_configure_output_encoding_swallows_reconfigure_errors(monkeypatch):
+    out = _FailingStream(ValueError("unsupported"))
+    err = _FailingStream(OSError("detached"))
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+
+    # A failing reconfigure() must never crash the CLI.
+    cli._configure_output_encoding()
+
+    assert out.calls == 1
+    assert err.calls == 1

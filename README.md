@@ -14,30 +14,32 @@ Built for personal and company Informaniak accounts. Token-based auth — no bro
 
 Requires Python 3.11+.
 
-Recommended global install with [pipx](https://pipx.pypa.io/):
+`infomaniak-cli` is distributed through GitHub — it is **not** published on PyPI, so install it from the repository or a release wheel, not from a bare `infomaniak-cli` package name.
+
+Recommended global install with [pipx](https://pipx.pypa.io/), straight from GitHub:
 
 ```bash
-pipx install infomaniak-cli --backend pip
+pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git --backend pip
 ik version
 ```
 
 Alternative install with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install infomaniak-cli
+uv tool install git+https://github.com/VidGuiCode/infomaniak-cli.git
 ik version
 ```
 
-Plain `pip` also works, but `pipx` or `uv tool` is preferred for a command-line app because it keeps the CLI isolated from your system Python packages.
+Plain `pip` also works (use a virtual environment so the CLI stays isolated from your system Python packages):
 
 ```bash
-pip install infomaniak-cli
+pip install git+https://github.com/VidGuiCode/infomaniak-cli.git
 ```
 
-Install directly from GitHub:
+To pin a specific version, install its release wheel from the [Releases page](https://github.com/VidGuiCode/infomaniak-cli/releases):
 
 ```bash
-pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git --backend pip
+pipx install https://github.com/VidGuiCode/infomaniak-cli/releases/download/<tag>/infomaniak_cli-<version>-py3-none-any.whl --backend pip
 ```
 
 For development:
