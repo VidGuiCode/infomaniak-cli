@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.19 - Feedback bug fixes
+
+Fixes for three issues surfaced by a hands-on usage review (`context/feeback/report1.txt`) that exercised every command group:
+
+- Fixed `render_table` crashing on any empty `--table` result. The column width calc collapsed to `max(<int>)` (`TypeError: 'int' object is not iterable`) when there were zero rows; it now wraps the widths in a list so every `--table` command (mailboxes, hostings, services, contacts, calendars, channels, users) renders just the header + separator on an empty result. Added an empty-rows regression test plus a CLI-level empty-table test.
+- Updated `docs/release.md` to install from GitHub instead of the broken PyPI commands (`pipx install infomaniak-cli`, `uv tool install infomaniak-cli`, `pip install infomaniak-cli`), matching the README Install section: `git+https://…` installs and a `<tag>`/`<version>` release-wheel option.
+- Fixed `ik account products` listing every product as `unnamed`. The products endpoint keys items by `service_name`; `_display_item` now falls back to `service_name`/`customer_name`, and a new `slim_products` projection maps a stable `{id, name, type}`. `ik account products --json` now emits the slim shape by default with `--raw` for the full payload, matching the `account list` pattern.
+
 ## v0.1.18 - Install, update, and PATH polish
 
 - Added read-only install/PATH diagnostics (`pathcheck.py`): resolves the `ik` entry point, the install scripts dir, and whether it is on PATH (case-insensitive, path-normalized).

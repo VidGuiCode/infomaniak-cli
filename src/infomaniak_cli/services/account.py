@@ -20,6 +20,19 @@ def list_products(api: Any, account_id: str) -> list[Mapping[str, Any]]:
     return _as_items(_unwrap(api.get(f"/1/accounts/{account_id}/products")))
 
 
+def slim_product(product: Mapping[str, Any]) -> dict[str, Any]:
+    projected = {
+        "id": product.get("id") or product.get("product_id") or product.get("service_id"),
+        "name": product.get("service_name") or product.get("customer_name"),
+        "type": product.get("service_name"),
+    }
+    return {field: value for field, value in projected.items() if value is not None}
+
+
+def slim_products(products: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [slim_product(product) for product in products]
+
+
 def list_services(api: Any, account_id: str) -> list[Mapping[str, Any]]:
     return _as_items(_unwrap(api.get(f"/1/accounts/{account_id}/services")))
 

@@ -44,8 +44,10 @@ def render_table(rows: Iterable[Mapping[str, Any]], columns: list[tuple[str, str
     materialized = list(rows)
     widths = {
         key: max(
-            len(label),
-            *(len(_format_cell(row.get(key))) for row in materialized),
+            [
+                len(label),
+                *(len(_format_cell(row.get(key))) for row in materialized),
+            ]
         )
         for key, label in columns
     }

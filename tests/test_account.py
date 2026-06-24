@@ -7,7 +7,14 @@ from infomaniak_cli import cli
 from infomaniak_cli.api import DEFAULT_BASE_URL
 from infomaniak_cli.auth import TokenStore
 from infomaniak_cli.profiles import ProfileManager
-from infomaniak_cli.services.account import list_accounts, list_products, list_services, slim_account
+from infomaniak_cli.services.account import (
+    list_accounts,
+    list_products,
+    list_services,
+    slim_account,
+    slim_product,
+    slim_products,
+)
 
 
 class FakeAPI:
@@ -69,6 +76,38 @@ def test_slim_account_projects_useful_fields_only():
         "type": "owner",
         "legal_entity_type": "company",
     }
+
+
+def test_slim_product_resolves_name_and_type_from_service_name():
+    raw = {"service_name": "drive", "service_id": 40, "id": 123, "customer_name": "Example Co"}
+
+    assert slim_product(raw) == {"id": 123, "name": "drive", "type": "drive"}
+
+
+def test_slim_product_falls_back_to_customer_name_and_drops_missing_fields():
+    assert slim_product({"id": "mail-1"}) == {"id": "mail-1"}
+    assert slim_product({"customer_name": "Example Co", "product_id": 9}) == {
+        "id": 9,
+        "name": "Example Co",
+    }
+
+
+def test_slim_products_projects_each_item():
+    raw = [
+        {"service_name": "drive", "service_id": 40, "id": 123},
+        {"service_name": "kchat", "service_id": 54, "id": 456},
+    ]
+
+    assert slim_products(raw) == [
+        {"id": 123, "name": "drive", "type": "drive"},
+        {"id": 456, "name": "kchat", "type": "kchat"},
+    ]
+
+
+def test_display_item_resolves_product_name_from_service_name():
+    rendered = cli._display_item({"service_name": "drive", "service_id": 40, "id": 123})
+
+    assert rendered == "123\tdrive"
 
 
 def test_cli_account_list_json_uses_profile_token(tmp_path, monkeypatch, capsys):
@@ -144,6 +183,44 @@ def test_cli_account_products_json_prefers_profile_account_id(tmp_path, monkeypa
     assert fake_api.calls == [("/1/accounts/42/products", None)]
 
 
+def test_cli_account_products_json_slims_service_name(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", account_id="42", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/1/accounts/42/products": {
+                "result": "success",
+                "data": [{"service_name": "drive", "service_id": 40, "id": 123, "customer_name": "Example Co"}],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["account", "products", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "profile": "work",
+        "account_id": "42",
+        "products": [{"id": 123, "name": "drive", "type": "drive"}],
+    }
+
+
+def test_cli_account_products_json_raw_emits_full_payload(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", account_id="42", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    raw_product = {"service_name": "drive", "service_id": 40, "id": 123, "customer_name": "Example Co"}
+    fake_api = FakeAPI({"/1/accounts/42/products": {"result": "success", "data": [raw_product]}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["account", "products", "--json", "--raw"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"profile": "work", "account_id": "42", "products": [raw_product]}
+
+
 def test_cli_account_services_json_allows_explicit_account_id(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("work", account_id="42", make_default=True)
@@ -170,6 +247,20 @@ def test_cli_account_services_compact_is_single_line_slim_json(tmp_path, monkeyp
     captured = capsys.readouterr()
     assert "\n" not in captured.out.rstrip("\n")
     assert json.loads(captured.out) == {"profile": "work", "account_id": "42", "services": [{"id": "drive-1"}]}
+
+
+def test_cli_account_services_table_handles_empty_result(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", account_id="42", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI({"/1/accounts/42/services": {"result": "success", "data": []}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    # An empty result with --table must render the header and not crash (regression).
+    assert cli.main(["account", "services", "--table"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out.splitlines()[0].startswith("ID")
 
 
 def test_cli_account_products_requires_account_id_when_profile_has_none(tmp_path, monkeypatch, capsys):

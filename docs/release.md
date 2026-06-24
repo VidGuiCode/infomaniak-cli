@@ -4,12 +4,14 @@
 
 This is different from `plane-cli`: `plane-cli` is developed as a Bun/TypeScript app and released as a Node-compatible npm package tarball. `infomaniak-cli` should use Python packaging because the codebase is Python.
 
+`infomaniak-cli` is distributed through GitHub — it is **not** published on PyPI. Install it from the repository or a release wheel, never from a bare `infomaniak-cli` package name. The install blocks below mirror the README Install section.
+
 ## Recommended User Install
 
-Use `pipx` for a global CLI install:
+Use `pipx` for a global CLI install, straight from GitHub:
 
 ```bash
-pipx install infomaniak-cli --backend pip
+pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git --backend pip
 ik version
 ```
 
@@ -25,14 +27,14 @@ Why `pipx`:
 Use `uv tool` if the user already prefers uv:
 
 ```bash
-uv tool install infomaniak-cli
+uv tool install git+https://github.com/VidGuiCode/infomaniak-cli.git
 ik version
 ```
 
-Plain `pip` works, but it should not be the primary recommendation for a CLI:
+Plain `pip` works, but it should not be the primary recommendation for a CLI (use a virtual environment so the CLI stays isolated):
 
 ```bash
-pip install infomaniak-cli
+pip install git+https://github.com/VidGuiCode/infomaniak-cli.git
 ```
 
 ## Install From GitHub
@@ -43,10 +45,10 @@ For unreleased code:
 pipx install git+https://github.com/VidGuiCode/infomaniak-cli.git --backend pip
 ```
 
-For a GitHub release wheel:
+To pin a specific version, install its release wheel from the [Releases page](https://github.com/VidGuiCode/infomaniak-cli/releases):
 
 ```bash
-pipx install https://github.com/VidGuiCode/infomaniak-cli/releases/download/v0.1.15/infomaniak_cli-0.1.15-py3-none-any.whl --backend pip
+pipx install https://github.com/VidGuiCode/infomaniak-cli/releases/download/<tag>/infomaniak_cli-<version>-py3-none-any.whl --backend pip
 ```
 
 ## Upgrade
@@ -66,7 +68,7 @@ uv tool upgrade infomaniak-cli
 For plain `pip` installs:
 
 ```bash
-pip install --upgrade infomaniak-cli
+pip install --upgrade git+https://github.com/VidGuiCode/infomaniak-cli.git
 ```
 
 ## Uninstall

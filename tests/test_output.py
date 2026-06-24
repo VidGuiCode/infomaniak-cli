@@ -35,3 +35,14 @@ def test_render_table_uses_headers_and_rows():
         "1   Admin",
         "22  Documents",
     ]
+
+
+def test_render_table_handles_empty_rows_without_crashing():
+    rendered = render_table([], columns=[("id", "ID"), ("name", "Name")])
+
+    # Empty result sets must still render the header + separator and no body rows,
+    # rather than raising "TypeError: 'int' object is not iterable" (regression).
+    assert rendered.splitlines() == [
+        "ID  Name",
+        "--  ----",
+    ]

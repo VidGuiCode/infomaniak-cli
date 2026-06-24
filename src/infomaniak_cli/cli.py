@@ -18,7 +18,7 @@ from .output import compact_json, error_json, pretty_json, redact, render_table
 from .pathcheck import plan_path_fix
 from .profiles import ProfileManager
 from .readiness import build_readiness
-from .services.account import list_accounts, list_products, list_services, slim_accounts
+from .services.account import list_accounts, list_products, list_services, slim_accounts, slim_products
 from .services.calendar import (
     CalendarClient,
     CalendarError,
@@ -1565,7 +1565,15 @@ def _drive_id_or_error(args: argparse.Namespace, profile: Any) -> str:
 
 def _display_item(item: Mapping[str, Any]) -> str:
     item_id = item.get("id") or item.get("account_id") or item.get("service_id") or item.get("product_id") or "-"
-    name = item.get("name") or item.get("display_name") or item.get("label") or item.get("title") or "unnamed"
+    name = (
+        item.get("name")
+        or item.get("display_name")
+        or item.get("label")
+        or item.get("title")
+        or item.get("service_name")
+        or item.get("customer_name")
+        or "unnamed"
+    )
     return f"{item_id}\t{name}"
 
 
@@ -1693,7 +1701,8 @@ def cmd_account_products(args: argparse.Namespace) -> int:
     account_id = _account_id_or_error(args, profile)
     products = list_products(client, account_id)
     if args.json:
-        print_json({"profile": profile.name, "account_id": account_id, "products": products})
+        output_products = products if args.raw else slim_products(products)
+        print_json({"profile": profile.name, "account_id": account_id, "products": output_products})
     else:
         print(f"Profile: {profile.name}")
         print(f"Account ID: {account_id}")
@@ -2391,6 +2400,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_products = account_sub.add_parser("products", help="List products for an account")
     account_products.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
     account_products.add_argument("--json", action="store_true")
+    account_products.add_argument("--raw", action="store_true", help="With --json, emit the full raw product payload.")
     account_products.set_defaults(func=cmd_account_products)
     account_services = account_sub.add_parser("services", help="List services for an account")
     account_services.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
