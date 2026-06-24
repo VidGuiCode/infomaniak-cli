@@ -48,9 +48,11 @@ from .services.contacts import (
 from .services.drive import (
     build_folder_tree,
     find_file,
+    recent_files,
     list_files,
     list_folders,
     search_files,
+    shared_files,
     slim_file,
     slim_files,
     slim_folder_tree,
@@ -1445,7 +1447,21 @@ def _display_drive_item(item: Mapping[str, Any]) -> str:
     item_id = item.get("id") or "-"
     name = item.get("name") or item.get("display_name") or "unnamed"
     modified = item.get("last_modified_at") or item.get("modified_at") or item.get("updated_at") or ""
-    return f"{item_type}\t{item_id}\t{modified}\t{name}"
+    size = item.get("size") if item.get("size") is not None else ""
+    return f"{item_type}\t{item_id}\t{size}\t{modified}\t{name}"
+
+
+def _drive_table(files: list[Mapping[str, Any]], *, drive_id: str) -> str:
+    return render_table(
+        slim_files(files, drive_id=drive_id),
+        [
+            ("type", "Type"),
+            ("id", "ID"),
+            ("size", "Size"),
+            ("last_modified_at", "Modified"),
+            ("name", "Name"),
+        ],
+    )
 
 
 def _display_drive_tree(tree: list[Mapping[str, Any]], *, level: int = 0) -> list[str]:
@@ -1592,12 +1608,7 @@ def cmd_drive_list(args: argparse.Namespace) -> int:
             args,
         )
     elif getattr(args, "table", False):
-        print(render_table(slim_files(files, drive_id=drive_id), [
-            ("type", "Type"),
-            ("id", "ID"),
-            ("last_modified_at", "Modified"),
-            ("name", "Name"),
-        ]))
+        print(_drive_table(files, drive_id=drive_id))
     else:
         print(f"Profile: {profile.name}")
         print(f"Drive ID: {drive_id}")
@@ -1606,6 +1617,77 @@ def cmd_drive_list(args: argparse.Namespace) -> int:
         print(f"Files: {len(files)}")
         if not files:
             print("No files found.")
+        for file_item in files:
+            print(_display_drive_item(file_item))
+    return 0
+
+
+def cmd_drive_recent(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    try:
+        files = recent_files(client, drive_id, parent_id=args.parent_id, limit=args.limit)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise _drive_404_error(drive_id) from exc
+        raise
+
+    if _machine_output(args):
+        output_files = files if _raw_output(args) else slim_files(files, drive_id=drive_id)
+        print_machine(
+            {
+                "profile": profile.name,
+                "drive_id": drive_id,
+                "parent_id": args.parent_id,
+                "count": len(files),
+                "files": output_files,
+            },
+            args,
+        )
+    elif getattr(args, "table", False):
+        print(_drive_table(files, drive_id=drive_id))
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        if args.parent_id:
+            print(f"Parent ID: {args.parent_id}")
+        print(f"Recent files: {len(files)}")
+        if not files:
+            print("No files found.")
+        for file_item in files:
+            print(_display_drive_item(file_item))
+    return 0
+
+
+def cmd_drive_shared(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    try:
+        files = shared_files(list_files(client, drive_id), limit=args.limit)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise _drive_404_error(drive_id) from exc
+        raise
+
+    if _machine_output(args):
+        output_files = files if _raw_output(args) else slim_files(files, drive_id=drive_id)
+        print_machine(
+            {
+                "profile": profile.name,
+                "drive_id": drive_id,
+                "count": len(files),
+                "files": output_files,
+            },
+            args,
+        )
+    elif getattr(args, "table", False):
+        print(_drive_table(files, drive_id=drive_id))
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(f"Shared files: {len(files)}")
+        if not files:
+            print("No shared files found.")
         for file_item in files:
             print(_display_drive_item(file_item))
     return 0
@@ -2127,6 +2209,23 @@ def build_parser() -> argparse.ArgumentParser:
     drive_tree.add_argument("--json", action="store_true")
     drive_tree.add_argument("--raw", action="store_true", help="With --json, emit the full raw folder payload.")
     drive_tree.set_defaults(func=cmd_drive_tree)
+    drive_recent = drive_sub.add_parser("recent", help="List recently changed kDrive files and folders")
+    drive_recent.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_recent.add_argument("--parent", "--path", dest="parent_id", help="Folder/parent ID to list.")
+    drive_recent.add_argument("--limit", type=int, help="Maximum number of recent files to show after sorting.")
+    drive_recent.add_argument("--json", action="store_true")
+    drive_recent.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_recent.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
+    drive_recent.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
+    drive_recent.set_defaults(func=cmd_drive_recent)
+    drive_shared = drive_sub.add_parser("shared", help="List shared/public/link-visible kDrive files")
+    drive_shared.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_shared.add_argument("--limit", type=int, help="Maximum number of shared files to show after filtering.")
+    drive_shared.add_argument("--json", action="store_true")
+    drive_shared.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_shared.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
+    drive_shared.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
+    drive_shared.set_defaults(func=cmd_drive_shared)
     drive_search = drive_sub.add_parser("search", help="Search kDrive files and folders by name")
     drive_search.add_argument("query", help="Case-insensitive file/folder name query.")
     drive_search.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")

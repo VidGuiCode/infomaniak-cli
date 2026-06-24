@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.14-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.15-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -82,6 +82,8 @@ ik drive list --json
 ik drive list --json --raw
 ik drive folders --json
 ik drive tree --depth 2 --json
+ik drive recent --limit 10 --json
+ik drive shared --json
 ik drive search "invoice" --json
 ik drive info <file_id> --json
 
@@ -186,7 +188,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | Auth | `auth token`, `auth check`, `auth status`, `auth logout`, `auth mail`, `auth contacts`, `auth calendar`, `auth chat` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
-| kDrive | `drive list`, `drive folders`, `drive tree`, `drive search`, `drive info` |
+| kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info` |
 | Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
 | Contacts | `contacts list`, `contacts search`, `contacts show` |
 | Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show` |
@@ -215,6 +217,8 @@ ik drive list --json
 ik drive list --json --raw
 ik drive folders --json
 ik drive tree --depth 2 --json
+ik drive recent --limit 10 --json
+ik drive shared --json
 ik drive search "invoice" --json
 ik drive info <file_id> --json
 

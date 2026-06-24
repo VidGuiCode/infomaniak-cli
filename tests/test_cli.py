@@ -80,6 +80,8 @@ HELP_COMMANDS = [
     ("drive", "list", "--help"),
     ("drive", "folders", "--help"),
     ("drive", "tree", "--help"),
+    ("drive", "recent", "--help"),
+    ("drive", "shared", "--help"),
     ("drive", "search", "--help"),
     ("drive", "info", "--help"),
     ("mail", "--help"),

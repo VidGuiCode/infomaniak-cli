@@ -6,7 +6,17 @@ from infomaniak_cli import cli
 from infomaniak_cli.api import InformaniakAPIError
 from infomaniak_cli.auth import TokenStore
 from infomaniak_cli.profiles import ProfileManager
-from infomaniak_cli.services.drive import DriveError, build_folder_tree, find_file, list_files, search_files, slim_file
+from infomaniak_cli.services.drive import (
+    DriveError,
+    build_folder_tree,
+    find_file,
+    is_shared_file,
+    list_files,
+    recent_files,
+    search_files,
+    shared_files,
+    slim_file,
+)
 
 
 class FakeAPI:
@@ -91,6 +101,10 @@ def test_slim_file_projects_useful_fields_only():
         "parent_id": "folder-1",
         "drive_id": "drive-1",
         "visibility": "private",
+        "mime_type": "application/pdf",
+        "extension": "pdf",
+        "path": "/Invoices/Invoice.pdf",
+        "owner": {"display_name": "Gui"},
         "permissions": {"share": True},
     }
 
@@ -101,9 +115,59 @@ def test_slim_file_projects_useful_fields_only():
         "parent_id": "folder-1",
         "drive_id": "drive-1",
         "visibility": "private",
+        "size": 1234,
+        "mime_type": "application/pdf",
+        "extension": "pdf",
+        "path_hint": "/Invoices/Invoice.pdf",
+        "owner": "Gui",
         "created_at": 1,
         "last_modified_at": 2,
     }
+
+
+def test_drive_service_recent_sorts_newest_first_with_created_fallback_and_limit():
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [
+                    {"id": "old", "name": "old.txt", "created_at": "2026-06-01T00:00:00Z"},
+                    {"id": "new", "name": "new.txt", "last_modified_at": "2026-06-03T00:00:00Z"},
+                    {"id": "middle", "name": "middle.txt", "created_at": "2026-06-02T00:00:00Z"},
+                    {"id": "missing", "name": "missing.txt"},
+                ],
+            }
+        }
+    )
+
+    files = recent_files(api, "drive-1", limit=2)
+
+    assert [file_item["id"] for file_item in files] == ["new", "middle"]
+    assert api.calls == [("/2/drive/drive-1/files", None)]
+
+
+def test_drive_service_recent_passes_parent_to_files_endpoint():
+    api = FakeAPI({"/2/drive/drive-1/files": {"result": "success", "data": []}})
+
+    assert recent_files(api, "drive-1", parent_id="folder-1") == []
+
+    assert api.calls == [("/2/drive/drive-1/files", {"parent_id": "folder-1"})]
+
+
+def test_drive_service_shared_filters_explicit_shared_fields_only():
+    files = [
+        {"id": "private", "visibility": "private"},
+        {"id": "public", "visibility": "PUBLIC"},
+        {"id": "link", "share_url": "https://share.example.test/file"},
+        {"id": "flag", "is_shared": True},
+        {"id": "negative", "visibility": "not_public"},
+        {"id": "permission-only", "permissions": {"share": True}},
+    ]
+
+    assert [file_item["id"] for file_item in shared_files(files, limit=3)] == ["public", "link", "flag"]
+    assert not is_shared_file(files[0])
+    assert not is_shared_file(files[4])
+    assert not is_shared_file(files[5])
 
 
 def test_drive_service_search_filters_names_case_insensitively():
@@ -210,6 +274,7 @@ def test_cli_drive_list_json_uses_profile_default_drive_id(tmp_path, monkeypatch
                 "parent_id": None,
                 "drive_id": "drive-1",
                 "visibility": "private",
+                "size": 0,
                 "created_at": 1,
                 "last_modified_at": 2,
             }
@@ -341,6 +406,158 @@ def test_cli_drive_list_404_reports_wrong_drive_id_path(tmp_path, monkeypatch, c
     captured = capsys.readouterr()
     assert "/2/drive/drive-1/files" in captured.err
     assert "saved kDrive id may be wrong" in captured.err
+
+
+def test_cli_drive_recent_json_uses_profile_default_and_sorts_newest_first(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [
+                    {"id": "old", "name": "Old.txt", "type": "file", "created_at": "2026-06-01T00:00:00Z"},
+                    {"id": "new", "name": "New.txt", "type": "file", "last_modified_at": "2026-06-03T00:00:00Z"},
+                    {"id": "middle", "name": "Middle.txt", "type": "file", "created_at": "2026-06-02T00:00:00Z"},
+                ],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "recent", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["profile"] == "work"
+    assert output["drive_id"] == "drive-1"
+    assert output["count"] == 3
+    assert [file_item["id"] for file_item in output["files"]] == ["new", "middle", "old"]
+    assert fake_api.calls == [("/2/drive/drive-1/files", None)]
+
+
+def test_cli_drive_recent_drive_id_parent_and_limit_apply_after_sorting(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="profile-drive", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/2/drive/override-drive/files": {
+                "result": "success",
+                "data": [
+                    {"id": "old", "name": "Old.txt", "created_at": "2026-06-01T00:00:00Z"},
+                    {"id": "new", "name": "New.txt", "created_at": "2026-06-03T00:00:00Z"},
+                ],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert (
+        cli.main(
+            ["drive", "recent", "--drive-id", "override-drive", "--parent", "folder-1", "--limit", "1", "--json"]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["drive_id"] == "override-drive"
+    assert output["parent_id"] == "folder-1"
+    assert output["count"] == 1
+    assert output["files"][0]["id"] == "new"
+    assert fake_api.calls == [("/2/drive/override-drive/files", {"parent_id": "folder-1"})]
+
+
+def test_cli_drive_recent_raw_compact_and_table_outputs(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    raw_file = {
+        "id": "file-1",
+        "name": "Invoice.pdf",
+        "type": "file",
+        "size": 1234,
+        "last_modified_at": "2026-06-03T00:00:00Z",
+        "raw_only": True,
+    }
+    fake_api = FakeAPI({"/2/drive/drive-1/files": {"result": "success", "data": [raw_file]}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "recent", "--json", "--raw"]) == 0
+    assert json.loads(capsys.readouterr().out)["files"] == [raw_file]
+
+    assert cli.main(["drive", "recent", "--compact"]) == 0
+    compact_output = capsys.readouterr().out
+    assert "\n" not in compact_output.rstrip("\n")
+    assert json.loads(compact_output)["files"][0]["size"] == 1234
+
+    assert cli.main(["drive", "recent", "--table"]) == 0
+    table_lines = capsys.readouterr().out.splitlines()
+    assert table_lines[0].startswith("Type")
+    assert "Invoice.pdf" in table_lines[-1]
+
+
+def test_cli_drive_recent_requires_drive_id(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+
+    assert cli.main(["drive", "recent"]) == 1
+
+    captured = capsys.readouterr()
+    assert "No default kDrive selected for profile: work" in captured.err
+    assert "--drive-id" in captured.err
+
+
+def test_cli_drive_shared_filters_shared_items_and_limits_after_filtering(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [
+                    {"id": "private", "name": "Private.txt", "visibility": "private"},
+                    {"id": "public", "name": "Public.txt", "visibility": "PUBLIC"},
+                    {"id": "link", "name": "Link.txt", "share_url": "https://share.example.test/link"},
+                    {"id": "flag", "name": "Flag.txt", "is_shared": True},
+                ],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "shared", "--limit", "2", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["profile"] == "work"
+    assert output["drive_id"] == "drive-1"
+    assert output["count"] == 2
+    assert [file_item["id"] for file_item in output["files"]] == ["public", "link"]
+    assert fake_api.calls == [("/2/drive/drive-1/files", None)]
+
+
+def test_cli_drive_shared_raw_compact_table_and_empty_result(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    raw_file = {"id": "public", "name": "Public.txt", "visibility": "public", "raw_only": True}
+    fake_api = FakeAPI({"/2/drive/drive-1/files": {"result": "success", "data": [raw_file]}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "shared", "--json", "--raw"]) == 0
+    assert json.loads(capsys.readouterr().out)["files"] == [raw_file]
+
+    assert cli.main(["drive", "shared", "--compact"]) == 0
+    assert "\n" not in capsys.readouterr().out.rstrip("\n")
+
+    assert cli.main(["drive", "shared", "--table"]) == 0
+    assert "Public.txt" in capsys.readouterr().out
+
+    fake_api.responses = {"/2/drive/drive-1/files": {"result": "success", "data": [{"id": "private"}]}}
+    assert cli.main(["drive", "shared"]) == 0
+    assert "No shared files found." in capsys.readouterr().out
 
 
 def test_cli_drive_search_json_filters_names_case_insensitively(tmp_path, monkeypatch, capsys):

@@ -170,6 +170,9 @@ ik drive folders
 ik drive folders --parent <folder_id> --limit 20 --json
 ik drive tree
 ik drive tree --depth 2 --limit 20 --json
+ik drive recent --limit 10 --json
+ik drive recent --limit 10 --table
+ik drive shared --json
 ik drive search "RCS"
 ik drive info <file_id>
 ```
@@ -180,9 +183,13 @@ ik drive info <file_id>
 
 `ik drive tree` builds a shallow read-only folder tree from repeated files endpoint calls with `parent_id` filtering. It defaults to `--depth 2`; use lower depth for cheaper checks. `--limit` applies per folder request.
 
+`ik drive recent` uses the same files endpoint and sorts client-side by the best available timestamp, newest first. It prefers `last_modified_at` and falls back to `created_at`. It supports `--drive-id`, `--parent`, `--limit`, `--json`, `--compact`, `--table`, and `--raw`.
+
+`ik drive shared` uses the same files endpoint and filters client-side only when file payloads expose explicit shared/public/link-visible fields. It supports `--drive-id`, `--limit`, `--json`, `--compact`, `--table`, and `--raw`. It never creates, edits, or removes shares.
+
 `ik drive search <query>` is currently implemented by listing files and filtering by file/folder name client-side because no separate search endpoint has been confirmed. `ik drive info <file_id>` is currently implemented by finding the item in the list endpoint response because no single-file metadata endpoint has been confirmed.
 
-Not implemented in v0.1.7: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
+Not implemented: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
 
 ## kChat
 
@@ -284,6 +291,7 @@ Compact single-line slim JSON:
 ```bash
 ik doctor --compact
 ik bootstrap --compact
+ik drive recent --compact
 ik drive search "invoice" --compact
 ik mail read <uid> --compact
 ```
@@ -292,6 +300,7 @@ Dense human table mode:
 
 ```bash
 ik drive list --table
+ik drive recent --table
 ik account services --table
 ik chat users --table
 ```

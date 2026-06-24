@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any, Mapping
 
 from ..api import redact_secret
@@ -40,6 +41,27 @@ def search_files(
         for file_item in list_files(api, drive_id)
         if query_lower in str(file_item.get("name") or "").casefold()
     ]
+    if limit is not None:
+        return matches[:limit]
+    return matches
+
+
+def recent_files(
+    api: Any,
+    drive_id: str,
+    *,
+    parent_id: str | None = None,
+    limit: int | None = None,
+) -> list[Mapping[str, Any]]:
+    files = list_files(api, drive_id, parent_id=parent_id)
+    sorted_files = sorted(files, key=_recent_sort_key, reverse=True)
+    if limit is not None:
+        return sorted_files[:limit]
+    return sorted_files
+
+
+def shared_files(files: list[Mapping[str, Any]], *, limit: int | None = None) -> list[Mapping[str, Any]]:
+    matches = [file_item for file_item in files if is_shared_file(file_item)]
     if limit is not None:
         return matches[:limit]
     return matches
@@ -87,21 +109,22 @@ def build_folder_tree(
 
 
 def slim_file(file_item: Mapping[str, Any], *, drive_id: str | None = None) -> dict[str, Any]:
-    return {
+    slim = {
         "id": _string_or_none(file_item.get("id")),
         "name": _string_or_none(file_item.get("name") or file_item.get("display_name")),
         "type": _file_type(file_item),
         "parent_id": _parent_id(file_item),
         "drive_id": _string_or_none(file_item.get("drive_id") or drive_id),
         "visibility": _string_or_none(file_item.get("visibility") or file_item.get("visibility_type")),
-        "created_at": file_item.get("created_at") or file_item.get("created"),
-        "last_modified_at": (
-            file_item.get("last_modified_at")
-            or file_item.get("modified_at")
-            or file_item.get("updated_at")
-            or file_item.get("updated")
-        ),
+        "created_at": _created_at(file_item),
+        "last_modified_at": _modified_at(file_item),
     }
+    _add_if_present(slim, "size", _first_present(file_item, "size", "file_size", "bytes"))
+    _add_if_present(slim, "mime_type", file_item.get("mime_type") or file_item.get("mimetype") or file_item.get("content_type"))
+    _add_if_present(slim, "extension", file_item.get("extension") or file_item.get("file_extension") or file_item.get("ext"))
+    _add_if_present(slim, "path_hint", file_item.get("path") or file_item.get("path_hint"))
+    _add_if_present(slim, "owner", _owner_display(file_item))
+    return slim
 
 
 def slim_files(files: list[Mapping[str, Any]], *, drive_id: str | None = None) -> list[dict[str, Any]]:
@@ -129,6 +152,24 @@ def is_folder(file_item: Mapping[str, Any]) -> bool:
     if file_type is None:
         return False
     return file_type.casefold() in {"dir", "directory", "folder"}
+
+
+def is_shared_file(file_item: Mapping[str, Any]) -> bool:
+    for key in ("is_shared", "shared", "public", "is_public", "has_shared_link", "has_public_link", "link_enabled"):
+        if file_item.get(key) is True:
+            return True
+
+    for key in ("visibility", "visibility_type", "share_status", "sharing_status", "access", "link_status"):
+        value = file_item.get(key)
+        if value is not None and _shared_text(str(value)):
+            return True
+
+    for key in ("share_url", "shared_url", "public_url", "link_url", "public_link", "share_link"):
+        value = file_item.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+
+    return False
 
 
 def _file_items(payload: Any) -> list[Mapping[str, Any]]:
@@ -181,6 +222,69 @@ def _file_type(file_item: Mapping[str, Any]) -> str | None:
         return "folder"
     if file_item.get("mime_type") or file_item.get("size") is not None:
         return "file"
+    return None
+
+
+def _created_at(file_item: Mapping[str, Any]) -> Any:
+    return file_item.get("created_at") or file_item.get("created") or file_item.get("creation_date")
+
+
+def _modified_at(file_item: Mapping[str, Any]) -> Any:
+    return file_item.get("last_modified_at") or file_item.get("modified_at") or file_item.get("updated_at") or file_item.get("updated")
+
+
+def _recent_sort_key(file_item: Mapping[str, Any]) -> tuple[int, int, float | str]:
+    value = _modified_at(file_item) or _created_at(file_item)
+    if value is None:
+        return (0, 0, "")
+    parsed = _timestamp_value(value)
+    if isinstance(parsed, float):
+        return (1, 1, parsed)
+    return (1, 0, parsed)
+
+
+def _timestamp_value(value: Any) -> float | str:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC).timestamp()
+    except ValueError:
+        return text
+
+
+def _shared_text(value: str) -> bool:
+    text = value.casefold().strip()
+    normalized = "".join(character if character.isalnum() else " " for character in text)
+    tokens = set(normalized.split())
+    if tokens & {"not", "private", "none", "disabled", "false", "unshared", "unlinked"}:
+        return False
+    return bool(tokens & {"shared", "public", "link"})
+
+
+def _owner_display(file_item: Mapping[str, Any]) -> str | None:
+    owner = file_item.get("owner") or file_item.get("user") or file_item.get("created_by")
+    if isinstance(owner, Mapping):
+        for key in ("display_name", "name", "username", "email"):
+            value = owner.get(key)
+            if value:
+                return str(value)
+    if isinstance(owner, str) and owner:
+        return owner
+    return None
+
+
+def _add_if_present(target: dict[str, Any], key: str, value: Any) -> None:
+    if value is not None:
+        target[key] = value
+
+
+def _first_present(item: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in item and item.get(key) is not None:
+            return item.get(key)
     return None
 
 

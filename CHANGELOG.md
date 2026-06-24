@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.15 - kDrive read polish
+
+- Added `ik drive recent` to list files/folders newest-first from the existing read-only files endpoint.
+- Added `ik drive shared` with conservative client-side filtering for explicit shared/public/link-visible payload fields.
+- Improved slim kDrive file output with safe optional size, MIME type, extension, path hint, and owner display fields when present.
+- Improved kDrive human/table rows with size and modified time.
+- Kept kDrive operations read-only; no upload, move, delete, share edits, trash, or sync behavior.
+
 ## v0.1.14 - Bootstrap service defaults and setup guidance
 
 - Improved `ik bootstrap` with a service readiness summary across auth, account, mail, kDrive, contacts, calendar, and kChat.
