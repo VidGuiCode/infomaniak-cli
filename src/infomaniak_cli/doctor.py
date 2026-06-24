@@ -1,14 +1,49 @@
 from __future__ import annotations
 
-from typing import Any
+import os
+import shutil
+from typing import Any, Callable
 
+from . import pathcheck
 from .auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, MailPasswordStore, TokenStore
 from .config_paths import get_config_dir
 from .profiles import ProfileManager
 from .readiness import build_readiness
+from .update import detect_install_method
 
 
-def run_doctor(profile_name: str | None = None) -> dict[str, Any]:
+def _build_path_section(
+    *,
+    which: Callable[[str], str | None],
+    path_env: str,
+    os_name: str,
+    scripts_dir: str,
+) -> dict[str, Any]:
+    ik_path = pathcheck.locate_entry_point(which)
+    status = pathcheck.path_status(scripts_dir=scripts_dir, ik_path=ik_path, path_env=path_env)
+    on_path = bool(status["on_path"] or status["dir_on_path"])
+    section: dict[str, Any] = {
+        "scripts_dir": scripts_dir,
+        "ik_path": ik_path,
+        "ik_dir": status["ik_dir"],
+        "on_path": on_path,
+        "dir_on_path": status["dir_on_path"],
+        "fix_hint": None,
+    }
+    if not on_path:
+        section["fix_hint"] = pathcheck.fix_path_command(scripts_dir=scripts_dir, os_name=os_name)
+    return section
+
+
+def run_doctor(
+    profile_name: str | None = None,
+    *,
+    which: Callable[[str], str | None] | None = None,
+    path_env: str | None = None,
+    os_name: str | None = None,
+    scripts_dir: str | None = None,
+    install_method: str | None = None,
+) -> dict[str, Any]:
     manager = ProfileManager()
     names = manager.list_names()
     selected = profile_name or manager.get_current_name()
@@ -57,10 +92,20 @@ def run_doctor(profile_name: str | None = None) -> dict[str, Any]:
             and (checks["chat_explicit_token_configured"] or checks["chat_main_token_fallback_possible"])
         )
 
+    resolved_install_method = install_method or detect_install_method()
+    path_section = _build_path_section(
+        which=which or shutil.which,
+        path_env=path_env if path_env is not None else os.environ.get("PATH", ""),
+        os_name=os_name or os.name,
+        scripts_dir=scripts_dir if scripts_dir is not None else pathcheck.scripts_dir(),
+    )
+
     return {
         "profile": selected,
         "profiles": names,
         "checks": checks,
+        "install_method": resolved_install_method,
+        "path": path_section,
         "profile_data": profile_data,
         "readiness": readiness,
         "missing_setup_actions": readiness["missing_setup_actions"] if readiness else [],

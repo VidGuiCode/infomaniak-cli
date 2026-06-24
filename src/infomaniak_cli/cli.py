@@ -15,6 +15,7 @@ from .bootstrap import BootstrapError, bootstrap_profile
 from .debug import probe_profile
 from .doctor import run_doctor
 from .output import compact_json, error_json, pretty_json, redact, render_table
+from .pathcheck import plan_path_fix
 from .profiles import ProfileManager
 from .readiness import build_readiness
 from .services.account import list_accounts, list_products, list_services, slim_accounts
@@ -371,6 +372,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if args.profile or os.environ.get("IK_PROFILE"):
         profile_name = _resolve_profile_name(manager, args.profile)
     data = run_doctor(profile_name)
+
+    if getattr(args, "fix_path", False):
+        return _print_fix_path_preview(data["path"])
+
     if _machine_output(args):
         print_machine(data, args)
         return 0
@@ -382,10 +387,38 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             continue
         marker = "✓" if ok else "⚠"
         print(f"{marker} {check}: {ok}")
+    print(f"Install method: {data['install_method']}")
+    _print_path_line(data["path"])
     if data.get("missing_setup_actions"):
         print("Missing setup actions:")
         for action in data["missing_setup_actions"]:
             print(f"  {action}")
+    return 0
+
+
+def _print_path_line(path_section: dict[str, Any]) -> None:
+    if path_section["on_path"]:
+        location = path_section["ik_path"] or path_section["scripts_dir"]
+        print(f"✓ ik on PATH: {location}")
+        return
+    print(f"⚠ ik is installed but not on PATH. Scripts dir: {path_section['scripts_dir']}")
+    if path_section.get("fix_hint"):
+        print(f"  Fix (per-user PATH): {path_section['fix_hint']}")
+        print("  Then open a new terminal. Or run: ik doctor --fix-path")
+
+
+def _print_fix_path_preview(path_section: dict[str, Any]) -> int:
+    scripts_dir = path_section["scripts_dir"]
+    plan = plan_path_fix(scripts_dir, os.environ.get("PATH", ""), os_name=os.name)
+    if plan["already_on_path"]:
+        print(f"✓ {scripts_dir} is already on PATH. Nothing to do.")
+        return 0
+    print("Preview: add the ik scripts directory to your per-user PATH (no system or admin changes).")
+    print(f"Scripts dir: {scripts_dir}")
+    print(plan["change_description"])
+    print(f"Run: {plan['fix_command']}")
+    print("Then open a new terminal so the change takes effect.")
+    print("Note: automatic --fix-path apply is deferred; run the command above manually for now.")
     return 0
 
 
@@ -460,9 +493,10 @@ def _print_manual_update_guidance(plan: update_module.UpdatePlan) -> None:
             print(instruction)
         return
     if plan.install_method == "unknown":
-        print("Install method could not be detected. A safe install command is:")
+        print("Install method could not be detected. Best-effort default install command (review before running):")
         if plan.command:
             print(_format_command(plan.command))
+        print("If you installed another way (uv tool / pip / source), use that tool's upgrade command instead.")
         return
     if not plan.wheel_url:
         print("Open the release URL above to update manually.")
@@ -2334,6 +2368,11 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Run local configuration diagnostics")
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    doctor.add_argument(
+        "--fix-path",
+        action="store_true",
+        help="Preview the per-user PATH fix when ik is not on PATH (apply is deferred; prints the manual command).",
+    )
     doctor.set_defaults(func=cmd_doctor)
 
     bootstrap = sub.add_parser("bootstrap", help="Discover account/service IDs for a profile")

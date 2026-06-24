@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.17-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.18-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -56,6 +56,18 @@ ik update --yes
 ```
 
 `ik update` checks the latest GitHub release and can update pipx, uv tool, or pip installs when a release wheel is available. Source checkouts stay manual and print `git pull` / `uv sync` instructions.
+
+### Troubleshooting: `ik` not found / not on PATH
+
+A `pip install --user` install can put `ik` in a per-user scripts directory that is not on your `PATH` (Windows: `%APPDATA%\Python\PythonXYZ\Scripts`; Linux/macOS: `~/.local/bin`), so the shell reports `ik: command not found`.
+
+Run `ik doctor` to see your install method and a PATH check. When `ik` is installed but not on PATH, doctor prints the scripts directory and a copy-pasteable per-user fix command (it never changes the system PATH or needs admin). Preview it with:
+
+```bash
+ik doctor --fix-path
+```
+
+Then open a new terminal so the change takes effect. (`pipx` and `uv tool` installs put `ik` on PATH automatically, which is why they are recommended above.)
 
 ## Quick start
 

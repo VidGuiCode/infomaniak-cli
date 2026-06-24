@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.18 - Install, update, and PATH polish
+
+- Added read-only install/PATH diagnostics (`pathcheck.py`): resolves the `ik` entry point, the install scripts dir, and whether it is on PATH (case-insensitive, path-normalized).
+- `ik doctor` now reports the detected install method and a PATH line — a ✓ when `ik` is on PATH, or a ⚠ plus a copy-pasteable per-user fix command when it is installed but not on PATH. `--json`/`--compact` carry new `install_method` and `path` sections (existing `checks` keys unchanged).
+- Added `ik doctor --fix-path`: previews the per-user PATH fix (no system/admin changes) and prints the exact manual command; it is idempotent (says "already on PATH" when fine). Automatic apply is deferred — see below.
+- Broadened `ik update` failure hints with specific recovery guidance for uv tool and pip locked-executable/permission failures, and labeled the "unknown install method" fallback command as best-effort.
+- Added `scripts/smoke_install.sh`: builds the wheel and verifies it in a throwaway venv (never global, never pipx/uv tool, isolated config). Not part of the default offline unit suite.
+- Kept everything read-only except local config; the only PATH-affecting action is the opt-in `--fix-path` preview. Deferred: the environment-mutating `--fix-path` apply (the diagnostic + manual command ship now).
+
 ## v0.1.17 - Contacts/Calendar setup discovery polish
 
 - Added read-only CardDAV/CalDAV collection discovery (`services/dav_discovery.py`) using standard DAV principal -> home-set -> Depth:1 enumeration (RFC 5397/6352/4791).

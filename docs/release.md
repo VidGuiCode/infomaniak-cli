@@ -114,7 +114,7 @@ Before publishing, verify the built package in a clean install environment:
 
 ```bash
 uv build
-pipx install --force --backend pip dist/infomaniak_cli-0.1.15-py3-none-any.whl
+pipx install --force --backend pip dist/infomaniak_cli-0.1.18-py3-none-any.whl
 ik version
 ik --help
 ik setup --profile test --non-interactive
@@ -123,6 +123,16 @@ ik doctor --json
 ```
 
 The release is ready when the installed `ik` command works without relying on the source checkout.
+
+### Automated install smoke test
+
+`scripts/smoke_install.sh` runs the same verification non-interactively in a fully isolated way: it builds the wheel, installs it into a **throwaway venv** (never global, never pipx/uv tool), uses an isolated `IK_CONFIG_DIR`, and asserts `ik version`, `ik --help`, `ik setup --profile test --non-interactive`, and `ik doctor --json` all work. It never mutates your global environment or your real profiles.
+
+```bash
+bash scripts/smoke_install.sh
+```
+
+This is intentionally not part of the default offline unit suite (`uv run pytest -q` stays fast and never builds/installs). Run it manually before tagging a release.
 
 ## Comparison With plane-cli
 

@@ -161,14 +161,37 @@ def run_update_command(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def update_failure_hint(command: list[str], stderr: str) -> str | None:
-    if not command or command[0] != "pipx":
+    if not command:
         return None
     lowered = stderr.lower()
-    if "virtual environment already exists" in lowered or "uv venv" in lowered:
-        return (
-            "pipx failed while trying to create an existing venv through its uv backend. "
-            "Manual recovery: pipx runpip infomaniak-cli install --force-reinstall <wheel_url>"
-        )
+    head = command[0]
+
+    if head == "pipx":
+        if "virtual environment already exists" in lowered or "uv venv" in lowered:
+            return (
+                "pipx failed while trying to create an existing venv through its uv backend. "
+                "Manual recovery: pipx runpip infomaniak-cli install --force-reinstall <wheel_url>"
+            )
+        return None
+
+    if head == "uv":
+        if any(token in lowered for token in ("permission denied", "in use", "being used", "os error 5", "access is denied")):
+            return (
+                "uv tool install could not replace the running executable, often because `ik` is still open. "
+                "Close any running `ik` process and retry: uv tool install --force <wheel_url>"
+            )
+        return None
+
+    # pip invoked as `<python> -m pip install ...`
+    if "-m" in command and "pip" in command:
+        if any(token in lowered for token in ("access is denied", "permission denied", "being used by another process", "winerror 5")):
+            return (
+                "pip could not overwrite the installed files, often because `ik` is running or the install needs user scope. "
+                "Close any running `ik` and retry, or install for your user: "
+                "python -m pip install --user --force-reinstall <wheel_url>"
+            )
+        return None
+
     return None
 
 

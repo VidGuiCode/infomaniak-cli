@@ -11,6 +11,7 @@ from infomaniak_cli.update import (
     detect_install_method,
     is_newer_version,
     parse_latest_release,
+    update_failure_hint,
 )
 
 
@@ -156,6 +157,37 @@ def test_missing_wheel_asset_has_clean_plan():
     assert plan.wheel_url is None
     assert plan.can_auto_update is False
     assert plan.command is None
+
+
+def test_update_failure_hint_pipx_unaffected_by_other_methods():
+    # Non-pipx commands do not get the pipx-specific hint.
+    assert update_failure_hint(["uv", "tool", "install", "--force", "wheel"], "all good") is None
+
+
+def test_update_failure_hint_uv_tool_locked_executable():
+    hint = update_failure_hint(
+        ["uv", "tool", "install", "--force", "wheel"],
+        "error: failed to remove file: Access is denied. (os error 5)",
+    )
+
+    assert hint is not None
+    assert "uv tool install --force <wheel_url>" in hint
+    assert "Close any running `ik`" in hint
+
+
+def test_update_failure_hint_pip_permission_error():
+    hint = update_failure_hint(
+        [sys.executable, "-m", "pip", "install", "--force-reinstall", "wheel"],
+        "ERROR: Could not install packages... [WinError 5] Access is denied",
+    )
+
+    assert hint is not None
+    assert "python -m pip install --user --force-reinstall <wheel_url>" in hint
+
+
+def test_update_failure_hint_returns_none_for_unrecognized_stderr():
+    assert update_failure_hint(["uv", "tool", "install", "wheel"], "some unrelated message") is None
+    assert update_failure_hint([sys.executable, "-m", "pip", "install", "wheel"], "unrelated") is None
 
 
 def test_cli_update_check_never_runs_subprocess(monkeypatch, capsys):
