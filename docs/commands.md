@@ -53,14 +53,19 @@ ik profile list
 ik profile show
 ik profile use work
 ik profile rename old new
-ik profile delete old
+ik profile delete old --yes
 ```
 
 Every command should support:
 
 ```bash
 ik --profile work <command>
+IK_PROFILE=work ik <command>
 ```
+
+Profile selection precedence is: explicit `--profile`, then `IK_PROFILE`, then the saved current profile. If `IK_PROFILE` names a missing profile, commands fail instead of falling back to the saved current profile.
+
+`profile rename` renames local profile metadata and related local secret files. `profile delete --yes` removes only the named local profile and its related local secrets; it never touches remote services.
 
 ## Auth
 
@@ -69,6 +74,7 @@ ik auth login
 ik auth login --new-profile personal
 ik auth status
 ik auth logout
+ik auth logout --all --yes
 ik auth refresh
 ik auth contacts --url <carddav-address-book-url> --username user@example.com --password <carddav-password>
 ik auth calendar --url <caldav-calendar-url> --username user@example.com --password <caldav-password>
@@ -76,6 +82,8 @@ ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 ```
 
 `auth login` should route to setup if needed.
+
+`auth logout` removes the selected profile's main Informaniak API token by default. Add `--all` to also remove local mail, contacts, calendar, and chat secrets for that profile. It never contacts or changes remote services.
 
 `auth contacts` stores explicit CardDAV contacts credentials. It does not reuse mail credentials automatically.
 

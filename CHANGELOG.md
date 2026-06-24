@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.11 - Profile/auth lifecycle polish
+
+- Added `auth logout` with conservative default removal of only the selected profile's main API token.
+- Added `auth logout --all` to also remove local mail, contacts, calendar, and chat secrets for the selected profile.
+- Added `profile rename` and `profile delete` with local metadata/secret-file handling and current-profile updates.
+- Added `IK_PROFILE` support with precedence after explicit `--profile` and before the saved current profile.
+- Kept all Informaniak/kSuite service operations read-only; lifecycle commands only mutate local config/secrets.
+
 ## v0.1.10 - Mail read full-body UX fix
 
 - `mail read` human output now prints the full readable body text instead of a truncated preview.

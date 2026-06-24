@@ -1,4 +1,51 @@
-from infomaniak_cli.auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, TokenStore
+from infomaniak_cli.auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, MailPasswordStore, TokenStore
+
+
+def test_token_stores_can_rename_profile_secret_files(tmp_path):
+    TokenStore(config_dir=tmp_path).save_token("work", "main-token")
+    MailPasswordStore(config_dir=tmp_path).save_password("work", "mail-password")
+    ContactsPasswordStore(config_dir=tmp_path).save_password("work", "contacts-password")
+    CalendarPasswordStore(config_dir=tmp_path).save_password("work", "calendar-password")
+    ChatTokenStore(config_dir=tmp_path).save_token("work", "chat-token")
+
+    for store in (
+        TokenStore(config_dir=tmp_path),
+        MailPasswordStore(config_dir=tmp_path),
+        ContactsPasswordStore(config_dir=tmp_path),
+        CalendarPasswordStore(config_dir=tmp_path),
+        ChatTokenStore(config_dir=tmp_path),
+    ):
+        store.rename_profile("work", "office")
+
+    assert not TokenStore(config_dir=tmp_path).has_token("work")
+    assert TokenStore(config_dir=tmp_path).load_token("office") == "main-token"
+    assert MailPasswordStore(config_dir=tmp_path).load_password("office") == "mail-password"
+    assert ContactsPasswordStore(config_dir=tmp_path).load_password("office") == "contacts-password"
+    assert CalendarPasswordStore(config_dir=tmp_path).load_password("office") == "calendar-password"
+    assert ChatTokenStore(config_dir=tmp_path).load_token("office") == "chat-token"
+
+
+def test_token_stores_delete_profile_secret_files(tmp_path):
+    TokenStore(config_dir=tmp_path).save_token("work", "main-token")
+    MailPasswordStore(config_dir=tmp_path).save_password("work", "mail-password")
+    ContactsPasswordStore(config_dir=tmp_path).save_password("work", "contacts-password")
+    CalendarPasswordStore(config_dir=tmp_path).save_password("work", "calendar-password")
+    ChatTokenStore(config_dir=tmp_path).save_token("work", "chat-token")
+
+    for store in (
+        TokenStore(config_dir=tmp_path),
+        MailPasswordStore(config_dir=tmp_path),
+        ContactsPasswordStore(config_dir=tmp_path),
+        CalendarPasswordStore(config_dir=tmp_path),
+        ChatTokenStore(config_dir=tmp_path),
+    ):
+        store.delete_profile("work")
+
+    assert not TokenStore(config_dir=tmp_path).has_token("work")
+    assert not MailPasswordStore(config_dir=tmp_path).has_password("work")
+    assert not ContactsPasswordStore(config_dir=tmp_path).has_password("work")
+    assert not CalendarPasswordStore(config_dir=tmp_path).has_password("work")
+    assert not ChatTokenStore(config_dir=tmp_path).has_token("work")
 
 
 

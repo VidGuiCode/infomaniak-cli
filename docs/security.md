@@ -40,7 +40,18 @@ For Hermes/cron, use explicit profile always:
 ik --profile work mail unread
 ```
 
-Do not rely on the last selected default profile in scheduled jobs.
+Do not rely on the last selected default profile in scheduled jobs. Profile selection precedence is explicit `--profile`, then `IK_PROFILE`, then the saved current profile. A missing `IK_PROFILE` value fails clearly instead of silently falling back.
+
+## Local auth lifecycle
+
+Profile lifecycle commands only change local files:
+
+- `ik auth logout` removes the selected profile's main API token.
+- `ik auth logout --all --yes` also removes local mail, contacts, calendar, and chat secrets for that profile.
+- `ik profile rename old new` renames local profile metadata and related local secret files.
+- `ik profile delete name --yes` deletes only that local profile and its related local secrets.
+
+These commands do not revoke remote tokens, change remote services, delete remote data, or touch unrelated profiles.
 
 ## Default permissions model
 

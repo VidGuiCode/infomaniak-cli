@@ -4,7 +4,7 @@ import sys
 
 from infomaniak_cli import cli
 from infomaniak_cli.api import InformaniakAPIError
-from infomaniak_cli.auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, TokenStore
+from infomaniak_cli.auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, MailPasswordStore, TokenStore
 from infomaniak_cli.profiles import ProfileManager
 
 
@@ -44,6 +44,59 @@ def test_auth_token_argument_still_saves_token(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "argument-token" not in captured.out
     assert TokenStore().load_token("work") == "argument-token"
+
+
+def test_auth_logout_removes_only_selected_profile_main_token_by_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    ProfileManager().create_or_update("personal")
+    TokenStore().save_token("work", "work-main-token")
+    TokenStore().save_token("personal", "personal-main-token")
+    MailPasswordStore().save_password("work", "work-mail-password")
+    ContactsPasswordStore().save_password("work", "work-contacts-password")
+    CalendarPasswordStore().save_password("work", "work-calendar-password")
+    ChatTokenStore().save_token("work", "work-chat-token")
+
+    assert cli.main(["auth", "logout", "--yes", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "profile": "work",
+        "removed": {
+            "api_token": True,
+            "calendar_password": False,
+            "chat_token": False,
+            "contacts_password": False,
+            "mail_password": False,
+        },
+    }
+    assert not TokenStore().has_token("work")
+    assert TokenStore().load_token("personal") == "personal-main-token"
+    assert MailPasswordStore().has_password("work")
+    assert ContactsPasswordStore().has_password("work")
+    assert CalendarPasswordStore().has_password("work")
+    assert ChatTokenStore().has_token("work")
+
+
+def test_auth_logout_all_removes_service_specific_local_secrets(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    TokenStore().save_token("work", "work-main-token")
+    MailPasswordStore().save_password("work", "work-mail-password")
+    ContactsPasswordStore().save_password("work", "work-contacts-password")
+    CalendarPasswordStore().save_password("work", "work-calendar-password")
+    ChatTokenStore().save_token("work", "work-chat-token")
+
+    assert cli.main(["auth", "logout", "--all", "--yes"]) == 0
+
+    captured = capsys.readouterr()
+    assert "work-main-token" not in captured.out
+    assert "work-mail-password" not in captured.out
+    assert not TokenStore().has_token("work")
+    assert not MailPasswordStore().has_password("work")
+    assert not ContactsPasswordStore().has_password("work")
+    assert not CalendarPasswordStore().has_password("work")
+    assert not ChatTokenStore().has_token("work")
 
 
 def test_auth_contacts_stdin_saves_password_and_metadata_without_echo(tmp_path, monkeypatch, capsys):
@@ -335,3 +388,122 @@ def test_auth_check_auth_failure_is_clear_and_redacted(tmp_path, monkeypatch, ca
     assert "Auth check: failed" in captured.err
     assert "authentication failed or insufficient scope" in captured.err
     assert token not in captured.err
+
+
+def test_profile_rename_moves_metadata_tokens_and_current(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", account_name="Example Co", make_default=True)
+    TokenStore().save_token("work", "main-token")
+    MailPasswordStore().save_password("work", "mail-password")
+    ContactsPasswordStore().save_password("work", "contacts-password")
+    CalendarPasswordStore().save_password("work", "calendar-password")
+    ChatTokenStore().save_token("work", "chat-token")
+
+    assert cli.main(["profile", "rename", "work", "office", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"old": "work", "new": "office", "current": "office"}
+    manager = ProfileManager()
+    assert not manager.exists("work")
+    assert manager.get("office").account_name == "Example Co"
+    assert manager.get_current_name() == "office"
+    assert not TokenStore().has_token("work")
+    assert TokenStore().load_token("office") == "main-token"
+    assert MailPasswordStore().load_password("office") == "mail-password"
+    assert ContactsPasswordStore().load_password("office") == "contacts-password"
+    assert CalendarPasswordStore().load_password("office") == "calendar-password"
+    assert ChatTokenStore().load_token("office") == "chat-token"
+
+
+def test_profile_rename_fails_if_target_exists(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    ProfileManager().create_or_update("office")
+
+    assert cli.main(["profile", "rename", "work", "office"]) == 1
+
+    captured = capsys.readouterr()
+    assert "already exists" in captured.err
+    assert ProfileManager().exists("work")
+    assert ProfileManager().exists("office")
+
+
+def test_profile_rename_fails_before_metadata_change_if_target_secret_exists(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    TokenStore().save_token("work", "work-token")
+    TokenStore().save_token("office", "orphan-office-token")
+
+    assert cli.main(["profile", "rename", "work", "office"]) == 1
+
+    captured = capsys.readouterr()
+    assert "api_token" in captured.err
+    assert ProfileManager().exists("work")
+    assert not ProfileManager().exists("office")
+    assert TokenStore().load_token("work") == "work-token"
+    assert TokenStore().load_token("office") == "orphan-office-token"
+
+
+def test_profile_delete_yes_removes_profile_and_related_secrets(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    ProfileManager().create_or_update("personal")
+    TokenStore().save_token("work", "work-main-token")
+    TokenStore().save_token("personal", "personal-main-token")
+    MailPasswordStore().save_password("work", "mail-password")
+    ContactsPasswordStore().save_password("work", "contacts-password")
+    CalendarPasswordStore().save_password("work", "calendar-password")
+    ChatTokenStore().save_token("work", "chat-token")
+
+    assert cli.main(["profile", "delete", "work", "--yes", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"deleted": "work", "current": "personal"}
+    assert not ProfileManager().exists("work")
+    assert ProfileManager().exists("personal")
+    assert not TokenStore().has_token("work")
+    assert TokenStore().load_token("personal") == "personal-main-token"
+    assert not MailPasswordStore().has_password("work")
+    assert not ContactsPasswordStore().has_password("work")
+    assert not CalendarPasswordStore().has_password("work")
+    assert not ChatTokenStore().has_token("work")
+
+
+def test_ik_profile_env_is_used_when_profile_omitted(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("IK_PROFILE", "personal")
+    ProfileManager().create_or_update("work", make_default=True)
+    ProfileManager().create_or_update("personal")
+    TokenStore().save_token("personal", "personal-token")
+
+    assert cli.main(["auth", "status", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["profile"] == "personal"
+    assert output["token_configured"] is True
+
+
+def test_explicit_profile_overrides_ik_profile_env(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("IK_PROFILE", "personal")
+    ProfileManager().create_or_update("work", make_default=True)
+    ProfileManager().create_or_update("personal")
+    TokenStore().save_token("work", "work-token")
+
+    assert cli.main(["--profile", "work", "auth", "status", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["profile"] == "work"
+    assert output["token_configured"] is True
+
+
+def test_missing_ik_profile_fails_clearly(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("IK_PROFILE", "missing")
+    ProfileManager().create_or_update("work", make_default=True)
+
+    assert cli.main(["auth", "status"]) == 1
+
+    captured = capsys.readouterr()
+    assert "IK_PROFILE" in captured.err
+    assert "missing" in captured.err

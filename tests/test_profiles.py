@@ -1,4 +1,5 @@
 from infomaniak_cli.profiles import ProfileManager
+import pytest
 
 
 def test_setup_profile_creates_profile_and_current_default(tmp_path):
@@ -73,3 +74,49 @@ def test_profile_metadata_can_replace_discovered_defaults_with_none(tmp_path):
     assert profile.default_drive_id is None
     assert profile.default_drive_name is None
     assert profile.kchat_team_id is None
+
+
+def test_profile_rename_moves_metadata_and_updates_current(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", account_name="Example Co", make_default=True)
+
+    renamed = manager.rename("work", "office")
+
+    assert renamed.name == "office"
+    assert renamed.account_name == "Example Co"
+    assert not manager.exists("work")
+    assert manager.exists("office")
+    assert manager.get_current_name() == "office"
+
+
+def test_profile_rename_fails_if_target_exists(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+    manager.create_or_update("office")
+
+    with pytest.raises(ValueError, match="already exists"):
+        manager.rename("work", "office")
+
+    assert manager.exists("work")
+    assert manager.exists("office")
+
+
+def test_profile_delete_removes_selected_profile_and_clears_current(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+
+    deleted = manager.delete("work")
+
+    assert deleted.name == "work"
+    assert not manager.exists("work")
+    assert manager.get_current_name() is None
+
+
+def test_profile_delete_current_switches_to_remaining_profile(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+    manager.create_or_update("personal")
+
+    manager.delete("work")
+
+    assert manager.get_current_name() == "personal"

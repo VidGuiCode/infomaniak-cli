@@ -115,15 +115,33 @@ ik profile list
 ik profile use work
 ik profile show
 ik profile rename old new
-ik profile delete old
+ik profile delete old --yes
 
 ik auth login
 ik auth logout
+ik auth logout --all --yes
 ik auth status
 ik bootstrap
 ik doctor
 ik whoami
 ```
+
+Profile selection precedence is:
+
+1. explicit `--profile`
+2. `IK_PROFILE`
+3. saved current profile
+
+Use `IK_PROFILE` when you want one terminal session to stay on a profile without changing the saved default:
+
+```bash
+IK_PROFILE=work ik whoami
+IK_PROFILE=work ik mail unread --json
+```
+
+If `IK_PROFILE` names a profile that does not exist, commands fail clearly instead of falling back to the saved current profile.
+
+`ik profile rename old new` renames local profile metadata and related local secret files. `ik profile delete old --yes` deletes only that local profile and its related local secrets. `ik auth logout` removes only the selected profile's main API token by default; `ik auth logout --all --yes` also removes local service-specific secrets for mail, contacts, calendar, and chat. None of these commands change remote Informaniak/kSuite services.
 
 ## Smart auth behavior
 

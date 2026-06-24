@@ -120,6 +120,53 @@ class ProfileManager:
     def set_current(self, name: str) -> None:
         if not self.exists(name):
             raise KeyError(f"Profile not found: {name}")
+        self._write_current(name)
+
+    def clear_current(self) -> None:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_file.write_text(
+            json.dumps({}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def rename(self, old: str, new: str) -> Profile:
+        old_path = self._profile_path(old)
+        new_path = self._profile_path(new)
+        if not old_path.exists():
+            raise KeyError(f"Profile not found: {old}")
+        if new_path.exists():
+            raise ValueError(f"Profile already exists: {new}")
+
+        profile = self.get(old)
+        data = profile.to_dict()
+        data["name"] = new.strip()
+        data["updated_at"] = utc_now_iso()
+        renamed = Profile.from_dict(data)
+        self.save(renamed)
+        old_path.unlink()
+
+        if self.get_current_name() == old.strip():
+            self._write_current(renamed.name)
+
+        return renamed
+
+    def delete(self, name: str) -> Profile:
+        path = self._profile_path(name)
+        if not path.exists():
+            raise KeyError(f"Profile not found: {name}")
+        profile = self.get(name)
+        path.unlink()
+
+        if self.get_current_name() == name.strip():
+            remaining = self.list_names()
+            if remaining:
+                self._write_current(remaining[0])
+            else:
+                self.clear_current()
+
+        return profile
+
+    def _write_current(self, name: str) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.config_file.write_text(
             json.dumps({"current_profile": name}, indent=2, sort_keys=True),

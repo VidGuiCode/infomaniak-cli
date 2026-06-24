@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import sys
 from typing import Any, Mapping
 
@@ -64,6 +65,89 @@ from .services.mail_discovery import (
 
 def print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _resolve_profile_name(manager: ProfileManager, explicit: str | None = None) -> str:
+    env_profile = os.environ.get("IK_PROFILE")
+    if explicit:
+        name = explicit
+        source = "--profile"
+    elif env_profile:
+        name = env_profile
+        source = "IK_PROFILE"
+    else:
+        name = manager.get_current_name()
+        source = "current profile"
+
+    if not name:
+        raise ValueError("No profile selected. Run `ik setup --profile <name>` first.")
+
+    if source == "IK_PROFILE" and not manager.exists(name):
+        raise ValueError(f"Profile from IK_PROFILE not found: {name}. Run `ik profile list` or unset IK_PROFILE.")
+    if not manager.exists(name):
+        raise ValueError(f"Profile not found: {name}. Run `ik profile list`.")
+
+    return name
+
+
+def _local_secret_stores() -> tuple[Any, ...]:
+    return (
+        TokenStore(),
+        MailPasswordStore(),
+        ContactsPasswordStore(),
+        CalendarPasswordStore(),
+        ChatTokenStore(),
+    )
+
+
+def _rename_profile_secrets(old: str, new: str) -> None:
+    for store in _local_secret_stores():
+        store.rename_profile(old, new)
+
+
+def _profile_secret_rename_conflicts(old: str, new: str) -> list[str]:
+    conflicts = []
+    if TokenStore().has_token(old) and TokenStore().has_token(new):
+        conflicts.append("api_token")
+    if MailPasswordStore().has_password(old) and MailPasswordStore().has_password(new):
+        conflicts.append("mail_password")
+    if ContactsPasswordStore().has_password(old) and ContactsPasswordStore().has_password(new):
+        conflicts.append("contacts_password")
+    if CalendarPasswordStore().has_password(old) and CalendarPasswordStore().has_password(new):
+        conflicts.append("calendar_password")
+    if ChatTokenStore().has_token(old) and ChatTokenStore().has_token(new):
+        conflicts.append("chat_token")
+    return conflicts
+
+
+def _delete_profile_secrets(name: str) -> None:
+    for store in _local_secret_stores():
+        store.delete_profile(name)
+
+
+def _delete_auth_for_profile(name: str, *, all_secrets: bool = False) -> dict[str, bool]:
+    token_store = TokenStore()
+    mail_store = MailPasswordStore()
+    contacts_store = ContactsPasswordStore()
+    calendar_store = CalendarPasswordStore()
+    chat_store = ChatTokenStore()
+
+    removed = {
+        "api_token": token_store.has_token(name),
+        "mail_password": all_secrets and mail_store.has_password(name),
+        "contacts_password": all_secrets and contacts_store.has_password(name),
+        "calendar_password": all_secrets and calendar_store.has_password(name),
+        "chat_token": all_secrets and chat_store.has_token(name),
+    }
+
+    token_store.delete_token(name)
+    if all_secrets:
+        mail_store.delete_password(name)
+        contacts_store.delete_password(name)
+        calendar_store.delete_password(name)
+        chat_store.delete_token(name)
+
+    return removed
 
 
 def _make_api_client(token: str, base_url: str) -> InformaniakAPIClient:
@@ -168,10 +252,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def cmd_whoami(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    profile_name = args.profile or manager.get_current_name()
-    if not profile_name:
-        print("No profile configured. Run `ik setup --profile <name>` first.", file=sys.stderr)
-        return 1
+    profile_name = _resolve_profile_name(manager, args.profile)
 
     profile = manager.get(profile_name)
     mail_state = _mail_state(profile, profile.name)
@@ -231,7 +312,11 @@ def cmd_whoami(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    data = run_doctor(args.profile)
+    manager = ProfileManager()
+    profile_name = None
+    if args.profile or os.environ.get("IK_PROFILE"):
+        profile_name = _resolve_profile_name(manager, args.profile)
+    data = run_doctor(profile_name)
     if args.json:
         print_json(data)
         return 0
@@ -382,10 +467,7 @@ def cmd_profile_list(args: argparse.Namespace) -> int:
 
 def cmd_profile_show(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected.", file=sys.stderr)
-        return 1
+    name = args.name or _resolve_profile_name(manager, args.profile)
     profile = manager.get(name)
     if args.json:
         print_json(profile.to_dict())
@@ -402,12 +484,49 @@ def cmd_profile_use(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_profile_rename(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    conflicts = _profile_secret_rename_conflicts(args.old, args.new)
+    if conflicts:
+        raise ValueError(
+            f"Cannot rename profile secrets because target profile already has: {', '.join(conflicts)}"
+        )
+    renamed = manager.rename(args.old, args.new)
+    _rename_profile_secrets(args.old, args.new)
+    data = {"old": args.old, "new": renamed.name, "current": manager.get_current_name()}
+    if args.json:
+        print_json(data)
+    else:
+        print(f"Profile renamed: {args.old} -> {renamed.name}")
+        print(f"Current profile: {data['current'] or 'none'}")
+    return 0
+
+
+def cmd_profile_delete(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    profile = manager.get(args.name)
+    if not args.yes and not args.json:
+        answer = input(f"Delete local profile '{profile.name}' and its local secrets? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Profile delete cancelled.")
+            return 0
+    if not args.yes and args.json:
+        raise ValueError("profile delete requires --yes when --json is used")
+
+    deleted = manager.delete(profile.name)
+    _delete_profile_secrets(deleted.name)
+    data = {"deleted": deleted.name, "current": manager.get_current_name()}
+    if args.json:
+        print_json(data)
+    else:
+        print(f"Profile deleted: {deleted.name}")
+        print(f"Current profile: {data['current'] or 'none'}")
+    return 0
+
+
 def cmd_auth_status(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected.", file=sys.stderr)
-        return 1
+    name = _resolve_profile_name(manager, args.profile)
     store = TokenStore()
     data = {"profile": name, "token_configured": store.has_token(name), "token": store.redacted_token(name)}
     if args.json:
@@ -420,12 +539,34 @@ def cmd_auth_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auth_logout(args: argparse.Namespace) -> int:
+    manager = ProfileManager()
+    name = _resolve_profile_name(manager, args.profile)
+    if not args.yes and not args.json:
+        scope = "main API token and service-specific local secrets" if args.all else "main API token"
+        answer = input(f"Remove {scope} for profile '{name}'? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Logout cancelled.")
+            return 0
+    if not args.yes and args.json:
+        raise ValueError("auth logout requires --yes when --json is used")
+
+    removed = _delete_auth_for_profile(name, all_secrets=args.all)
+    data = {"profile": name, "removed": removed}
+    if args.json:
+        print_json(data)
+    else:
+        print(f"Logged out profile: {name}")
+        if args.all:
+            print("Removed: main API token and service-specific local secrets")
+        else:
+            print("Removed: main API token")
+    return 0
+
+
 def cmd_auth_token(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected.", file=sys.stderr)
-        return 1
+    name = _resolve_profile_name(manager, args.profile)
     if args.stdin and args.token:
         print("error: use either --token or --stdin, not both", file=sys.stderr)
         return 2
@@ -440,10 +581,7 @@ def cmd_auth_token(args: argparse.Namespace) -> int:
 
 def cmd_auth_check(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected.", file=sys.stderr)
-        return 1
+    name = _resolve_profile_name(manager, args.profile)
 
     token_store = TokenStore()
     if not token_store.has_token(name):
@@ -476,10 +614,7 @@ def cmd_auth_check(args: argparse.Namespace) -> int:
 
 def cmd_auth_mail(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected.", file=sys.stderr)
-        return 1
+    name = _resolve_profile_name(manager, args.profile)
     if args.stdin and args.password:
         print("error: use either --password or --stdin, not both", file=sys.stderr)
         return 2
@@ -506,10 +641,7 @@ def cmd_auth_mail(args: argparse.Namespace) -> int:
 
 def cmd_auth_contacts(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected.", file=sys.stderr)
-        return 1
+    name = _resolve_profile_name(manager, args.profile)
     if args.stdin and args.password:
         print("error: use either --password or --stdin, not both", file=sys.stderr)
         return 2
@@ -537,10 +669,7 @@ def cmd_auth_contacts(args: argparse.Namespace) -> int:
 
 def cmd_auth_calendar(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected.", file=sys.stderr)
-        return 1
+    name = _resolve_profile_name(manager, args.profile)
     if args.stdin and args.password:
         print("error: use either --password or --stdin, not both", file=sys.stderr)
         return 2
@@ -568,10 +697,7 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
 
 def cmd_auth_chat(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected.", file=sys.stderr)
-        return 1
+    name = _resolve_profile_name(manager, args.profile)
     if args.stdin and args.token:
         print("error: use either --token or --stdin, not both", file=sys.stderr)
         return 2
@@ -656,9 +782,7 @@ def _mail_profile_or_error(args: argparse.Namespace) -> tuple[Any, str, str, str
     Raises ValueError if any required mail config is missing.
     """
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        raise ValueError("No profile configured. Run `ik setup --profile <name>` first.")
+    name = _resolve_profile_name(manager, args.profile)
 
     profile = manager.get(name)
     mailbox = profile.default_mailbox
@@ -693,9 +817,7 @@ def _mail_profile_and_client(args: argparse.Namespace) -> tuple[Any, IMAPClient]
 
 def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, ContactsClient]:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        raise ValueError("No profile configured. Run `ik setup --profile <name>` first.")
+    name = _resolve_profile_name(manager, args.profile)
 
     profile = manager.get(name)
     if not profile.contacts_url or not profile.contacts_username:
@@ -716,9 +838,7 @@ def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, Contact
 
 def _calendar_profile_and_client(args: argparse.Namespace) -> tuple[Any, CalendarClient]:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        raise ValueError("No profile configured. Run `ik setup --profile <name>` first.")
+    name = _resolve_profile_name(manager, args.profile)
 
     profile = manager.get(name)
     if not profile.calendar_url or not profile.calendar_username:
@@ -739,9 +859,7 @@ def _calendar_profile_and_client(args: argparse.Namespace) -> tuple[Any, Calenda
 
 def _chat_profile_and_client(args: argparse.Namespace) -> tuple[Any, ChatClient]:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        raise ValueError("No profile configured. Run `ik setup --profile <name>` first.")
+    name = _resolve_profile_name(manager, args.profile)
 
     profile = manager.get(name)
     if not profile.kchat_url:
@@ -1039,9 +1157,7 @@ def cmd_mail_threads(args: argparse.Namespace) -> int:
 
 def _profile_for_mail_discovery(args: argparse.Namespace) -> Any:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        raise ValueError("No profile selected. Run `ik setup --profile <name>` first.")
+    name = _resolve_profile_name(manager, args.profile)
     return manager.get(name)
 
 
@@ -1127,10 +1243,7 @@ def cmd_mail_hostings(args: argparse.Namespace) -> int:
 
 def cmd_bootstrap(args: argparse.Namespace) -> int:
     manager = ProfileManager()
-    name = args.profile or manager.get_current_name()
-    if not name:
-        print("No profile selected. Run `ik setup --profile <name>` first.", file=sys.stderr)
-        return 1
+    name = _resolve_profile_name(manager, args.profile)
 
     token_store = TokenStore()
     if not token_store.has_token(name):
@@ -1159,9 +1272,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 
 def _profile_and_client(profile_name: str | None = None, base_url: str = DEFAULT_BASE_URL) -> tuple[Any, InformaniakAPIClient]:
     manager = ProfileManager()
-    name = profile_name or manager.get_current_name()
-    if not name:
-        raise ValueError("No profile selected. Run `ik setup --profile <name>` first.")
+    name = _resolve_profile_name(manager, profile_name)
 
     profile = manager.get(name)
     token_store = TokenStore()
@@ -1875,16 +1986,31 @@ def build_parser() -> argparse.ArgumentParser:
     profile_show = profile_sub.add_parser("show")
     profile_show.add_argument("name", nargs="?")
     profile_show.add_argument("--json", action="store_true")
-    profile_show.set_defaults(func=lambda args: (setattr(args, "profile", args.name) or cmd_profile_show(args)))
+    profile_show.set_defaults(func=cmd_profile_show)
     profile_use = profile_sub.add_parser("use")
     profile_use.add_argument("name")
     profile_use.set_defaults(func=cmd_profile_use)
+    profile_rename = profile_sub.add_parser("rename", help="Rename a local profile")
+    profile_rename.add_argument("old")
+    profile_rename.add_argument("new")
+    profile_rename.add_argument("--json", action="store_true")
+    profile_rename.set_defaults(func=cmd_profile_rename)
+    profile_delete = profile_sub.add_parser("delete", help="Delete a local profile and its local secrets")
+    profile_delete.add_argument("name")
+    profile_delete.add_argument("--yes", action="store_true", help="Delete without prompting.")
+    profile_delete.add_argument("--json", action="store_true")
+    profile_delete.set_defaults(func=cmd_profile_delete)
 
     auth = sub.add_parser("auth", help="Manage per-profile auth material")
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
     auth_status = auth_sub.add_parser("status")
     auth_status.add_argument("--json", action="store_true")
     auth_status.set_defaults(func=cmd_auth_status)
+    auth_logout = auth_sub.add_parser("logout", help="Remove saved local auth for the selected profile")
+    auth_logout.add_argument("--all", action="store_true", help="Also remove mail, contacts, calendar, and chat secrets.")
+    auth_logout.add_argument("--yes", action="store_true", help="Remove without prompting.")
+    auth_logout.add_argument("--json", action="store_true")
+    auth_logout.set_defaults(func=cmd_auth_logout)
     auth_token = auth_sub.add_parser("token")
     auth_token.add_argument("--token", help="Token value. Omit to prompt.")
     auth_token.add_argument("--stdin", action="store_true", help="Read the token from standard input.")

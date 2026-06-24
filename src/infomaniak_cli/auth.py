@@ -38,6 +38,19 @@ class TokenStore:
     def delete_token(self, profile: str) -> None:
         self._token_path(profile).unlink(missing_ok=True)
 
+    def rename_profile(self, old: str, new: str) -> None:
+        old_path = self._token_path(old)
+        new_path = self._token_path(new)
+        if not old_path.exists():
+            return
+        if new_path.exists():
+            raise ValueError(f"Token already exists for profile: {new}")
+        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        old_path.replace(new_path)
+
+    def delete_profile(self, profile: str) -> None:
+        self.delete_token(profile)
+
     def _token_path(self, profile: str) -> Path:
         safe_profile = profile.strip()
         if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
@@ -73,6 +86,19 @@ class MailPasswordStore:
 
     def delete_password(self, profile: str) -> None:
         self._password_path(profile).unlink(missing_ok=True)
+
+    def rename_profile(self, old: str, new: str) -> None:
+        old_path = self._password_path(old)
+        new_path = self._password_path(new)
+        if not old_path.exists():
+            return
+        if new_path.exists():
+            raise ValueError(f"Mail password already exists for profile: {new}")
+        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        old_path.replace(new_path)
+
+    def delete_profile(self, profile: str) -> None:
+        self.delete_password(profile)
 
     def _password_path(self, profile: str) -> Path:
         safe_profile = profile.strip()
@@ -110,6 +136,19 @@ class ContactsPasswordStore:
     def delete_password(self, profile: str) -> None:
         self._password_path(profile).unlink(missing_ok=True)
 
+    def rename_profile(self, old: str, new: str) -> None:
+        old_path = self._password_path(old)
+        new_path = self._password_path(new)
+        if not old_path.exists():
+            return
+        if new_path.exists():
+            raise ValueError(f"Contacts password already exists for profile: {new}")
+        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        old_path.replace(new_path)
+
+    def delete_profile(self, profile: str) -> None:
+        self.delete_password(profile)
+
     def _password_path(self, profile: str) -> Path:
         safe_profile = profile.strip()
         if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
@@ -146,6 +185,19 @@ class CalendarPasswordStore:
     def delete_password(self, profile: str) -> None:
         self._password_path(profile).unlink(missing_ok=True)
 
+    def rename_profile(self, old: str, new: str) -> None:
+        old_path = self._password_path(old)
+        new_path = self._password_path(new)
+        if not old_path.exists():
+            return
+        if new_path.exists():
+            raise ValueError(f"Calendar password already exists for profile: {new}")
+        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        old_path.replace(new_path)
+
+    def delete_profile(self, profile: str) -> None:
+        self.delete_password(profile)
+
     def _password_path(self, profile: str) -> Path:
         safe_profile = profile.strip()
         if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
@@ -181,6 +233,19 @@ class ChatTokenStore:
 
     def delete_token(self, profile: str) -> None:
         self._token_path(profile).unlink(missing_ok=True)
+
+    def rename_profile(self, old: str, new: str) -> None:
+        old_path = self._token_path(old)
+        new_path = self._token_path(new)
+        if not old_path.exists():
+            return
+        if new_path.exists():
+            raise ValueError(f"Chat token already exists for profile: {new}")
+        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        old_path.replace(new_path)
+
+    def delete_profile(self, profile: str) -> None:
+        self.delete_token(profile)
 
     def _token_path(self, profile: str) -> Path:
         safe_profile = profile.strip()
