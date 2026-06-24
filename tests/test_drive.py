@@ -218,6 +218,31 @@ def test_cli_drive_list_json_uses_profile_default_drive_id(tmp_path, monkeypatch
     assert fake_api.calls == [("/2/drive/drive-1/files", None)]
 
 
+def test_cli_drive_list_table_outputs_dense_human_table(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI(
+        {
+            "/2/drive/drive-1/files": {
+                "result": "success",
+                "data": [
+                    {"id": "folder-1", "name": "Admin", "type": "folder", "last_modified_at": "2026-06-01"},
+                    {"id": "file-1", "name": "Invoice.pdf", "type": "file", "last_modified_at": "2026-06-02"},
+                ],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["drive", "list", "--table"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("Type")
+    assert "folder" in lines[2]
+    assert "Invoice.pdf" in lines[3]
+
+
 def test_cli_drive_list_json_raw_emits_full_payload(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)

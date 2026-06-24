@@ -158,6 +158,20 @@ def test_cli_account_services_json_allows_explicit_account_id(tmp_path, monkeypa
     assert fake_api.calls == [("/1/accounts/99/services", None)]
 
 
+def test_cli_account_services_compact_is_single_line_slim_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", account_id="42", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    fake_api = FakeAPI({"/1/accounts/42/services": {"result": "success", "data": [{"id": "drive-1"}]}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["account", "services", "--compact"]) == 0
+
+    captured = capsys.readouterr()
+    assert "\n" not in captured.out.rstrip("\n")
+    assert json.loads(captured.out) == {"profile": "work", "account_id": "42", "services": [{"id": "drive-1"}]}
+
+
 def test_cli_account_products_requires_account_id_when_profile_has_none(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("work", make_default=True)

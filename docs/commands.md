@@ -290,18 +290,45 @@ ik mail unread --json
 ik drive search "invoice" --json
 ```
 
-Compact mode:
+Compact single-line slim JSON:
 
 ```bash
 ik doctor --compact
+ik drive search "invoice" --compact
+ik mail read <uid> --compact
 ```
+
+Dense human table mode:
+
+```bash
+ik drive list --table
+ik account services --table
+ik chat users --table
+```
+
+`--compact` implies machine-readable JSON and does not require `--json`. `--table` is human-facing and not a stable machine contract. `--table` cannot be combined with `--json` or `--compact`.
+
+When `--json` or `--compact` is active, common command errors use this stderr shape:
+
+```json
+{"error":{"exit_code":1,"message":"No profile selected. Run `ik setup --profile <name>` first.","type":"missing_profile"}}
+```
+
+Current exit-code reality:
+
+- `0`: success
+- `1`: general runtime/config/auth/API error
+- `2`: some validation/usage errors, especially parser errors and legacy mail date validation
+
+Future versions may split missing config, auth failures, and network/API unavailable into more specific codes.
 
 ## Safety flags
 
 ```bash
 --profile <name>   # force profile
 --json             # JSON output
---compact          # shorter output
+--compact          # single-line slim JSON
+--table            # dense human-readable table where supported
 --yes              # skip confirmation for safe scripted writes only
 --dry-run          # show what would happen
 ```

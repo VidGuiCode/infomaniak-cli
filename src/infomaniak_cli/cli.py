@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import json
 import os
 import sys
 from typing import Any, Mapping
@@ -14,6 +13,7 @@ from .auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, 
 from .bootstrap import BootstrapError, bootstrap_profile
 from .debug import probe_profile
 from .doctor import run_doctor
+from .output import compact_json, error_json, pretty_json, redact, render_table
 from .profiles import ProfileManager
 from .services.account import list_accounts, list_products, list_services, slim_accounts
 from .services.calendar import (
@@ -64,7 +64,40 @@ from .services.mail_discovery import (
 
 
 def print_json(data: Any) -> None:
-    print(json.dumps(data, indent=2, sort_keys=True))
+    print(pretty_json(data))
+
+
+def print_machine(data: Any, args: argparse.Namespace) -> None:
+    if getattr(args, "compact", False):
+        print(compact_json(data))
+    else:
+        print_json(data)
+
+
+def _machine_output(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "json", False) or getattr(args, "compact", False))
+
+
+def _raw_output(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "raw", False) and getattr(args, "json", False) and not getattr(args, "compact", False))
+
+
+def _validate_output_modes(args: argparse.Namespace) -> None:
+    if getattr(args, "table", False) and _machine_output(args):
+        raise ValueError("--table cannot be combined with --json or --compact")
+
+
+def _error_type(exc: Exception) -> str:
+    message = str(exc)
+    if "No profile" in message or "Profile from IK_PROFILE" in message or "Profile not found" in message:
+        return "missing_profile"
+    if "No token configured" in message or "authentication failed" in message.lower() or "Unauthorized" in message:
+        return "auth_failure"
+    if isinstance(exc, InformaniakAPIError):
+        return "api_error"
+    if isinstance(exc, ValueError):
+        return "validation_error"
+    return "runtime_error"
 
 
 def _resolve_profile_name(manager: ProfileManager, explicit: str | None = None) -> str:
@@ -283,8 +316,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "kchat_explicit_token_configured": chat_explicit_token_configured,
         "kchat_main_token_fallback_possible": chat_main_token_fallback_possible,
     }
-    if args.json:
-        print_json(data)
+    if _machine_output(args):
+        print_machine(data, args)
     else:
         print(f"Profile: {profile.name}")
         print(f"Informaniak user: {profile.informaniak_user or 'not configured'}")
@@ -494,8 +527,8 @@ def cmd_profile_rename(args: argparse.Namespace) -> int:
     renamed = manager.rename(args.old, args.new)
     _rename_profile_secrets(args.old, args.new)
     data = {"old": args.old, "new": renamed.name, "current": manager.get_current_name()}
-    if args.json:
-        print_json(data)
+    if _machine_output(args):
+        print_machine(data, args)
     else:
         print(f"Profile renamed: {args.old} -> {renamed.name}")
         print(f"Current profile: {data['current'] or 'none'}")
@@ -516,8 +549,8 @@ def cmd_profile_delete(args: argparse.Namespace) -> int:
     deleted = manager.delete(profile.name)
     _delete_profile_secrets(deleted.name)
     data = {"deleted": deleted.name, "current": manager.get_current_name()}
-    if args.json:
-        print_json(data)
+    if _machine_output(args):
+        print_machine(data, args)
     else:
         print(f"Profile deleted: {deleted.name}")
         print(f"Current profile: {data['current'] or 'none'}")
@@ -553,8 +586,8 @@ def cmd_auth_logout(args: argparse.Namespace) -> int:
 
     removed = _delete_auth_for_profile(name, all_secrets=args.all)
     data = {"profile": name, "removed": removed}
-    if args.json:
-        print_json(data)
+    if _machine_output(args):
+        print_machine(data, args)
     else:
         print(f"Logged out profile: {name}")
         if args.all:
@@ -593,9 +626,11 @@ def cmd_auth_check(args: argparse.Namespace) -> int:
         profile_data = _unwrap_success_data(client.get("/2/profile"))
         user = _profile_user(profile_data)
     except InformaniakAPIError as exc:
+        if getattr(args, "compact", False):
+            raise
         data = {"ok": False, "profile": name, "user": None, "error": str(exc)}
-        if args.json:
-            print_json(data)
+        if _machine_output(args):
+            print_machine(data, args)
         else:
             print("Auth check: failed", file=sys.stderr)
             print(f"Profile: {name}", file=sys.stderr)
@@ -603,8 +638,8 @@ def cmd_auth_check(args: argparse.Namespace) -> int:
         return 1
 
     data = {"ok": True, "profile": name, "user": user}
-    if args.json:
-        print_json(data)
+    if _machine_output(args):
+        print_machine(data, args)
     else:
         print("Auth check: ok")
         print(f"Profile: {name}")
@@ -983,12 +1018,19 @@ def cmd_mail_list(args: argparse.Namespace) -> int:
     try:
         since, before, on = _resolve_mail_dates(args)
     except ValueError as exc:
+        if getattr(args, "compact", False):
+            raise
+        if getattr(args, "json", False):
+            print(error_json(_error_type(exc), str(exc), 2), file=sys.stderr)
+            return 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     try:
         profile, client = _mail_profile_and_client(args)
     except ValueError as exc:
+        if _machine_output(args):
+            raise
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -1004,12 +1046,17 @@ def cmd_mail_list(args: argparse.Namespace) -> int:
                 order="oldest" if args.oldest_first else "newest",
             )
     except MailError as exc:
+        if _machine_output(args):
+            raise
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if args.json:
-        output = items if args.raw else [slim_message(item) for item in items]
-        print_json({"profile": profile.name, "folder": args.folder, "count": len(items), "messages": output})
+    if _machine_output(args):
+        output = items if _raw_output(args) else [slim_message(item) for item in items]
+        payload = {"profile": profile.name, "folder": args.folder, "count": len(items), "messages": output}
+        if getattr(args, "unread", False):
+            payload["unread"] = True
+        print_machine(payload, args)
     else:
         status = "Unread messages" if args.unread else "Messages"
         print(f"{status} in {args.folder}: {len(items)}")
@@ -1028,12 +1075,19 @@ def cmd_mail_search(args: argparse.Namespace) -> int:
     try:
         since, before, on = _resolve_mail_dates(args)
     except ValueError as exc:
+        if getattr(args, "compact", False):
+            raise
+        if getattr(args, "json", False):
+            print(error_json(_error_type(exc), str(exc), 2), file=sys.stderr)
+            return 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     try:
         profile, client = _mail_profile_and_client(args)
     except ValueError as exc:
+        if _machine_output(args):
+            raise
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -1050,19 +1104,22 @@ def cmd_mail_search(args: argparse.Namespace) -> int:
                 order="oldest" if args.oldest_first else "newest",
             )
     except MailError as exc:
+        if _machine_output(args):
+            raise
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if args.json:
-        output = items if args.raw else [slim_message(item) for item in items]
-        print_json(
+    if _machine_output(args):
+        output = items if _raw_output(args) else [slim_message(item) for item in items]
+        print_machine(
             {
                 "profile": profile.name,
                 "folder": args.folder,
                 "query": args.query,
                 "count": len(items),
                 "messages": output,
-            }
+            },
+            args,
         )
     else:
         status = "Unread search results" if args.unread else "Search results"
@@ -1076,6 +1133,8 @@ def cmd_mail_read(args: argparse.Namespace) -> int:
     try:
         profile, client = _mail_profile_and_client(args)
     except ValueError as exc:
+        if _machine_output(args):
+            raise
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -1084,13 +1143,15 @@ def cmd_mail_read(args: argparse.Namespace) -> int:
         with client:
             msg = client.fetch_message(args.uid, folder=folder)
     except MailError as exc:
+        if _machine_output(args):
+            raise
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if args.json:
-        if not args.raw:
+    if _machine_output(args):
+        if not _raw_output(args):
             msg = slim_message(msg)
-        print_json({"profile": profile.name, "uid": args.uid, "folder": folder, "message": msg})
+        print_machine({"profile": profile.name, "uid": args.uid, "folder": folder, "message": msg}, args)
     else:
         print(f"UID: {args.uid}")
         print(f"Folder: {folder}")
@@ -1189,11 +1250,11 @@ def cmd_mail_mailboxes(args: argparse.Namespace) -> int:
             f"`ik --profile {profile.name} auth mail --mailbox <email>` to configure one manually."
         )
 
-    if args.json:
-        output_mailboxes = mailboxes if args.raw else [
+    if _machine_output(args):
+        output_mailboxes = mailboxes if _raw_output(args) else [
             slim_mailbox(mailbox, mail_hosting_id=profile.mail_hosting_id, source=source) for mailbox in mailboxes
         ]
-        print_json(
+        print_machine(
             {
                 "profile": profile.name,
                 "account_id": profile.account_id,
@@ -1201,8 +1262,12 @@ def cmd_mail_mailboxes(args: argparse.Namespace) -> int:
                 "default_mailbox": profile.default_mailbox,
                 "count": len(mailboxes),
                 "mailboxes": output_mailboxes,
-            }
+            },
+            args,
         )
+    elif getattr(args, "table", False):
+        rows = [slim_mailbox(mailbox, mail_hosting_id=profile.mail_hosting_id, source=source) for mailbox in mailboxes]
+        print(render_table(rows, [("id", "ID"), ("email", "Email"), ("source", "Source"), ("mail_hosting_id", "Hosting")]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Mail hosting ID: {profile.mail_hosting_id or 'not selected'}")
@@ -1219,16 +1284,23 @@ def cmd_mail_hostings(args: argparse.Namespace) -> int:
     account_id = _account_id_or_error(args, profile)
     hostings = list_mail_hostings(client, account_id)
 
-    if args.json:
-        output_hostings = hostings if args.raw else [slim_mail_hosting(hosting) for hosting in hostings]
-        print_json(
+    if _machine_output(args):
+        output_hostings = hostings if _raw_output(args) else [slim_mail_hosting(hosting) for hosting in hostings]
+        print_machine(
             {
                 "profile": profile.name,
                 "account_id": account_id,
                 "count": len(hostings),
                 "hostings": output_hostings,
-            }
+            },
+            args,
         )
+    elif getattr(args, "table", False):
+        print(render_table([slim_mail_hosting(hosting) for hosting in hostings], [
+            ("id", "ID"),
+            ("name", "Name"),
+            ("type", "Type"),
+        ]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Account ID: {account_id}")
@@ -1422,8 +1494,10 @@ def cmd_account_services(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     account_id = _account_id_or_error(args, profile)
     services = list_services(client, account_id)
-    if args.json:
-        print_json({"profile": profile.name, "account_id": account_id, "services": services})
+    if _machine_output(args):
+        print_machine({"profile": profile.name, "account_id": account_id, "services": services}, args)
+    elif getattr(args, "table", False):
+        print(render_table(services, [("id", "ID"), ("name", "Name"), ("type", "Type"), ("service_name", "Service")]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Account ID: {account_id}")
@@ -1444,17 +1518,25 @@ def cmd_drive_list(args: argparse.Namespace) -> int:
             raise _drive_404_error(drive_id) from exc
         raise
 
-    if args.json:
-        output_files = files if args.raw else slim_files(files, drive_id=drive_id)
-        print_json(
+    if _machine_output(args):
+        output_files = files if _raw_output(args) else slim_files(files, drive_id=drive_id)
+        print_machine(
             {
                 "profile": profile.name,
                 "drive_id": drive_id,
                 "parent_id": args.parent_id,
                 "count": len(files),
                 "files": output_files,
-            }
+            },
+            args,
         )
+    elif getattr(args, "table", False):
+        print(render_table(slim_files(files, drive_id=drive_id), [
+            ("type", "Type"),
+            ("id", "ID"),
+            ("last_modified_at", "Modified"),
+            ("name", "Name"),
+        ]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Drive ID: {drive_id}")
@@ -1548,16 +1630,17 @@ def cmd_drive_search(args: argparse.Namespace) -> int:
             raise _drive_404_error(drive_id) from exc
         raise
 
-    if args.json:
-        output_files = files if args.raw else slim_files(files, drive_id=drive_id)
-        print_json(
+    if _machine_output(args):
+        output_files = files if _raw_output(args) else slim_files(files, drive_id=drive_id)
+        print_machine(
             {
                 "profile": profile.name,
                 "drive_id": drive_id,
                 "query": args.query,
                 "count": len(files),
                 "files": output_files,
-            }
+            },
+            args,
         )
     else:
         print(f"Profile: {profile.name}")
@@ -1583,9 +1666,9 @@ def cmd_drive_info(args: argparse.Namespace) -> int:
     if file_item is None:
         raise ValueError(f"kDrive file not found in drive {drive_id}: {args.file_id}")
 
-    output_file = file_item if args.raw else slim_file(file_item, drive_id=drive_id)
-    if args.json:
-        print_json({"profile": profile.name, "drive_id": drive_id, "file_id": args.file_id, "file": output_file})
+    output_file = file_item if _raw_output(args) else slim_file(file_item, drive_id=drive_id)
+    if _machine_output(args):
+        print_machine({"profile": profile.name, "drive_id": drive_id, "file_id": args.file_id, "file": output_file}, args)
     else:
         print(f"Profile: {profile.name}")
         print(f"Drive ID: {drive_id}")
@@ -1611,9 +1694,16 @@ def cmd_contacts_list(args: argparse.Namespace) -> int:
     profile, client = _contacts_profile_and_client(args)
     contacts = client.list_contacts(limit=args.limit)
 
-    if args.json:
-        output_contacts = contacts if args.raw else slim_contacts(contacts)
-        print_json({"profile": profile.name, "count": len(contacts), "contacts": output_contacts})
+    if _machine_output(args):
+        output_contacts = contacts if _raw_output(args) else slim_contacts(contacts)
+        print_machine({"profile": profile.name, "count": len(contacts), "contacts": output_contacts}, args)
+    elif getattr(args, "table", False):
+        print(render_table(slim_contacts(contacts), [
+            ("id", "ID"),
+            ("display_name", "Name"),
+            ("emails", "Email"),
+            ("organization", "Organization"),
+        ]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Contacts: {len(contacts)}")
@@ -1628,15 +1718,16 @@ def cmd_contacts_search(args: argparse.Namespace) -> int:
     profile, client = _contacts_profile_and_client(args)
     contacts = search_contacts(client.list_contacts(), args.query, limit=args.limit)
 
-    if args.json:
-        output_contacts = contacts if args.raw else slim_contacts(contacts)
-        print_json(
+    if _machine_output(args):
+        output_contacts = contacts if _raw_output(args) else slim_contacts(contacts)
+        print_machine(
             {
                 "profile": profile.name,
                 "query": args.query,
                 "count": len(contacts),
                 "contacts": output_contacts,
-            }
+            },
+            args,
         )
     else:
         print(f"Profile: {profile.name}")
@@ -1655,9 +1746,9 @@ def cmd_contacts_show(args: argparse.Namespace) -> int:
     if contact is None:
         raise ValueError(f"Contact not found: {args.contact_id}")
 
-    output_contact = contact if args.raw else slim_contact(contact)
-    if args.json:
-        print_json({"profile": profile.name, "contact_id": args.contact_id, "contact": output_contact})
+    output_contact = contact if _raw_output(args) else slim_contact(contact)
+    if _machine_output(args):
+        print_machine({"profile": profile.name, "contact_id": args.contact_id, "contact": output_contact}, args)
     else:
         print(f"Profile: {profile.name}")
         print(f"Contact ID: {args.contact_id}")
@@ -1678,9 +1769,11 @@ def cmd_calendar_list(args: argparse.Namespace) -> int:
     profile, client = _calendar_profile_and_client(args)
     calendars = client.list_calendars()
 
-    if args.json:
-        output_calendars = calendars if args.raw else slim_calendars(calendars)
-        print_json({"profile": profile.name, "count": len(calendars), "calendars": output_calendars})
+    if _machine_output(args):
+        output_calendars = calendars if _raw_output(args) else slim_calendars(calendars)
+        print_machine({"profile": profile.name, "count": len(calendars), "calendars": output_calendars}, args)
+    elif getattr(args, "table", False):
+        print(render_table(slim_calendars(calendars), [("id", "ID"), ("name", "Name"), ("url", "URL")]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Calendars: {len(calendars)}")
@@ -1697,16 +1790,17 @@ def cmd_calendar_upcoming(args: argparse.Namespace) -> int:
     end = start + datetime.timedelta(days=args.days)
     events = client.list_events(calendar=args.calendar, start=start, end=end, limit=args.limit)
 
-    if args.json:
-        output_events = events if args.raw else slim_events(events)
-        print_json(
+    if _machine_output(args):
+        output_events = events if _raw_output(args) else slim_events(events)
+        print_machine(
             {
                 "profile": profile.name,
                 "calendar": args.calendar,
                 "days": args.days,
                 "count": len(events),
                 "events": output_events,
-            }
+            },
+            args,
         )
     else:
         print(f"Profile: {profile.name}")
@@ -1728,16 +1822,17 @@ def cmd_calendar_today(args: argparse.Namespace) -> int:
     end = start + datetime.timedelta(days=1)
     events = client.list_events(calendar=args.calendar, start=start, end=end, limit=args.limit)
 
-    if args.json:
-        output_events = events if args.raw else slim_events(events)
-        print_json(
+    if _machine_output(args):
+        output_events = events if _raw_output(args) else slim_events(events)
+        print_machine(
             {
                 "profile": profile.name,
                 "calendar": args.calendar,
                 "date": today.isoformat(),
                 "count": len(events),
                 "events": output_events,
-            }
+            },
+            args,
         )
     else:
         print(f"Profile: {profile.name}")
@@ -1814,9 +1909,9 @@ def cmd_chat_teams(args: argparse.Namespace) -> int:
     profile, client = _chat_profile_and_client(args)
     teams = client.list_teams()
 
-    if args.json:
-        output_teams = teams if args.raw else slim_teams(teams)
-        print_json({"profile": profile.name, "count": len(teams), "teams": output_teams})
+    if _machine_output(args):
+        output_teams = teams if _raw_output(args) else slim_teams(teams)
+        print_machine({"profile": profile.name, "count": len(teams), "teams": output_teams}, args)
     else:
         print(f"Profile: {profile.name}")
         print(f"Teams: {len(teams)}")
@@ -1832,9 +1927,16 @@ def cmd_chat_channels(args: argparse.Namespace) -> int:
     team_id = _chat_team_id_or_error(args, profile, client)
     channels = client.list_channels(team_id, limit=args.limit)
 
-    if args.json:
-        output_channels = channels if args.raw else slim_channels(channels)
-        print_json({"profile": profile.name, "team_id": team_id, "count": len(channels), "channels": output_channels})
+    if _machine_output(args):
+        output_channels = channels if _raw_output(args) else slim_channels(channels)
+        print_machine({"profile": profile.name, "team_id": team_id, "count": len(channels), "channels": output_channels}, args)
+    elif getattr(args, "table", False):
+        print(render_table(slim_channels(channels), [
+            ("id", "ID"),
+            ("type", "Type"),
+            ("name", "Name"),
+            ("display_name", "Display Name"),
+        ]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Team ID: {team_id}")
@@ -1851,9 +1953,17 @@ def cmd_chat_users(args: argparse.Namespace) -> int:
     team_id = _chat_team_id_or_error(args, profile, client)
     users = client.list_users(team_id, limit=args.limit)
 
-    if args.json:
-        output_users = users if args.raw else slim_users(users)
-        print_json({"profile": profile.name, "team_id": team_id, "count": len(users), "users": output_users})
+    if _machine_output(args):
+        output_users = users if _raw_output(args) else slim_users(users)
+        print_machine({"profile": profile.name, "team_id": team_id, "count": len(users), "users": output_users}, args)
+    elif getattr(args, "table", False):
+        print(render_table(slim_users(users), [
+            ("id", "ID"),
+            ("username", "Username"),
+            ("first_name", "First"),
+            ("last_name", "Last"),
+            ("email", "Email"),
+        ]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Team ID: {team_id}")
@@ -1898,10 +2008,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     whoami = sub.add_parser("whoami", help="Show active profile/account defaults")
     whoami.add_argument("--json", action="store_true")
+    whoami.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     whoami.set_defaults(func=cmd_whoami)
 
     doctor = sub.add_parser("doctor", help="Run local configuration diagnostics")
     doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     doctor.set_defaults(func=cmd_doctor)
 
     bootstrap = sub.add_parser("bootstrap", help="Discover account/service IDs for a profile")
@@ -1923,6 +2035,8 @@ def build_parser() -> argparse.ArgumentParser:
     account_services = account_sub.add_parser("services", help="List services for an account")
     account_services.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
     account_services.add_argument("--json", action="store_true")
+    account_services.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    account_services.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     account_services.set_defaults(func=cmd_account_services)
 
     drive = sub.add_parser("drive", help="Use kDrive as the selected profile")
@@ -1932,6 +2046,8 @@ def build_parser() -> argparse.ArgumentParser:
     drive_list.add_argument("--parent", "--path", dest="parent_id", help="Folder/parent ID to list.")
     drive_list.add_argument("--limit", type=int, help="Maximum number of files to request.")
     drive_list.add_argument("--json", action="store_true")
+    drive_list.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_list.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     drive_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
     drive_list.set_defaults(func=cmd_drive_list)
     drive_folders = drive_sub.add_parser("folders", help="List kDrive folders")
@@ -1954,12 +2070,14 @@ def build_parser() -> argparse.ArgumentParser:
     drive_search.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
     drive_search.add_argument("--limit", type=int, help="Maximum number of matching files to show.")
     drive_search.add_argument("--json", action="store_true")
+    drive_search.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     drive_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
     drive_search.set_defaults(func=cmd_drive_search)
     drive_info = drive_sub.add_parser("info", help="Show read-only metadata for a kDrive file or folder")
     drive_info.add_argument("file_id", help="File/folder ID.")
     drive_info.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
     drive_info.add_argument("--json", action="store_true")
+    drive_info.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     drive_info.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
     drive_info.set_defaults(func=cmd_drive_info)
 
@@ -2017,6 +2135,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_token.set_defaults(func=cmd_auth_token)
     auth_check = auth_sub.add_parser("check", help="Make one read-only authenticated profile request")
     auth_check.add_argument("--json", action="store_true")
+    auth_check.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     auth_check.set_defaults(func=cmd_auth_check)
     auth_mail = auth_sub.add_parser("mail", help="Store the mailbox app password for a profile")
     auth_mail.add_argument("--password", help="Mail app password. Omit to prompt.")
@@ -2058,15 +2177,21 @@ def build_parser() -> argparse.ArgumentParser:
     mail_labels.set_defaults(func=cmd_mail_folders)
     mail_mailboxes = mail_sub.add_parser("mailboxes", help="List configured/discovered mailboxes")
     mail_mailboxes.add_argument("--json", action="store_true")
+    mail_mailboxes.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_mailboxes.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     mail_mailboxes.add_argument("--raw", action="store_true", help="With --json, emit the full raw mailbox payload.")
     mail_mailboxes.set_defaults(func=cmd_mail_mailboxes)
     mail_accounts = mail_sub.add_parser("accounts", help="Alias for 'mailboxes'")
     mail_accounts.add_argument("--json", action="store_true")
+    mail_accounts.add_argument("--compact", action="store_true")
+    mail_accounts.add_argument("--table", action="store_true")
     mail_accounts.add_argument("--raw", action="store_true")
     mail_accounts.set_defaults(func=cmd_mail_mailboxes)
     mail_hostings = mail_sub.add_parser("hostings", help="List mail hostings from account product/service discovery")
     mail_hostings.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
     mail_hostings.add_argument("--json", action="store_true")
+    mail_hostings.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_hostings.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     mail_hostings.add_argument("--raw", action="store_true", help="With --json, emit the full raw hosting payload.")
     mail_hostings.set_defaults(func=cmd_mail_hostings)
     mail_list = mail_sub.add_parser("list", help="List messages in a folder")
@@ -2088,6 +2213,7 @@ def build_parser() -> argparse.ArgumentParser:
     mail_unread.add_argument("--days", type=int, help="Convenience: messages since today - N days.")
     mail_unread.add_argument("--oldest-first", action="store_true", help="Show oldest matching messages first.")
     mail_unread.add_argument("--json", action="store_true")
+    mail_unread.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_unread.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_unread.set_defaults(func=cmd_mail_unread)
     mail_search = mail_sub.add_parser("search", help="Search messages by query")
@@ -2100,6 +2226,7 @@ def build_parser() -> argparse.ArgumentParser:
     mail_search.add_argument("--days", type=int, help="Convenience: messages since today - N days.")
     mail_search.add_argument("--oldest-first", action="store_true", help="Show oldest matching messages first.")
     mail_search.add_argument("--json", action="store_true")
+    mail_search.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_search.add_argument(
         "--raw", action="store_true", help="With --json, emit the full raw message payload."
     )
@@ -2108,6 +2235,7 @@ def build_parser() -> argparse.ArgumentParser:
     mail_read.add_argument("uid", help="Message UID")
     mail_read.add_argument("--folder", "-f", default="INBOX", help="Folder containing the message. Defaults to INBOX.")
     mail_read.add_argument("--json", action="store_true")
+    mail_read.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_read.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_read.set_defaults(func=cmd_mail_read)
 
@@ -2126,17 +2254,20 @@ def build_parser() -> argparse.ArgumentParser:
     contacts_list = contacts_sub.add_parser("list", help="List contacts")
     contacts_list.add_argument("--limit", type=int, help="Maximum contacts to fetch.")
     contacts_list.add_argument("--json", action="store_true")
+    contacts_list.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     contacts_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw contact payload.")
     contacts_list.set_defaults(func=cmd_contacts_list)
     contacts_search = contacts_sub.add_parser("search", help="Search contacts by name, email, phone, or organization")
     contacts_search.add_argument("query", help="Case-insensitive contact search query.")
     contacts_search.add_argument("--limit", type=int, help="Maximum matching contacts to show.")
     contacts_search.add_argument("--json", action="store_true")
+    contacts_search.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     contacts_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw contact payload.")
     contacts_search.set_defaults(func=cmd_contacts_search)
     contacts_show = contacts_sub.add_parser("show", help="Show one contact by ID")
     contacts_show.add_argument("contact_id", help="Contact ID.")
     contacts_show.add_argument("--json", action="store_true")
+    contacts_show.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     contacts_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw contact payload.")
     contacts_show.set_defaults(func=cmd_contacts_show)
 
@@ -2144,6 +2275,7 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_sub = calendar.add_subparsers(dest="calendar_command", required=True)
     calendar_list = calendar_sub.add_parser("list", help="List calendars")
     calendar_list.add_argument("--json", action="store_true")
+    calendar_list.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     calendar_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw calendar payload.")
     calendar_list.set_defaults(func=cmd_calendar_list)
     calendar_upcoming = calendar_sub.add_parser("upcoming", help="List upcoming calendar events")
@@ -2151,12 +2283,14 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_upcoming.add_argument("--calendar", help="Calendar ID or URL to query.")
     calendar_upcoming.add_argument("--limit", type=int, help="Maximum events to fetch.")
     calendar_upcoming.add_argument("--json", action="store_true")
+    calendar_upcoming.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     calendar_upcoming.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
     calendar_upcoming.set_defaults(func=cmd_calendar_upcoming)
     calendar_today = calendar_sub.add_parser("today", help="List today's calendar events")
     calendar_today.add_argument("--calendar", help="Calendar ID or URL to query.")
     calendar_today.add_argument("--limit", type=int, help="Maximum events to fetch.")
     calendar_today.add_argument("--json", action="store_true")
+    calendar_today.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     calendar_today.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
     calendar_today.set_defaults(func=cmd_calendar_today)
     calendar_search = calendar_sub.add_parser("search", help="Search calendar events")
@@ -2178,18 +2312,23 @@ def build_parser() -> argparse.ArgumentParser:
     chat_sub = chat.add_subparsers(dest="chat_command", required=True)
     chat_teams = chat_sub.add_parser("teams", help="List kChat teams")
     chat_teams.add_argument("--json", action="store_true")
+    chat_teams.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     chat_teams.add_argument("--raw", action="store_true", help="With --json, emit the full raw team payload.")
     chat_teams.set_defaults(func=cmd_chat_teams)
     chat_channels = chat_sub.add_parser("channels", help="List kChat channels for a team")
     chat_channels.add_argument("--team-id", help="Team ID. Defaults to saved profile team or the only available team.")
     chat_channels.add_argument("--limit", type=int, help="Maximum channels to show.")
     chat_channels.add_argument("--json", action="store_true")
+    chat_channels.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    chat_channels.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     chat_channels.add_argument("--raw", action="store_true", help="With --json, emit the full raw channel payload.")
     chat_channels.set_defaults(func=cmd_chat_channels)
     chat_users = chat_sub.add_parser("users", help="List kChat users for a team")
     chat_users.add_argument("--team-id", help="Team ID. Defaults to saved profile team or the only available team.")
     chat_users.add_argument("--limit", type=int, help="Maximum users to show.")
     chat_users.add_argument("--json", action="store_true")
+    chat_users.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    chat_users.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     chat_users.add_argument("--raw", action="store_true", help="With --json, emit the full raw user payload.")
     chat_users.set_defaults(func=cmd_chat_users)
 
@@ -2200,9 +2339,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        _validate_output_modes(args)
         return args.func(args)
     except (BootstrapError, CalendarError, ChatError, ContactError, InformaniakAPIError, KeyError, MailError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        if _machine_output(args):
+            print(error_json(_error_type(exc), str(exc), 1), file=sys.stderr)
+        else:
+            print(f"error: {redact(str(exc))}", file=sys.stderr)
         return 1
 
 

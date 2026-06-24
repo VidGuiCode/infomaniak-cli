@@ -1000,6 +1000,27 @@ class TestMailList:
         output = json.loads(capsys.readouterr().out)
         assert output["folder"] == "INBOX"
 
+    def test_mail_unread_compact_is_single_line_slim_json(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "list_unread": [
+                {"uid": "2", "from": "b@example.com", "subject": "s2", "date": "Tue", "seen": False},
+            ],
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "unread", "--compact"]) == 0
+
+        captured = capsys.readouterr()
+        assert "\n" not in captured.out.rstrip("\n")
+        output = json.loads(captured.out)
+        assert output["profile"] == "work"
+        assert output["unread"] is True
+        assert output["count"] == 1
+
     def test_mail_list_days_computes_since(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
         ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)

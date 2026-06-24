@@ -437,6 +437,18 @@ def test_cli_chat_channels_uses_configured_team_id_and_limit(tmp_path, monkeypat
     assert created_clients[0].calls == [("list_channels", "team-1", 1)]
 
 
+def test_cli_chat_channels_table_outputs_dense_human_table(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    monkeypatch.setattr(cli, "ChatClient", FakeChatClient)
+
+    assert cli.main(["chat", "channels", "--table"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("ID")
+    assert "Town Square" in lines[2]
+    assert "Dev" in lines[3]
+
+
 def test_cli_chat_channels_team_id_override(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch, team_id="team-1")
     created_clients = []

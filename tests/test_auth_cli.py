@@ -507,3 +507,62 @@ def test_missing_ik_profile_fails_clearly(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "IK_PROFILE" in captured.err
     assert "missing" in captured.err
+
+
+def test_whoami_compact_outputs_single_line_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", account_name="Example Co", make_default=True)
+
+    assert cli.main(["whoami", "--compact"]) == 0
+
+    captured = capsys.readouterr()
+    assert "\n" not in captured.out.rstrip("\n")
+    output = json.loads(captured.out)
+    assert output["profile"] == "work"
+    assert output["account_name"] == "Example Co"
+
+
+def test_structured_json_error_for_missing_profile(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+
+    assert cli.main(["whoami", "--compact"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    output = json.loads(captured.err)
+    assert output["error"]["type"] == "missing_profile"
+    assert output["error"]["exit_code"] == 1
+    assert "setup --profile" in output["error"]["message"]
+
+
+def test_structured_json_errors_redact_tokens(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+    token = "secret-token"
+    TokenStore().save_token("work", token)
+    fake_api = FakeAPI(
+        error=InformaniakAPIError(
+            401,
+            "GET /2/profile failed with Authorization: Bearer secret-token",
+            secrets=[token],
+        )
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["auth", "check", "--compact"]) == 1
+
+    captured = capsys.readouterr()
+    assert token not in captured.err
+    assert "Authorization: Bearer ***" in json.loads(captured.err)["error"]["message"]
+
+
+def test_table_conflicts_with_machine_readable_modes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+
+    assert cli.main(["drive", "list", "--table", "--compact"]) == 1
+
+    output = json.loads(capsys.readouterr().err)
+    assert output["error"]["type"] == "validation_error"
+    assert "--table cannot be combined" in output["error"]["message"]

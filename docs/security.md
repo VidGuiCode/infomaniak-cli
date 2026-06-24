@@ -112,6 +112,8 @@ Logs must redact:
 
 Do not print raw API responses if they may contain secrets.
 
+Structured JSON errors are also redacted. When `--json` or `--compact` is active, common command errors use an `error` envelope and should not include tokens, app passwords, cookies, or Authorization header values.
+
 ## Rate limiting
 
 Informaniak docs mention a general API rate limit of 60 requests/minute, with possible extra endpoint-specific limits.

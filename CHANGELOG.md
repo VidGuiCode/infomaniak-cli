@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.12 - Output and error contract
+
+- Added central output helpers for pretty JSON, compact JSON, structured error JSON, and simple human tables.
+- Added `--compact` single-line slim JSON mode to selected high-value read commands.
+- Added `--table` dense human output to selected list/discovery commands.
+- Added structured JSON error envelopes for common command errors when machine-readable output is active.
+- Documented current exit-code behavior and intended direction.
+- Kept all Informaniak/kSuite service operations read-only.
+
 ## v0.1.11 - Profile/auth lifecycle polish
 
 - Added `auth logout` with conservative default removal of only the selected profile's main API token.
