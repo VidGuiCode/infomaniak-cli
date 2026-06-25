@@ -97,7 +97,28 @@ secrets.json
 config.local.yaml
 ```
 
-Prefer OS keyring later if practical. For MVP, local token files are acceptable if they are outside the repo and protected by normal user file permissions.
+## Credentials at rest
+
+Every credential file `ik` writes — the REST API token plus the mail, contacts,
+calendar, and kChat app passwords under `tokens/` — is stored as plaintext on
+disk. To limit who can read it, `ik` restricts each credential file (and the
+`tokens/` directory) to the current user when saving:
+
+- **POSIX:** `chmod` to `0o600` for files and `0o700` for the `tokens/` directory.
+- **Windows:** a best-effort `icacls` call that drops inherited ACEs and grants
+  only the current user (`/inheritance:r /grant:r <user>:F`).
+
+This is defense-in-depth, **not encryption** — anyone able to read files as your
+user (or root/Administrator) can still read the secret. The hardening is
+best-effort and never blocks saving: if the `chmod`/`icacls` step fails
+(unsupported filesystem, missing `icacls`, permission quirk), the secret is still
+written and a one-line non-fatal warning is printed. Permissions are only ever
+narrowed, never widened, and are re-applied on each save so older loose files get
+tightened the next time they are written.
+
+Prefer OS keyring later if practical (a deferred decision — it would be the
+project's first runtime dependency). For now, local token files are acceptable
+because they live outside the repo and are restricted to the current user.
 
 ## Logging
 

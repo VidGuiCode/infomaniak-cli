@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.1.19-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.20-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -273,6 +273,8 @@ Login state is stored in your platform's app-data folder:
 - **Linux:** `~/.config/infomaniak-cli/`
 
 This directory contains your profile config and local secrets. Treat it as a secret and do not share or commit it.
+
+Credential files (your REST API token and any mail/contacts/calendar/kChat app passwords under `tokens/`) are written **owner-only** at rest on a best-effort basis — `chmod 0o600` on POSIX, or an `icacls` ACL restricted to the current user on Windows. This is defense-in-depth, **not encryption**: it limits who can read the files but does not encrypt them. If the permission step ever fails, the secret is still saved and a one-line warning is printed.
 
 `ik auth logout` removes the selected profile's main API token. `ik auth logout --all` also removes local mail, contacts, calendar, and chat secrets for that profile. `ik profile delete <name> --yes` removes the local profile and its related local secrets. None of these commands touch remote services.
 

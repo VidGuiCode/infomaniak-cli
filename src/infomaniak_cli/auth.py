@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config_paths import get_config_dir, get_tokens_dir
+from .secure_store import secure_dir, secure_write
 
 
 def _redact(value: str) -> str:
@@ -20,8 +21,8 @@ class TokenStore:
         clean_token = token.strip()
         if not clean_token:
             raise ValueError("Token is required")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
-        self._token_path(profile).write_text(clean_token, encoding="utf-8")
+        secure_dir(self.tokens_dir)
+        secure_write(self._token_path(profile), clean_token)
 
     def load_token(self, profile: str) -> str:
         return self._token_path(profile).read_text(encoding="utf-8").strip()
@@ -45,7 +46,7 @@ class TokenStore:
             return
         if new_path.exists():
             raise ValueError(f"Token already exists for profile: {new}")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        secure_dir(self.tokens_dir)
         old_path.replace(new_path)
 
     def delete_profile(self, profile: str) -> None:
@@ -69,8 +70,8 @@ class MailPasswordStore:
         clean_password = password.strip()
         if not clean_password:
             raise ValueError("Mail password is required")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
-        self._password_path(profile).write_text(clean_password, encoding="utf-8")
+        secure_dir(self.tokens_dir)
+        secure_write(self._password_path(profile), clean_password)
 
     def load_password(self, profile: str) -> str:
         return self._password_path(profile).read_text(encoding="utf-8").strip()
@@ -94,7 +95,7 @@ class MailPasswordStore:
             return
         if new_path.exists():
             raise ValueError(f"Mail password already exists for profile: {new}")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        secure_dir(self.tokens_dir)
         old_path.replace(new_path)
 
     def delete_profile(self, profile: str) -> None:
@@ -118,8 +119,8 @@ class ContactsPasswordStore:
         clean_password = password.strip()
         if not clean_password:
             raise ValueError("Contacts password is required")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
-        self._password_path(profile).write_text(clean_password, encoding="utf-8")
+        secure_dir(self.tokens_dir)
+        secure_write(self._password_path(profile), clean_password)
 
     def load_password(self, profile: str) -> str:
         return self._password_path(profile).read_text(encoding="utf-8").strip()
@@ -143,7 +144,7 @@ class ContactsPasswordStore:
             return
         if new_path.exists():
             raise ValueError(f"Contacts password already exists for profile: {new}")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        secure_dir(self.tokens_dir)
         old_path.replace(new_path)
 
     def delete_profile(self, profile: str) -> None:
@@ -167,8 +168,8 @@ class CalendarPasswordStore:
         clean_password = password.strip()
         if not clean_password:
             raise ValueError("Calendar password is required")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
-        self._password_path(profile).write_text(clean_password, encoding="utf-8")
+        secure_dir(self.tokens_dir)
+        secure_write(self._password_path(profile), clean_password)
 
     def load_password(self, profile: str) -> str:
         return self._password_path(profile).read_text(encoding="utf-8").strip()
@@ -192,7 +193,7 @@ class CalendarPasswordStore:
             return
         if new_path.exists():
             raise ValueError(f"Calendar password already exists for profile: {new}")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        secure_dir(self.tokens_dir)
         old_path.replace(new_path)
 
     def delete_profile(self, profile: str) -> None:
@@ -216,8 +217,8 @@ class ChatTokenStore:
         clean_token = token.strip()
         if not clean_token:
             raise ValueError("Chat token is required")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
-        self._token_path(profile).write_text(clean_token, encoding="utf-8")
+        secure_dir(self.tokens_dir)
+        secure_write(self._token_path(profile), clean_token)
 
     def load_token(self, profile: str) -> str:
         return self._token_path(profile).read_text(encoding="utf-8").strip()
@@ -241,7 +242,7 @@ class ChatTokenStore:
             return
         if new_path.exists():
             raise ValueError(f"Chat token already exists for profile: {new}")
-        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        secure_dir(self.tokens_dir)
         old_path.replace(new_path)
 
     def delete_profile(self, profile: str) -> None:

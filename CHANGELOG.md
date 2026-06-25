@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.20 - Credential-at-rest hardening
+
+- Credential files written by `ik` (the REST API token plus mail/contacts/calendar/kChat app passwords under `tokens/`) are now restricted to the current user at rest: `chmod 0o600` for files and `0o700` for the `tokens/` directory on POSIX, and a best-effort `icacls /inheritance:r /grant:r <user>:F` on Windows.
+- Centralized the write path in a new `secure_store.py` (`secure_dir` + `secure_write`) and routed all five secret stores through it, de-duplicating the previous per-store `mkdir`/`write_text`. The Windows `icacls` argv is built by a pure, unit-tested `harden_windows_command()`.
+- Hardening is best-effort and never blocks saving: an unsupported filesystem, missing `icacls`, or non-zero `icacls` return degrades to a one-line non-fatal warning while the secret is still written. Permissions are only ever narrowed, and are re-applied on each save so older loose files get tightened on the next write.
+- This is defense-in-depth, **not encryption**. An OS keyring backend remains deliberately deferred (it would be the project's first runtime dependency); this patch adds no new dependency and shells out only to the Windows built-in `icacls`.
+- Tests stay fully offline: the Windows command builder and its failure paths are asserted with an injected runner, and an autouse fixture swaps the default runner for a no-op so the suite never spawns real `icacls`. Documented the at-rest model in `docs/security.md` and the README Configuration note.
+
 ## v0.1.19 - Feedback bug fixes
 
 Fixes for three issues surfaced by a hands-on usage review (`context/feeback/report1.txt`) that exercised every command group:
