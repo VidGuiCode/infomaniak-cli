@@ -97,6 +97,60 @@ def _raw_output(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "raw", False) and getattr(args, "json", False) and not getattr(args, "compact", False))
 
 
+_TRUTHY_ENV = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY_ENV
+
+
+def _stdin_is_tty() -> bool:
+    isatty = getattr(sys.stdin, "isatty", None)
+    if isatty is None:
+        return False
+    try:
+        return bool(isatty())
+    except (ValueError, OSError):
+        return False
+
+
+def _is_non_interactive(args: argparse.Namespace) -> bool:
+    """True when ik must not block on an interactive prompt.
+
+    Triggers on an explicit ``--non-interactive`` flag, the ``IK_NO_INTERACTIVE``
+    env var, or a non-TTY stdin (piped/scripted/agent execution). Keeping this in
+    one place means no command silently hangs waiting for input under automation.
+    """
+    if getattr(args, "non_interactive", False):
+        return True
+    if _env_flag("IK_NO_INTERACTIVE"):
+        return True
+    return not _stdin_is_tty()
+
+
+def _prompt(args: argparse.Namespace, prompt_text: str, *, missing: str, hint: str) -> str:
+    """Return interactive input, or fail fast (never hang) when non-interactive."""
+    if _is_non_interactive(args):
+        raise ValueError(f"{missing} in non-interactive mode. {hint}")
+    return input(prompt_text)
+
+
+def _confirm(args: argparse.Namespace, prompt_text: str, *, action: str) -> bool:
+    """Resolve a yes/no confirmation without ever blocking under automation.
+
+    ``--yes`` short-circuits to True. Otherwise machine-output and non-interactive
+    callers get a clear "requires --yes" error instead of a hidden prompt; a real
+    interactive terminal still prompts.
+    """
+    if getattr(args, "yes", False):
+        return True
+    if _machine_output(args):
+        raise ValueError(f"{action} requires --yes when --json or --compact is used")
+    if _is_non_interactive(args):
+        raise ValueError(f"{action} requires --yes in non-interactive mode (no interactive prompt available)")
+    return input(prompt_text).strip().lower() in {"y", "yes"}
+
+
 def _validate_output_modes(args: argparse.Namespace) -> None:
     if getattr(args, "table", False) and _machine_output(args):
         raise ValueError("--table cannot be combined with --json or --compact")
@@ -285,7 +339,7 @@ def _discover_kchat_api_base(candidates: list[str], token: str) -> str | None:
 
 def cmd_setup(args: argparse.Namespace) -> int:
     profile_name = args.profile
-    if not profile_name and not args.non_interactive:
+    if not profile_name and not _is_non_interactive(args):
         profile_name = input("Profile name: ").strip()
     if not profile_name:
         print("error: --profile is required in non-interactive mode", file=sys.stderr)
@@ -466,11 +520,9 @@ def cmd_update(args: argparse.Namespace) -> int:
         _print_manual_update_guidance(plan)
         return 0
 
-    if not args.yes:
-        answer = input("Update now? [y/N] ").strip().lower()
-        if answer not in {"y", "yes"}:
-            print("Update cancelled.")
-            return 0
+    if not _confirm(args, "Update now? [y/N] ", action="update"):
+        print("Update cancelled.")
+        return 0
 
     return _run_update_plan(plan)
 
@@ -597,13 +649,13 @@ def cmd_profile_rename(args: argparse.Namespace) -> int:
 def cmd_profile_delete(args: argparse.Namespace) -> int:
     manager = ProfileManager()
     profile = manager.get(args.name)
-    if not args.yes and not args.json:
-        answer = input(f"Delete local profile '{profile.name}' and its local secrets? [y/N] ").strip().lower()
-        if answer not in {"y", "yes"}:
-            print("Profile delete cancelled.")
-            return 0
-    if not args.yes and args.json:
-        raise ValueError("profile delete requires --yes when --json is used")
+    if not _confirm(
+        args,
+        f"Delete local profile '{profile.name}' and its local secrets? [y/N] ",
+        action="profile delete",
+    ):
+        print("Profile delete cancelled.")
+        return 0
 
     deleted = manager.delete(profile.name)
     _delete_profile_secrets(deleted.name)
@@ -634,14 +686,10 @@ def cmd_auth_status(args: argparse.Namespace) -> int:
 def cmd_auth_logout(args: argparse.Namespace) -> int:
     manager = ProfileManager()
     name = _resolve_profile_name(manager, args.profile)
-    if not args.yes and not args.json:
-        scope = "main API token and service-specific local secrets" if args.all else "main API token"
-        answer = input(f"Remove {scope} for profile '{name}'? [y/N] ").strip().lower()
-        if answer not in {"y", "yes"}:
-            print("Logout cancelled.")
-            return 0
-    if not args.yes and args.json:
-        raise ValueError("auth logout requires --yes when --json is used")
+    scope = "main API token and service-specific local secrets" if args.all else "main API token"
+    if not _confirm(args, f"Remove {scope} for profile '{name}'? [y/N] ", action="auth logout"):
+        print("Logout cancelled.")
+        return 0
 
     removed = _delete_auth_for_profile(name, all_secrets=args.all)
     data = {"profile": name, "removed": removed}
@@ -664,8 +712,15 @@ def cmd_auth_token(args: argparse.Namespace) -> int:
         return 2
     if args.stdin:
         token = sys.stdin.read().strip()
+    elif args.token:
+        token = args.token.strip()
     else:
-        token = args.token.strip() if args.token else input("Informaniak API token: ").strip()
+        token = _prompt(
+            args,
+            "Informaniak API token: ",
+            missing="An API token is required",
+            hint="Pass --token <value> or pipe it with --stdin.",
+        ).strip()
     TokenStore().save_token(name, token)
     print(f"Token saved for profile: {name}")
     return 0
@@ -714,8 +769,15 @@ def cmd_auth_mail(args: argparse.Namespace) -> int:
         return 2
     if args.stdin:
         password = sys.stdin.read().strip()
+    elif args.password:
+        password = args.password.strip()
     else:
-        password = args.password.strip() if args.password else input("Mail app password: ").strip()
+        password = _prompt(
+            args,
+            "Mail app password: ",
+            missing="A mail app password is required",
+            hint="Pass --password <value> or pipe it with --stdin.",
+        ).strip()
     MailPasswordStore().save_password(name, password)
 
     # Also update mailbox/email if provided
@@ -749,8 +811,15 @@ def cmd_auth_contacts(args: argparse.Namespace) -> int:
 
     if args.stdin:
         password = sys.stdin.read().strip()
+    elif args.password:
+        password = args.password.strip()
     else:
-        password = args.password.strip() if args.password else input("Contacts CardDAV password: ").strip()
+        password = _prompt(
+            args,
+            "Contacts CardDAV password: ",
+            missing="A contacts CardDAV password is required",
+            hint="Pass --password <value> or pipe it with --stdin.",
+        ).strip()
     ContactsPasswordStore().save_password(name, password)
 
     resolved_url = _resolve_dav_collection_url(
@@ -783,8 +852,15 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
 
     if args.stdin:
         password = sys.stdin.read().strip()
+    elif args.password:
+        password = args.password.strip()
     else:
-        password = args.password.strip() if args.password else input("Calendar CalDAV password: ").strip()
+        password = _prompt(
+            args,
+            "Calendar CalDAV password: ",
+            missing="A calendar CalDAV password is required",
+            hint="Pass --password <value> or pipe it with --stdin.",
+        ).strip()
     CalendarPasswordStore().save_password(name, password)
 
     resolved_url = _resolve_dav_collection_url(

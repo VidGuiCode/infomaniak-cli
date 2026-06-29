@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.21 - Agent-readiness pass
+
+- `ik` no longer blocks on a hidden prompt under automation. A run is treated as non-interactive when stdin is not a TTY, when `IK_NO_INTERACTIVE` is set (`1`/`true`/`yes`/`on`), or when a command's `--non-interactive` flag is passed. Centralized this in shared `_is_non_interactive`/`_prompt`/`_confirm` helpers.
+- Secret-input commands (`auth token`, `auth mail`, `auth contacts`, `auth calendar`) and `setup` now fail fast with an actionable error naming `--stdin`/`--token`/`--password`/`--profile` instead of hanging on `input()` when non-interactive. The `--stdin` and explicit-value paths are unchanged.
+- Confirmation commands (`auth logout`, `profile delete`, `update`) require `--yes` in non-interactive or machine-output (`--json`/`--compact`) mode instead of prompting; a real interactive terminal still prompts as before.
+- Documented the stable agent workflow in `docs/agent-workflow.md` (profile precedence, `--json`/`--compact`/`--raw`/`--table`, exit codes, the structured JSON error envelope, non-interactive credential setup, and the recommended command sequence) and linked it from the README.
+- Confirmed the `--compact` agent-read contract is consistent across `whoami`, `doctor`, `account services`, `drive list/recent/shared/search/info`, `mail list/unread/search/read/mailboxes/hostings`, `calendar upcoming/today`, `contacts search/show`, and `chat teams/channels/users/search/thread`, and that missing-config errors name the exact `ik … auth …` setup command.
+- Read-only only; all changes are local CLI/runtime behavior. New offline tests cover non-interactive detection, fail-fast prompts, `--yes` confirmation gating, the compact-JSON contract, and missing-config error guidance.
+
 ## v0.1.20 - Credential-at-rest hardening
 
 - Credential files written by `ik` (the REST API token plus mail/contacts/calendar/kChat app passwords under `tokens/`) are now restricted to the current user at rest: `chmod 0o600` for files and `0o700` for the `tokens/` directory on POSIX, and a best-effort `icacls /inheritance:r /grant:r <user>:F` on Windows.
