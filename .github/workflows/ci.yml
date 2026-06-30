@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+defaults:
+  run:
+    # Use bash on every OS (Git Bash on Windows) so steps are portable.
+    shell: bash
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # One Windows job to exercise the icacls argv + cp1252 console paths.
+          - os: windows-latest
+            python-version: "3.12"
+    env:
+      # Pin temp to the workspace (the repo's local-temp convention).
+      TMPDIR: ${{ github.workspace }}/.tmp
+      TEMP: ${{ github.workspace }}/.tmp
+      TMP: ${{ github.workspace }}/.tmp
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run offline test suite
+        run: |
+          mkdir -p .tmp
+          uv run pytest -q
+
+  package:
+    name: build + verify package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel and sdist
+        run: uv build
+      - name: Verify no private files are packaged
+        run: uv run python scripts/check_package_contents.py
+      - name: Installed-package smoke test
+        run: bash scripts/smoke_install.sh
