@@ -46,7 +46,11 @@ no kDrive upload, no kChat post); those will arrive later behind confirmation an
 - `chat teams`, `chat channels`, `chat users`, `chat search`, `chat thread`
 
 `ik mail read --json` includes the full readable `body_text` without needing
-`--raw`.
+`--raw`; the human output prints text by default, and `--html` prints the raw
+HTML body instead. `ik mail search` accepts a plain-substring positional query
+and/or structured `--from`/`--to`/`--subject` filters (these are IMAP header
+matches, not Gmail-style operators). `ik chat search --channel` accepts a channel
+slug or id.
 
 ## Non-interactive mode
 

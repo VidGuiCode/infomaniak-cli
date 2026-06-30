@@ -116,7 +116,7 @@ Before publishing, verify the built package in a clean install environment:
 
 ```bash
 uv build
-pipx install --force --backend pip dist/infomaniak_cli-0.1.18-py3-none-any.whl
+pipx install --force --backend pip dist/infomaniak_cli-*-py3-none-any.whl
 ik version
 ik --help
 ik setup --profile test --non-interactive
@@ -125,6 +125,8 @@ ik doctor --json
 ```
 
 The release is ready when the installed `ik` command works without relying on the source checkout.
+
+CI runs the equivalent checks automatically (`.github/workflows/ci.yml`): the offline test suite on Linux + Windows, a build, `scripts/check_package_contents.py` (asserts the wheel/sdist ship only `infomaniak_cli/**` — no `context/`, caches, or credential files), and `scripts/smoke_install.sh`.
 
 ### Automated install smoke test
 

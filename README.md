@@ -107,7 +107,9 @@ ik mail hostings --json
 ik mail list --days 7 --json
 ik mail unread
 ik mail search "invoice" --days 30 --json
+ik mail search --from infomaniak --subject invoice --json
 ik mail read <uid> --json
+ik mail read <uid> --html
 ik mail threads --folder Sent --days 7 --json
 
 ik contacts list --json
@@ -242,7 +244,9 @@ ik mail hostings --json
 ik mail list --days 7 --json
 ik mail unread --folder INBOX --days 7 --json
 ik mail search "invoice" --days 30 --json
+ik mail search --from infomaniak --subject invoice --json
 ik mail read <uid> --json
+ik mail read <uid> --html
 ik mail threads --folder Sent --days 7 --json
 
 ik contacts list --json
@@ -260,7 +264,7 @@ ik chat channels --json
 ik chat users --json
 ```
 
-Use `--json` for pretty structured output, `--compact` for single-line slim JSON, and `--table` for dense human tables on supported list commands. `ik mail read --json` includes full readable `body_text` without `--raw`; `--raw` keeps fuller parsed message metadata such as `body_preview`. Use `--profile` to target a specific account, or set `IK_PROFILE` for one terminal session.
+Use `--json` for pretty structured output, `--compact` for single-line slim JSON, and `--table` for dense human tables on supported list commands. `ik mail read --json` includes full readable `body_text` without `--raw` (plain text is the default human output; pass `--html` for the raw HTML body); `--raw` keeps fuller parsed message metadata such as `body_preview`. `ik mail search` takes a plain-substring positional query and/or structured `--from`/`--to`/`--subject` filters (not Gmail-style operators). Use `--profile` to target a specific account, or set `IK_PROFILE` for one terminal session.
 
 When `--json` or `--compact` is active, common command errors use a structured JSON error envelope on stderr.
 
