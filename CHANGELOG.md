@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.1.22 - Release, CI, and docs hygiene
+
+Bundles the long-deferred release/CI/docs hygiene work with the offline bug fixes surfaced by a hands-on agent test of `0.1.21`, so the fixes land CI-protected.
+
+Bug fixes (from the agent test):
+
+- `ik drive tree` no longer lists folders as their own children/siblings. The kDrive files endpoint can ignore the `parent_id` query param and return the whole drive; `build_folder_tree` now filters children client-side by each item's own `parent_id`.
+- `ik mail search` gained structured `--from`/`--to`/`--subject` filters (IMAP FROM/TO/SUBJECT). The positional query is now optional and documented as a plain substring, not a Gmail-style operator.
+- `ik chat search --channel` accepts a channel **id or name** (tries name, falls back to id) via a new `ChatClient.resolve_channel`/`get_channel`, with a clearer not-found error pointing at `ik chat channels`.
+- `ik mail read --html` prints the raw `text/html` body (plain text stays the default); `fetch_message`/`slim_message` expose `body_html` when present.
+
+CI, packaging, and docs:
+
+- Added `.github/workflows/ci.yml`: the offline pytest suite runs on push and pull request across Linux (Python 3.11–3.13) and one Windows job, plus a package job that builds the wheel/sdist, verifies their contents, and runs the install smoke test.
+- Added `scripts/check_package_contents.py`: asserts the built wheel/sdist ship only `infomaniak_cli/**` and never leak `context/`, caches, or credential files.
+- Added `CONTRIBUTING.md`, `docs/architecture.md`, and a public `docs/roadmap.md`; fixed the stale wheel version in `docs/release.md`; documented the new mail flags in the README and agent workflow.
+- Cleared the `uv build` warnings (dropped the deprecated PEP 639 license classifier; widened the `uv_build` pin to `<0.12.0`).
+
+Read-only; no new runtime dependency. Suite: 469 → 480 passed (3 POSIX-only skipped on Windows).
+
 ## v0.1.21 - Agent-readiness pass
 
 - `ik` no longer blocks on a hidden prompt under automation. A run is treated as non-interactive when stdin is not a TTY, when `IK_NO_INTERACTIVE` is set (`1`/`true`/`yes`/`on`), or when a command's `--non-interactive` flag is passed. Centralized this in shared `_is_non_interactive`/`_prompt`/`_confirm` helpers.
