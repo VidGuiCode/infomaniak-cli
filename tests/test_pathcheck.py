@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from infomaniak_cli.pathcheck import (
     fix_path_command,
     locate_entry_point,
@@ -42,6 +46,10 @@ def test_path_status_not_on_path_reports_dir_off_path():
     assert status["dir_on_path"] is False
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="Windows case-insensitive PATH folding relies on os.path.normcase, which is a no-op on POSIX.",
+)
 def test_path_status_windows_comparison_is_case_insensitive():
     status = path_status(
         scripts_dir=WIN_SCRIPTS,

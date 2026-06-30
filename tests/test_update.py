@@ -63,11 +63,14 @@ def test_version_comparison_normalizes_v_prefix():
 
 
 def test_pipx_detection():
+    # Use forward-slash absolute paths so the test is cross-platform: backslash
+    # "C:\..." literals do not parse as paths on POSIX and would resolve under the
+    # CWD (a git checkout in CI), tripping the source-checkout short-circuit.
     method = detect_install_method(
-        executable=Path(r"C:\Users\gui\.local\pipx\venvs\infomaniak-cli\Scripts\python.exe"),
-        prefix=Path(r"C:\Users\gui\.local\pipx\venvs\infomaniak-cli"),
-        base_prefix=Path(r"C:\Python311"),
-        module_file=Path(r"C:\Users\gui\.local\pipx\venvs\infomaniak-cli\Lib\site-packages\infomaniak_cli\update.py"),
+        executable=Path("/home/gui/.local/pipx/venvs/infomaniak-cli/bin/python"),
+        prefix=Path("/home/gui/.local/pipx/venvs/infomaniak-cli"),
+        base_prefix=Path("/usr"),
+        module_file=Path("/home/gui/.local/pipx/venvs/infomaniak-cli/lib/python3.12/site-packages/infomaniak_cli/update.py"),
     )
 
     assert method == "pipx"
@@ -75,10 +78,10 @@ def test_pipx_detection():
 
 def test_uv_tool_detection():
     method = detect_install_method(
-        executable=Path(r"C:\Users\gui\AppData\Roaming\uv\tools\infomaniak-cli\Scripts\python.exe"),
-        prefix=Path(r"C:\Users\gui\AppData\Roaming\uv\tools\infomaniak-cli"),
-        base_prefix=Path(r"C:\Python311"),
-        module_file=Path(r"C:\Users\gui\AppData\Roaming\uv\tools\infomaniak-cli\Lib\site-packages\infomaniak_cli\update.py"),
+        executable=Path("/home/gui/.local/share/uv/tools/infomaniak-cli/bin/python"),
+        prefix=Path("/home/gui/.local/share/uv/tools/infomaniak-cli"),
+        base_prefix=Path("/usr"),
+        module_file=Path("/home/gui/.local/share/uv/tools/infomaniak-cli/lib/python3.12/site-packages/infomaniak_cli/update.py"),
     )
 
     assert method == "uv_tool"
@@ -86,10 +89,10 @@ def test_uv_tool_detection():
 
 def test_pip_detection():
     method = detect_install_method(
-        executable=Path(r"C:\project\.venv\Scripts\python.exe"),
-        prefix=Path(r"C:\project\.venv"),
-        base_prefix=Path(r"C:\Python311"),
-        module_file=Path(r"C:\project\.venv\Lib\site-packages\infomaniak_cli\update.py"),
+        executable=Path("/home/gui/project/.venv/bin/python"),
+        prefix=Path("/home/gui/project/.venv"),
+        base_prefix=Path("/usr"),
+        module_file=Path("/home/gui/project/.venv/lib/python3.12/site-packages/infomaniak_cli/update.py"),
     )
 
     assert method == "pip"
