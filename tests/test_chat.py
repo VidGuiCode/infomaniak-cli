@@ -117,6 +117,14 @@ class FakeChatClient:
         self.calls.append(("get_channel_by_name", team_id, channel_name))
         return {"id": "channel-2", "team_id": team_id, "name": channel_name}
 
+    def get_channel(self, channel_id):
+        self.calls.append(("get_channel", channel_id))
+        return {"id": channel_id, "name": channel_id}
+
+    def resolve_channel(self, team_id, ref):
+        self.calls.append(("resolve_channel", team_id, ref))
+        return {"id": "channel-2", "team_id": team_id, "name": ref}
+
 
 class FakeResponse:
     def __init__(self, payload, status=200):
@@ -309,6 +317,48 @@ def test_get_channel_by_name_404_is_clear():
         client.get_channel_by_name("team-1", "missing")
     except ChatError as exc:
         assert str(exc) == "kChat channel not found: missing"
+    else:
+        raise AssertionError("expected ChatError")
+
+
+def test_get_channel_by_id_constructs_url_and_returns_channel():
+    seen_requests = []
+
+    def opener(request, timeout=30):
+        seen_requests.append(request)
+        return FakeResponse(json.dumps(CHANNELS[1]).encode("utf-8"))
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    channel = client.get_channel("channel-2")
+
+    assert seen_requests[0].full_url.endswith("/api/v4/channels/channel-2")
+    assert channel["id"] == "channel-2"
+
+
+def test_resolve_channel_falls_back_from_name_to_id():
+    def opener(request, timeout=30):
+        if "/channels/name/" in request.full_url:
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+        return FakeResponse(json.dumps(CHANNELS[1]).encode("utf-8"))
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    channel = client.resolve_channel("team-1", "channel-2")
+
+    assert channel["id"] == "channel-2"
+
+
+def test_resolve_channel_both_fail_gives_actionable_error():
+    def opener(request, timeout=30):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    try:
+        client.resolve_channel("team-1", "nope")
+    except ChatError as exc:
+        assert "ik chat channels" in str(exc)
     else:
         raise AssertionError("expected ChatError")
 
@@ -752,7 +802,7 @@ def test_cli_chat_search_resolves_channel_and_filters(tmp_path, monkeypatch, cap
     assert output["count"] == 1
     assert [post["id"] for post in output["posts"]] == ["post-2"]
     assert created_clients[0].calls == [
-        ("get_channel_by_name", "team-1", "dev"),
+        ("resolve_channel", "team-1", "dev"),
         ("search_posts", "team-1", "invoice", True, None),
     ]
 

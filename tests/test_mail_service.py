@@ -429,6 +429,46 @@ class TestIMAPClientSearch:
         assert items[0]["seen"] is False
         assert ("examine", ("INBOX",)) in fake.calls
 
+    def test_search_structured_flags_build_from_to_subject_criteria(self):
+        raw_msg = _build_raw_message()
+        fake = FakeIMAP(
+            responses={
+                "FROM boss@example.com TO me@example.com SUBJECT Invoice": ("OK", [b"9"]),
+                _header_fetch_key("9"): (
+                    "OK",
+                    [(b"9 (UID 5001 FLAGS (\\Recent))", raw_msg)],
+                ),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.search(from_addr="boss@example.com", to_addr="me@example.com", subject="Invoice")
+        assert len(items) == 1
+        assert items[0]["uid"] == "5001"
+
+    def test_search_query_and_from_are_anded(self):
+        raw_msg = _build_raw_message()
+        fake = FakeIMAP(
+            responses={
+                "OR SUBJECT report FROM report FROM boss@example.com": ("OK", [b"3"]),
+                _header_fetch_key("3"): ("OK", [(b"3 (UID 6001 FLAGS (\\Recent))", raw_msg)]),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        items = client.search("report", from_addr="boss@example.com")
+        assert items[0]["uid"] == "6001"
+
+    def test_search_requires_query_or_flag(self):
+        fake = FakeIMAP(responses={})
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        with pytest.raises(ValueError, match="--from/--to/--subject"):
+            client.search()
+
 
 class TestIMAPClientFetchMessage:
     def test_fetch_message_returns_headers_full_body_and_preview(self):
@@ -469,6 +509,28 @@ class TestIMAPClientFetchMessage:
         assert msg["body_text"] == full_body
         assert len(msg["body_preview"]) <= 501
         assert msg["body_preview"] != msg["body_text"]
+
+    def test_fetch_message_exposes_raw_html_body(self):
+        raw_msg = _build_raw_message(
+            subject="HTML message",
+            body="<p>Hello <b>world</b></p>",
+            content_type="text/html",
+        )
+        fake = FakeIMAP(
+            responses={
+                "uid FETCH 555 (BODY.PEEK[])": ("OK", [(b"555 (BODY[] {200}", raw_msg)]),
+            }
+        )
+        client = IMAPClient(
+            "mail.infomaniak.com", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+        )
+        msg = client.fetch_message("555")
+        assert "<b>world</b>" in msg["body_html"]
+        # text body is the tag-stripped readable form
+        assert "world" in msg["body_text"]
+        assert "<b>" not in msg["body_text"]
+        # slim view surfaces body_html when present
+        assert "<b>world</b>" in slim_message(msg)["body_html"]
 
     def test_fetch_message_html_only_body_text_is_readable(self):
         raw_msg = _build_raw_message(

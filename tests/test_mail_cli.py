@@ -88,11 +88,14 @@ class FakeIMAP:
     def list_unread(self, limit=None, order="newest"):
         return self.list_messages(folder="INBOX", limit=limit, unread_only=True, order=order)
 
-    def search(self, query, folder="INBOX", limit=None, unread_only=False, since=None, before=None, on=None, order="newest"):
+    def search(self, query=None, folder="INBOX", limit=None, unread_only=False, since=None, before=None, on=None, order="newest", from_addr=None, to_addr=None, subject=None):
         for value in (since, before, on):
             _validate_iso_date(value)
+        if not any(value for value in (query, from_addr, to_addr, subject)):
+            raise ValueError("provide a search query or at least one of --from/--to/--subject")
         self._select(folder)
-        items = self.responses.get("search", {}).get(query, [])
+        lookup_key = query if query is not None else (from_addr or to_addr or subject)
+        items = self.responses.get("search", {}).get(lookup_key, [])
         if limit is not None:
             items = items[:limit]
         self.calls.append((
@@ -105,6 +108,9 @@ class FakeIMAP:
             before,
             on,
             order,
+            from_addr,
+            to_addr,
+            subject,
         ))
         return items
 
@@ -615,6 +621,37 @@ class TestMailSearch:
         assert output["count"] == 1
         assert output["messages"][0]["uid"] == "201"
 
+    def test_mail_search_from_flag_without_positional_query(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "search": {
+                "infomaniak": [
+                    {"uid": "301", "from": "noreply@infomaniak.com", "subject": "Welcome", "date": "Tue"},
+                ],
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "search", "--from", "infomaniak", "--json"]) == 0
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["query"] is None
+        assert output["from"] == "infomaniak"
+        assert output["count"] == 1
+        assert output["messages"][0]["uid"] == "301"
+
+    def test_mail_search_requires_query_or_flag(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory({}))
+
+        assert cli.main(["mail", "search"]) == 2
+        assert "--from/--to/--subject" in capsys.readouterr().err
+
     def test_mail_search_limit(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
         ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
@@ -676,6 +713,31 @@ class TestMailRead:
         assert output["message"]["from"] == "sender@example.com"
         assert output["message"]["body_text"] == "The full body."
         assert "body_preview" not in output["message"]  # slim mode by default
+
+    def test_mail_read_html_prints_raw_html_body(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+        ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+        MailPasswordStore().save_password("work", "pw")
+
+        fake_responses = {
+            "fetch_message": {
+                "555": {
+                    "uid": "555",
+                    "from": "sender@example.com",
+                    "to": "user@example.com",
+                    "subject": "HTML message",
+                    "date": "Mon",
+                    "body_text": "Hello world",
+                    "body_html": "<p>Hello <b>world</b></p>",
+                },
+            },
+        }
+        monkeypatch.setattr(cli, "IMAPClient", _fake_imap_factory(fake_responses))
+
+        assert cli.main(["mail", "read", "555", "--html"]) == 0
+
+        out = capsys.readouterr().out
+        assert "<b>world</b>" in out
 
     def test_mail_read_json_includes_full_body_without_raw(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))

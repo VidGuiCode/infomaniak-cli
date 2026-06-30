@@ -95,6 +95,11 @@ def build_folder_tree(
     if depth < 1:
         raise DriveError("--depth must be at least 1")
     folders = list_folders(api, drive_id, parent_id=parent_id, limit=limit)
+    if parent_id is not None:
+        # Defensive: the kDrive files endpoint may ignore the parent_id query
+        # param and return the full drive listing, which would make every folder
+        # appear as a child of every other folder. Keep only true children.
+        folders = [folder for folder in folders if _parent_id(folder) == str(parent_id)]
     return [
         {
             "folder": dict(folder),

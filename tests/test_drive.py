@@ -903,6 +903,34 @@ def test_drive_service_builds_folder_tree_from_parent_responses():
     ]
 
 
+def test_drive_service_tree_filters_children_when_api_ignores_parent_id():
+    # Regression: the kDrive files endpoint may ignore the parent_id query param
+    # and return the full drive listing for every call. Only the bare-path key is
+    # set, so FakeAPI returns the same list regardless of parent_id. Without the
+    # client-side parent filter, every folder would list itself and its siblings
+    # as children.
+    full_listing = {
+        "result": "success",
+        "data": [
+            {"id": "3", "name": "Common documents", "type": "dir"},
+            {"id": "81", "name": "myFolder", "type": "dir", "parent_id": "3"},
+        ],
+    }
+    api = FakeAPI({"/2/drive/drive-1/files": full_listing})
+
+    tree = build_folder_tree(api, "drive-1", depth=2)
+
+    assert tree == [
+        {
+            "folder": {"id": "3", "name": "Common documents", "type": "dir"},
+            "children": [
+                {"folder": {"id": "81", "name": "myFolder", "type": "dir", "parent_id": "3"}, "children": []}
+            ],
+        },
+        {"folder": {"id": "81", "name": "myFolder", "type": "dir", "parent_id": "3"}, "children": []},
+    ]
+
+
 def test_drive_service_tree_depth_one_does_not_fetch_children():
     api = FakeAPI(
         {

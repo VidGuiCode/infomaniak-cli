@@ -235,7 +235,7 @@ class IMAPClient:
 
     def search(
         self,
-        query: str,
+        query: str | None = None,
         folder: str = "INBOX",
         limit: int | None = None,
         unread_only: bool = False,
@@ -243,15 +243,31 @@ class IMAPClient:
         before: str | None = None,
         on: str | None = None,
         order: str = "newest",
+        from_addr: str | None = None,
+        to_addr: str | None = None,
+        subject: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Search messages by a free-text query in a folder.
+        """Search messages in a folder.
 
-        Uses IMAP OR search on SUBJECT and FROM, combined with optional filters.
+        The positional ``query`` is a plain substring matched against SUBJECT or
+        FROM (IMAP ``OR``); it is not a Gmail-style operator. ``from_addr``,
+        ``to_addr``, and ``subject`` add structured IMAP criteria (ANDed). At
+        least one of query/from_addr/to_addr/subject is required.
         """
         if order not in {"newest", "oldest"}:
             raise ValueError("order must be 'newest' or 'oldest'")
+        if not any(value for value in (query, from_addr, to_addr, subject)):
+            raise ValueError("provide a search query or at least one of --from/--to/--subject")
         self._examine(folder)
-        criteria = ["OR", "SUBJECT", query, "FROM", query]
+        criteria: list[str] = []
+        if query:
+            criteria.extend(["OR", "SUBJECT", query, "FROM", query])
+        if from_addr:
+            criteria.extend(["FROM", from_addr])
+        if to_addr:
+            criteria.extend(["TO", to_addr])
+        if subject:
+            criteria.extend(["SUBJECT", subject])
         if unread_only:
             criteria.append("UNSEEN")
         if since:
@@ -279,6 +295,7 @@ class IMAPClient:
         result = _slim_headers(msg, uid=uid)
         result["body_text"] = _body_text(msg)
         result["body_preview"] = _body_preview(msg)
+        result["body_html"] = _body_html(msg)
         return result
 
     def close(self) -> None:
@@ -392,6 +409,27 @@ def _extract_text_body(msg: email.message.Message) -> str | None:
     return text
 
 
+def _body_html(msg: email.message.Message) -> str | None:
+    """Return the raw HTML body (text/html part), unconverted, if present."""
+    if not msg.is_multipart():
+        if msg.get_content_type() != "text/html":
+            return None
+        payload = msg.get_payload(decode=True)
+        if payload is None:
+            return None
+        return _decode_payload(payload, msg.get_content_charset())
+
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        if part.get_content_type() == "text/html":
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                continue
+            return _decode_payload(payload, part.get_content_charset())
+    return None
+
+
 def _format_imap_response(data: Any) -> str:
     if data is None:
         return ""
@@ -441,6 +479,8 @@ def slim_message(msg: dict[str, Any]) -> dict[str, Any]:
     }
     if "body_text" in msg:
         result["body_text"] = msg.get("body_text")
+    if msg.get("body_html"):
+        result["body_html"] = msg.get("body_html")
     return result
 
 

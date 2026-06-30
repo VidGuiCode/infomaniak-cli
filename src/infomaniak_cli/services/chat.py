@@ -84,6 +84,28 @@ class ChatClient:
             raise ChatError("Unexpected kChat channel response: expected a JSON object")
         return payload
 
+    def get_channel(self, channel_id: str) -> Mapping[str, Any]:
+        payload = self._get(
+            f"/api/v4/channels/{urllib.parse.quote(str(channel_id), safe='')}",
+            not_found=f"kChat channel not found: {channel_id}",
+        )
+        if not isinstance(payload, Mapping):
+            raise ChatError("Unexpected kChat channel response: expected a JSON object")
+        return payload
+
+    def resolve_channel(self, team_id: str, ref: str) -> Mapping[str, Any]:
+        """Resolve a channel by name (slug) first, then fall back to a channel id."""
+        try:
+            return self.get_channel_by_name(team_id, ref)
+        except ChatError:
+            try:
+                return self.get_channel(ref)
+            except ChatError:
+                raise ChatError(
+                    f"kChat channel not found by name or id: {ref}. "
+                    "Run `ik chat channels` to list channels and their ids."
+                ) from None
+
     def _headers(self) -> dict[str, str]:
         return {
             "Accept": "application/json",

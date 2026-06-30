@@ -1297,6 +1297,17 @@ def cmd_mail_search(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    from_addr = getattr(args, "from_addr", None)
+    to_addr = getattr(args, "to_addr", None)
+    subject = getattr(args, "subject", None)
+    if not any(value for value in (args.query, from_addr, to_addr, subject)):
+        exc = ValueError("provide a search query or at least one of --from/--to/--subject")
+        if _machine_output(args):
+            print(error_json(_error_type(exc), str(exc), 2), file=sys.stderr)
+            return 2
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
     try:
         profile, client = _mail_profile_and_client(args)
     except ValueError as exc:
@@ -1316,6 +1327,9 @@ def cmd_mail_search(args: argparse.Namespace) -> int:
                 before=before,
                 on=on,
                 order="oldest" if args.oldest_first else "newest",
+                from_addr=from_addr,
+                to_addr=to_addr,
+                subject=subject,
             )
     except MailError as exc:
         if _machine_output(args):
@@ -1325,22 +1339,37 @@ def cmd_mail_search(args: argparse.Namespace) -> int:
 
     if _machine_output(args):
         output = items if _raw_output(args) else [slim_message(item) for item in items]
-        print_machine(
-            {
-                "profile": profile.name,
-                "folder": args.folder,
-                "query": args.query,
-                "count": len(items),
-                "messages": output,
-            },
-            args,
-        )
+        payload = {
+            "profile": profile.name,
+            "folder": args.folder,
+            "query": args.query,
+            "count": len(items),
+            "messages": output,
+        }
+        for key, value in (("from", from_addr), ("to", to_addr), ("subject", subject)):
+            if value:
+                payload[key] = value
+        print_machine(payload, args)
     else:
         status = "Unread search results" if args.unread else "Search results"
-        print(f"{status} for '{args.query}' in {args.folder}: {len(items)}")
+        descriptor = _mail_search_descriptor(args.query, from_addr, to_addr, subject)
+        print(f"{status} for {descriptor} in {args.folder}: {len(items)}")
         for item in items:
             print(_render_message_line(item))
     return 0
+
+
+def _mail_search_descriptor(query: str | None, from_addr: str | None, to_addr: str | None, subject: str | None) -> str:
+    parts = []
+    if query:
+        parts.append(f"'{query}'")
+    if from_addr:
+        parts.append(f"from~'{from_addr}'")
+    if to_addr:
+        parts.append(f"to~'{to_addr}'")
+    if subject:
+        parts.append(f"subject~'{subject}'")
+    return " ".join(parts) or "(all)"
 
 
 def cmd_mail_read(args: argparse.Namespace) -> int:
@@ -1374,11 +1403,18 @@ def cmd_mail_read(args: argparse.Namespace) -> int:
         print(f"Subject: {msg.get('subject') or '(no subject)'}")
         print(f"Date: {msg.get('date') or ''}")
         print()
-        body = msg.get("body_text") or msg.get("body_preview")
-        if body:
-            print(body)
+        if getattr(args, "html", False):
+            html = msg.get("body_html")
+            if html:
+                print(html)
+            else:
+                print("(no HTML body available; this message has no text/html part)")
         else:
-            print("(no body text available)")
+            body = msg.get("body_text") or msg.get("body_preview")
+            if body:
+                print(body)
+            else:
+                print("(no body text available)")
     return 0
 
 
@@ -2347,7 +2383,7 @@ def cmd_chat_search(args: argparse.Namespace) -> int:
     channel_id = None
     channel_slug = getattr(args, "channel", None)
     if channel_slug:
-        channel = client.get_channel_by_name(team_id, channel_slug)
+        channel = client.resolve_channel(team_id, channel_slug)
         channel_id = channel.get("id")
 
     limit = getattr(args, "limit", None)
@@ -2681,8 +2717,15 @@ def build_parser() -> argparse.ArgumentParser:
     mail_unread.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_unread.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_unread.set_defaults(func=cmd_mail_unread)
-    mail_search = mail_sub.add_parser("search", help="Search messages by query")
-    mail_search.add_argument("query", help="Search query string")
+    mail_search = mail_sub.add_parser("search", help="Search messages by query and/or --from/--to/--subject")
+    mail_search.add_argument(
+        "query",
+        nargs="?",
+        help="Plain substring matched against SUBJECT or FROM (not a Gmail-style operator). Optional if --from/--to/--subject is given.",
+    )
+    mail_search.add_argument("--from", dest="from_addr", help="Match the From header (IMAP FROM).")
+    mail_search.add_argument("--to", dest="to_addr", help="Match the To header (IMAP TO).")
+    mail_search.add_argument("--subject", dest="subject", help="Match the Subject header (IMAP SUBJECT).")
     mail_search.add_argument("--folder", "-f", default="INBOX", help="Folder to search. Defaults to INBOX.")
     mail_search.add_argument("--limit", type=int, help="Maximum number of messages to show.")
     mail_search.add_argument("--unread", action="store_true", help="Only unread messages.")
@@ -2699,6 +2742,11 @@ def build_parser() -> argparse.ArgumentParser:
     mail_read = mail_sub.add_parser("read", help="Read a single message by UID")
     mail_read.add_argument("uid", help="Message UID")
     mail_read.add_argument("--folder", "-f", default="INBOX", help="Folder containing the message. Defaults to INBOX.")
+    mail_read.add_argument(
+        "--html",
+        action="store_true",
+        help="Print the raw HTML body instead of the default readable text.",
+    )
     mail_read.add_argument("--json", action="store_true")
     mail_read.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_read.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
@@ -2799,7 +2847,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_search = chat_sub.add_parser("search", help="Search kChat posts (read-only)")
     chat_search.add_argument("query", help="Search terms.")
     chat_search.add_argument("--team-id", help="Team ID. Defaults to saved profile team or the only available team.")
-    chat_search.add_argument("--channel", help="Channel slug to resolve read-only and filter results to.")
+    chat_search.add_argument("--channel", help="Channel slug or id to resolve read-only and filter results to.")
     chat_search.add_argument("--or", dest="or_search", action="store_true", help="Match any term (is_or_search) instead of all terms.")
     chat_search.add_argument("--limit", type=int, help="Maximum posts to show.")
     chat_search.add_argument("--json", action="store_true")
