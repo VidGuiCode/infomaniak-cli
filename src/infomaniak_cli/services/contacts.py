@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from typing import Any, Callable, Mapping
 
 from ..api import redact_secret
+from .dav_discovery import DavDiscoveryError, probe_collection
 
 
 class ContactError(ValueError):
@@ -68,9 +69,35 @@ class ContactsClient:
             raise ContactError(f"Contacts CardDAV request failed: {redact_secret(str(exc))}") from exc
 
         contacts = _parse_carddav_multistatus(payload)
+        if not contacts:
+            self._verify_collection_when_empty()
         if limit is not None:
             return contacts[:limit]
         return contacts
+
+    def _verify_collection_when_empty(self) -> None:
+        """Distinguish an empty address book from a URL that is not one.
+
+        A CardDAV REPORT against a non-addressbook URL (e.g. the bare sync
+        base saved when discovery found nothing) returns an empty multistatus
+        instead of an error, which silently looks like "0 contacts"
+        (confirmed live against sync.infomaniak.com, see
+        context/LIVE_API_FINDINGS.md).
+        """
+        try:
+            probe = probe_collection(self.url, self.username, self.password, opener=self._opener)
+        except DavDiscoveryError as exc:
+            raise ContactError(
+                f"Contacts collection check failed for {self.url}: {exc}. "
+                "Run `ik auth contacts` to re-run auto-discovery, or pass --url <collection-url>."
+            ) from exc
+        if not probe["is_addressbook"]:
+            raise ContactError(
+                f"The configured contacts URL is not a CardDAV address book: {self.url}. "
+                "Run `ik auth contacts` to re-run auto-discovery, or pass --url <collection-url>. "
+                "If discovery finds no address book, the Infomaniak Contacts service may not be "
+                "activated for this user yet - open the Contacts web app once, then retry."
+            )
 
 
 def slim_contact(contact: Mapping[str, Any]) -> dict[str, Any]:

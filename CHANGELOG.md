@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.23 - Live-API confirmation (kChat + DAV)
+
+Confirms and fixes the two live-token-gated findings from the `0.1.21` agent test, verified against the real Infomaniak APIs. Read-only; no new runtime dependency; the unit suite stays fully offline (the live shapes are captured as mocked regression tests).
+
+- `ik chat search` no longer fails with "missing order/posts" on a zero-result query. Confirmed live: Infomaniak kChat serializes an empty post map as a JSON **list** (`{"order": [], "posts": []}`) instead of Mattermost's documented object shape. `_ordered_posts` now accepts the list shape (empty or populated) while keeping the documented dict shape working; an empty search exits 0 with `count: 0`.
+- `ik contacts list` / `ik calendar today|upcoming` no longer report a silent `0` when the configured DAV URL is not a real collection. Confirmed live: a CardDAV/CalDAV REPORT against the bare `https://sync.infomaniak.com/` base returns an empty multistatus (HTTP 207) with no error. When a read parses zero items, the clients now probe the URL's `resourcetype` (read-only PROPFIND Depth:0, new `dav_discovery.probe_collection`); if the URL is not an addressbook/calendar collection the command fails with an actionable error naming the URL, the `ik auth contacts|calendar` re-discovery path, and the likely cause (the Infomaniak Contacts/Calendar service not yet activated for the user). A real-but-empty collection still returns an empty result.
+- `ik auth contacts` / `ik auth calendar` now warn explicitly when auto-discovery finds no collection: reads will fail until a real collection exists.
+- Live findings recorded (redacted) in the private live-API notes: kChat empty-list serialization; DAV auth enforced but no principal provisioned for the tested user (`/principals/<user>/` 404s despite being advertised by the server).
+
 ## v0.1.22 - Release, CI, and docs hygiene
 
 Bundles the long-deferred release/CI/docs hygiene work with the offline bug fixes surfaced by a hands-on agent test of `0.1.21`, so the fixes land CI-protected.

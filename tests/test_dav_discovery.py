@@ -7,6 +7,7 @@ from infomaniak_cli.services.dav_discovery import (
     discover_addressbooks,
     discover_calendars,
     discover_current_user_principal,
+    probe_collection,
 )
 
 
@@ -217,3 +218,79 @@ def test_discover_error_on_http_status_is_clear():
         discover_current_user_principal(BASE_URL, "user", "pw", opener=opener)
 
     assert "HTTP 401" in str(excinfo.value)
+
+
+ADDRESSBOOK_RESOURCETYPE_XML = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:CARD="urn:ietf:params:xml:ns:carddav">
+  <D:response>
+    <D:href>/dav/addressbooks/user/default/</D:href>
+    <D:propstat><D:prop>
+      <D:resourcetype><D:collection/><CARD:addressbook/></D:resourcetype>
+    </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+CALENDAR_RESOURCETYPE_XML = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:CAL="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/dav/calendars/user/personal/</D:href>
+    <D:propstat><D:prop>
+      <D:resourcetype><D:collection/><CAL:calendar/></D:resourcetype>
+    </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+PLAIN_COLLECTION_RESOURCETYPE_XML = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/</D:href>
+    <D:propstat><D:prop>
+      <D:resourcetype><D:collection/></D:resourcetype>
+    </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+
+def test_probe_collection_detects_addressbook():
+    seen = []
+    opener = _routing_opener({(ADDRESSBOOK_HOME, "0"): ADDRESSBOOK_RESOURCETYPE_XML}, seen)
+
+    probe = probe_collection(ADDRESSBOOK_HOME, "user", "pw", opener=opener)
+
+    assert probe["is_addressbook"] is True
+    assert probe["is_calendar"] is False
+    assert probe["is_collection"] is True
+    assert seen[0].get_method() == "PROPFIND"
+    assert seen[0].headers["Depth"] == "0"
+
+
+def test_probe_collection_detects_calendar():
+    opener = _routing_opener({(CALENDAR_HOME, "0"): CALENDAR_RESOURCETYPE_XML}, [])
+
+    probe = probe_collection(CALENDAR_HOME, "user", "pw", opener=opener)
+
+    assert probe["is_calendar"] is True
+    assert probe["is_addressbook"] is False
+
+
+def test_probe_collection_plain_collection_is_neither():
+    opener = _routing_opener({(BASE_URL, "0"): PLAIN_COLLECTION_RESOURCETYPE_XML}, [])
+
+    probe = probe_collection(BASE_URL, "user", "pw", opener=opener)
+
+    assert probe == {
+        "url": BASE_URL,
+        "is_addressbook": False,
+        "is_calendar": False,
+        "is_collection": True,
+    }
+
+
+def test_probe_collection_http_error_is_clear():
+    def opener(request):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    with pytest.raises(DavDiscoveryError) as excinfo:
+        probe_collection(BASE_URL, "user", "pw", opener=opener)
+
+    assert "HTTP 404" in str(excinfo.value)

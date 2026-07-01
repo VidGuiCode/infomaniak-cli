@@ -251,6 +251,42 @@ def test_search_posts_passes_or_flag_and_limit():
     assert [post["id"] for post in posts] == ["post-1"]
 
 
+def test_search_posts_accepts_kchat_empty_list_shape():
+    # Live kChat finding: an empty result serializes the post map as a JSON
+    # list ({"order": [], "posts": []}), unlike Mattermost's documented
+    # object shape. This used to raise "missing order/posts".
+    def opener(request, timeout=30):
+        return FakeResponse(
+            json.dumps({"order": [], "posts": [], "matches": None, "has_limitation": None}).encode("utf-8")
+        )
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    assert client.search_posts("team-1", "no-match-query") == []
+
+
+def test_search_posts_accepts_kchat_list_shape_with_items():
+    def opener(request, timeout=30):
+        return FakeResponse(
+            json.dumps({"order": ["post-2", "post-1"], "posts": [POSTS[0], POSTS[1]]}).encode("utf-8")
+        )
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    posts = client.search_posts("team-1", "invoice")
+
+    assert [post["id"] for post in posts] == ["post-2", "post-1"]
+
+
+def test_get_thread_accepts_kchat_empty_list_shape():
+    def opener(request, timeout=30):
+        return FakeResponse(json.dumps({"order": [], "posts": []}).encode("utf-8"))
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    assert client.get_thread("post-1") == []
+
+
 def test_search_posts_errors_are_redacted():
     def opener(request, timeout=30):
         raise urllib.error.URLError("token=secret-chat-token refused")

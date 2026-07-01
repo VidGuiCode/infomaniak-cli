@@ -165,6 +165,45 @@ def _enumerate_collections(
     return collections
 
 
+def probe_collection(
+    url: str,
+    username: str,
+    password: str,
+    *,
+    opener: Callable[[urllib.request.Request], Any] | None = None,
+) -> dict[str, Any]:
+    """Read-only Depth:0 resourcetype probe of a configured DAV URL.
+
+    Distinguishes "a real but empty collection" from "not actually an
+    addressbook/calendar" (e.g. a bare sync base URL saved when discovery
+    found nothing). Raises DavDiscoveryError on HTTP/network failure with
+    the status in the message.
+    """
+    body = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>'
+    )
+    root = _xml_root(_propfind(url, username, password, body, depth="0", opener=opener))
+    is_addressbook = False
+    is_calendar = False
+    is_collection = False
+    for response in root.findall(".//{DAV:}response"):
+        for resourcetype in response.iter("{DAV:}resourcetype"):
+            for child in resourcetype:
+                if child.tag == f"{{{CARDDAV_NS}}}addressbook":
+                    is_addressbook = True
+                elif child.tag == f"{{{CALDAV_NS}}}calendar":
+                    is_calendar = True
+                elif child.tag == "{DAV:}collection":
+                    is_collection = True
+    return {
+        "url": url,
+        "is_addressbook": is_addressbook,
+        "is_calendar": is_calendar,
+        "is_collection": is_collection,
+    }
+
+
 def _resourcetype_contains(response: ET.Element, ns: str, tag: str) -> bool:
     target = f"{{{ns}}}{tag}"
     for resourcetype in response.iter("{DAV:}resourcetype"):

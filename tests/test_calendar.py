@@ -231,6 +231,90 @@ END:VCALENDAR</C:calendar-data>
     assert seen_requests[1].headers["Depth"] == "1"
 
 
+EMPTY_MULTISTATUS = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:"/>"""
+
+CALENDAR_RESOURCETYPE = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/calendars/user/work/</D:href>
+    <D:propstat><D:prop>
+      <D:resourcetype><D:collection/><C:calendar/></D:resourcetype>
+    </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+PLAIN_COLLECTION_RESOURCETYPE = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/</D:href>
+    <D:propstat><D:prop>
+      <D:resourcetype><D:collection/></D:resourcetype>
+    </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+
+def test_caldav_client_empty_real_calendar_returns_no_events():
+    seen = []
+
+    def opener(request):
+        seen.append(request)
+        if request.get_method() == "REPORT":
+            return FakeResponse(EMPTY_MULTISTATUS)
+        return FakeResponse(CALENDAR_RESOURCETYPE)
+
+    client = CalendarClient("https://sync.example.test/calendars/user/work/", "user@example.com", "pw", opener=opener)
+
+    assert client.list_events() == []
+    assert [request.get_method() for request in seen] == ["REPORT", "PROPFIND"]
+
+
+def test_caldav_client_zero_events_on_non_calendar_url_is_actionable():
+    # Live sync.infomaniak.com finding: a REPORT against the bare sync base
+    # returns an empty multistatus, which used to look like "0 events".
+    import pytest
+
+    from infomaniak_cli.services.calendar import CalendarError
+
+    def opener(request):
+        if request.get_method() == "REPORT":
+            return FakeResponse(EMPTY_MULTISTATUS)
+        return FakeResponse(PLAIN_COLLECTION_RESOURCETYPE)
+
+    client = CalendarClient("https://sync.example.test/", "user@example.com", "pw", opener=opener)
+
+    with pytest.raises(CalendarError) as excinfo:
+        client.list_events()
+
+    message = str(excinfo.value)
+    assert "not a CalDAV calendar" in message
+    assert "https://sync.example.test/" in message
+    assert "ik auth calendar" in message
+
+
+def test_caldav_client_zero_events_with_failing_probe_reports_status():
+    import urllib.error
+
+    import pytest
+
+    from infomaniak_cli.services.calendar import CalendarError
+
+    def opener(request):
+        if request.get_method() == "REPORT":
+            return FakeResponse(EMPTY_MULTISTATUS)
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    client = CalendarClient("https://sync.example.test/", "user@example.com", "pw", opener=opener)
+
+    with pytest.raises(CalendarError) as excinfo:
+        client.list_events()
+
+    message = str(excinfo.value)
+    assert "HTTP 404" in message
+    assert "ik auth calendar" in message
+
+
 def test_search_events_matches_fields_case_insensitively():
     assert [event["id"] for event in search_events(EVENTS, "team sync")] == ["event-1"]
     assert [event["id"] for event in search_events(EVENTS, "SUPPLIER")] == ["event-2"]

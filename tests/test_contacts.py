@@ -144,6 +144,94 @@ END:VCARD</C:address-data>
     assert seen_requests[0].headers["Depth"] == "1"
 
 
+EMPTY_MULTISTATUS = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:"/>"""
+
+ADDRESSBOOK_RESOURCETYPE = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">
+  <D:response>
+    <D:href>/addressbooks/user/default/</D:href>
+    <D:propstat><D:prop>
+      <D:resourcetype><D:collection/><C:addressbook/></D:resourcetype>
+    </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+PLAIN_COLLECTION_RESOURCETYPE = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/</D:href>
+    <D:propstat><D:prop>
+      <D:resourcetype><D:collection/></D:resourcetype>
+    </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+
+def _method_routing_opener(routes, seen):
+    def opener(request):
+        seen.append(request)
+        return FakeResponse(routes[request.get_method()])
+
+    return opener
+
+
+def test_carddav_client_empty_real_addressbook_returns_no_contacts():
+    seen = []
+    opener = _method_routing_opener(
+        {"REPORT": EMPTY_MULTISTATUS, "PROPFIND": ADDRESSBOOK_RESOURCETYPE}, seen
+    )
+    client = ContactsClient(
+        "https://sync.example.test/addressbooks/user/default/", "user@example.com", "pw", opener=opener
+    )
+
+    assert client.list_contacts() == []
+    assert [request.get_method() for request in seen] == ["REPORT", "PROPFIND"]
+
+
+def test_carddav_client_zero_contacts_on_non_addressbook_url_is_actionable():
+    # Live sync.infomaniak.com finding: a REPORT against the bare sync base
+    # returns an empty multistatus, which used to look like "0 contacts".
+    import pytest
+
+    from infomaniak_cli.services.contacts import ContactError
+
+    opener = _method_routing_opener(
+        {"REPORT": EMPTY_MULTISTATUS, "PROPFIND": PLAIN_COLLECTION_RESOURCETYPE}, []
+    )
+    client = ContactsClient("https://sync.example.test/", "user@example.com", "pw", opener=opener)
+
+    with pytest.raises(ContactError) as excinfo:
+        client.list_contacts()
+
+    message = str(excinfo.value)
+    assert "not a CardDAV address book" in message
+    assert "https://sync.example.test/" in message
+    assert "ik auth contacts" in message
+
+
+def test_carddav_client_zero_contacts_with_failing_probe_reports_status():
+    import urllib.error
+
+    import pytest
+
+    from infomaniak_cli.services.contacts import ContactError
+
+    def opener(request):
+        if request.get_method() == "REPORT":
+            return FakeResponse(EMPTY_MULTISTATUS)
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    client = ContactsClient("https://sync.example.test/", "user@example.com", "pw", opener=opener)
+
+    with pytest.raises(ContactError) as excinfo:
+        client.list_contacts()
+
+    message = str(excinfo.value)
+    assert "HTTP 404" in message
+    assert "ik auth contacts" in message
+
+
 def test_cli_contacts_list_slim_json(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch)
     created_clients = []

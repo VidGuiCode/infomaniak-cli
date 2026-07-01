@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from typing import Any, Callable, Mapping
 
 from ..api import redact_secret
+from .dav_discovery import DavDiscoveryError, probe_collection
 
 
 class CalendarError(ValueError):
@@ -74,9 +75,36 @@ class CalendarClient:
         ).encode("utf-8")
         payload = self._request(calendar_url, method="REPORT", body=body, depth="1")
         events = _parse_event_multistatus(payload, calendar_id=_calendar_id(calendar_url))
+        if not events:
+            self._verify_collection_when_empty(calendar_url)
         if limit is not None:
             return events[:limit]
         return events
+
+    def _verify_collection_when_empty(self, calendar_url: str) -> None:
+        """Distinguish an empty calendar from a URL that is not one.
+
+        A CalDAV REPORT against a non-calendar URL (e.g. the bare sync base
+        saved when discovery found nothing) returns an empty multistatus
+        instead of an error, which silently looks like "0 events"
+        (confirmed live against sync.infomaniak.com, see
+        context/LIVE_API_FINDINGS.md). An empty time window on a real
+        calendar collection stays a normal empty result.
+        """
+        try:
+            probe = probe_collection(calendar_url, self.username, self.password, opener=self._opener)
+        except DavDiscoveryError as exc:
+            raise CalendarError(
+                f"Calendar collection check failed for {calendar_url}: {exc}. "
+                "Run `ik auth calendar` to re-run auto-discovery, or pass --url <collection-url>."
+            ) from exc
+        if not probe["is_calendar"]:
+            raise CalendarError(
+                f"The configured calendar URL is not a CalDAV calendar: {calendar_url}. "
+                "Run `ik auth calendar` to re-run auto-discovery, or pass --url <collection-url>. "
+                "If discovery finds no calendar, the Infomaniak Calendar service may not be "
+                "activated for this user yet - open the Calendar web app once, then retry."
+            )
 
     def _calendar_url(self, calendar: str | None) -> str:
         if not calendar:

@@ -34,16 +34,23 @@ write behavior is added.
 - Agent-readiness: no hidden prompts under automation, a documented agent
   workflow ([agent-workflow.md](agent-workflow.md)).
 
-## In progress / next
+## Shipped recently
 
 - **`0.1.22` — Release, CI & docs hygiene** (plus offline bug fixes): a CI
   workflow running the offline suite on Linux + Windows, packaging verification,
   contributor/architecture docs, and fixes surfaced by hands-on testing
   (kDrive `tree` nesting, `mail search --from/--to/--subject`, `chat search
   --channel` by id or name, `mail read --html`).
-- **`0.1.23` — Live-API confirmation**: confirm and adjust the kChat
-  search/thread response shape and the contacts/calendar (CardDAV/CalDAV) read
-  paths against the live service.
+- **`0.1.23` — Live-API confirmation**: the kChat search/thread response shape
+  confirmed live and handled (empty results no longer error), and
+  contacts/calendar reads now distinguish a real-but-empty collection from a
+  misconfigured or unprovisioned CardDAV/CalDAV URL with an actionable error.
+
+## In progress / next
+
+- **`0.1.24` — CLI polish**: shell completion (`ik completion
+  bash|zsh|fish|powershell`) and `--compact` output-mode parity across the
+  remaining read commands.
 
 ## Later
 

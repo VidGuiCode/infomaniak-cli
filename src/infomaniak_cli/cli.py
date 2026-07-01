@@ -915,7 +915,9 @@ def _resolve_dav_collection_url(
 
     if not collections:
         print(
-            f"note: no {kind} collection found at {url}; keeping it. "
+            f"warning: no {kind} collection found at {url}; keeping it, but reads will fail "
+            f"until a real {kind} exists. The Infomaniak service may not be activated for "
+            f"this user yet - open the corresponding web app once, then re-run this command. "
             "Pass --url <collection-url> to set the collection explicitly.",
             file=sys.stderr,
         )

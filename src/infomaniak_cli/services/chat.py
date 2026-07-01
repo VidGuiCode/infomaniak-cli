@@ -287,6 +287,17 @@ def _ordered_posts(payload: Any, *, limit: int | None = None) -> list[Mapping[st
         raise ChatError("Unexpected kChat posts response: expected a post list object")
     order = payload.get("order")
     posts = payload.get("posts")
+    # Infomaniak kChat serializes an empty post map as a JSON list ([]), unlike
+    # Mattermost's documented {"order": [...], "posts": {id: post}} object shape
+    # (confirmed live, see context/LIVE_API_FINDINGS.md).
+    if isinstance(posts, list):
+        posts = {
+            str(post.get("id")): post
+            for post in posts
+            if isinstance(post, Mapping) and post.get("id") is not None
+        }
+        if not isinstance(order, list):
+            order = list(posts)
     if not isinstance(order, list) or not isinstance(posts, Mapping):
         raise ChatError("Unexpected kChat posts response: missing order/posts")
     ordered: list[Mapping[str, Any]] = []
