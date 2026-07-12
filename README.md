@@ -81,6 +81,7 @@ ik auth token
 ik bootstrap --json
 ik whoami --json
 ik doctor --json
+ik completion bash > ~/.bash_completion.d/ik
 
 ik auth mail --mailbox user@example.com --password <app-password>
 ik auth contacts --username <sync-username> --stdin
@@ -199,7 +200,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 
 | Area | Commands |
 |------|----------|
-| Setup | `setup`, `whoami`, `doctor` |
+| Setup | `setup`, `whoami`, `doctor`, `completion` |
 | Update | `update` |
 | Auth | `auth token`, `auth check`, `auth status`, `auth logout`, `auth mail`, `auth contacts`, `auth calendar`, `auth chat` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
@@ -264,7 +265,7 @@ ik chat channels --json
 ik chat users --json
 ```
 
-Use `--json` for pretty structured output, `--compact` for single-line slim JSON, and `--table` for dense human tables on supported list commands. `ik mail read --json` includes full readable `body_text` without `--raw` (plain text is the default human output; pass `--html` for the raw HTML body); `--raw` keeps fuller parsed message metadata such as `body_preview`. `ik mail search` takes a plain-substring positional query and/or structured `--from`/`--to`/`--subject` filters (not Gmail-style operators). Use `--profile` to target a specific account, or set `IK_PROFILE` for one terminal session.
+Use `--json` for pretty structured output, `--compact` for single-line slim JSON (available on all discovery and read-only commands), and `--table` for dense human tables on supported list commands. `ik mail read --json` includes full readable `body_text` without `--raw` (plain text is the default human output; pass `--html` for the raw HTML body); `--raw` keeps fuller parsed message metadata such as `body_preview`. `ik mail search` takes a plain-substring positional query and/or structured `--from`/`--to`/`--subject` filters (not Gmail-style operators). Use `--profile` to target a specific account, or set `IK_PROFILE` for one terminal session.
 
 When `--json` or `--compact` is active, common command errors use a structured JSON error envelope on stderr.
 

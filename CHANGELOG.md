@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.24 - CLI UX polish and completions
+
+- `ik completion` command added to generate static shell completions for bash, zsh, fish, and powershell.
+- `--compact` flag added to all remaining read-only/discovery commands for single-line JSON parity across the suite. Error output is properly formatted as JSON when this flag is provided.
+
 ## v0.1.23 - Live-API confirmation (kChat + DAV)
 
 Confirms and fixes the two live-token-gated findings from the `0.1.21` agent test, verified against the real Infomaniak APIs. Read-only; no new runtime dependency; the unit suite stays fully offline (the live shapes are captured as mocked regression tests).

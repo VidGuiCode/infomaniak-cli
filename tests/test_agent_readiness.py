@@ -153,6 +153,28 @@ def test_whoami_compact_is_single_line_json(work_profile, monkeypatch, capsys):
     assert json.loads(out)["profile"] == "work"
 
 
+@pytest.mark.parametrize("cmd", [
+    ["account", "list"],
+    ["account", "products"],
+    ["contacts", "list"],
+    ["calendar", "list"],
+    ["calendar", "search", "query"],
+    ["calendar", "show", "123"],
+    ["mail", "folders"],
+    ["mail", "threads"],
+    ["drive", "folders"],
+    ["drive", "tree"],
+])
+def test_new_compact_commands_produce_single_line_json_error_without_config(work_profile, monkeypatch, capsys, cmd):
+    monkeypatch.setenv("IK_NO_INTERACTIVE", "1")
+    assert cli.main(cmd + ["--compact"]) != 0
+    
+    err = capsys.readouterr().err.strip()
+    assert "\n" not in err
+    parsed = json.loads(err)
+    assert "error" in parsed
+
+
 # --- missing-config errors carry the setup command -----------------------------
 
 

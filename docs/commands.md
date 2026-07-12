@@ -28,6 +28,7 @@ ik doctor
 ik bootstrap
 ik bootstrap --compact
 ik update
+ik completion bash
 ```
 
 Expected behavior:
@@ -37,6 +38,7 @@ Expected behavior:
 - `doctor`: verify auth and configured service setup state.
 - `bootstrap`: rerun autodiscovery, safely update defaults, and show missing setup actions.
 - `update`: check GitHub releases and update supported installs.
+- `completion`: generate static shell completion scripts for bash, zsh, fish, and powershell.
 
 Update flags:
 
@@ -295,14 +297,15 @@ ik mail unread --json
 ik drive search "invoice" --json
 ```
 
-Compact single-line slim JSON:
+Compact single-line slim JSON is supported on all discovery and read-only commands:
 
 ```bash
 ik doctor --compact
-ik bootstrap --compact
-ik drive recent --compact
-ik drive search "invoice" --compact
-ik mail read <uid> --compact
+ik account list --compact
+ik drive tree --compact
+ik mail folders --compact
+ik calendar list --compact
+ik contacts list --compact
 ```
 
 Dense human table mode:

@@ -35,14 +35,14 @@ no kDrive upload, no kChat post); those will arrive later behind confirmation an
 
 `--table` cannot be combined with `--json`/`--compact`.
 
-`--compact` is available on the common agent reads:
+`--compact` is available on all discovery and read-only commands:
 
-- `whoami`, `doctor`
-- `account services`
-- `drive list`, `drive recent`, `drive shared`, `drive search`, `drive info`
-- `mail list`, `mail unread`, `mail search`, `mail read`, `mail mailboxes`, `mail hostings`
-- `calendar upcoming`, `calendar today`
-- `contacts search`, `contacts show`
+- `whoami`, `doctor`, `bootstrap`
+- `account list`, `account products`, `account services`
+- `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`
+- `mail list`, `mail unread`, `mail search`, `mail read`, `mail mailboxes`, `mail hostings`, `mail folders`, `mail threads`
+- `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`
+- `contacts list`, `contacts search`, `contacts show`
 - `chat teams`, `chat channels`, `chat users`, `chat search`, `chat thread`
 
 `ik mail read --json` includes the full readable `body_text` without needing
