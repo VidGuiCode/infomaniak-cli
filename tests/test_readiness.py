@@ -95,7 +95,7 @@ def test_whoami_json_readiness_fields_do_not_leak_secrets(tmp_path, monkeypatch,
         contacts_username="user@example.com",
         calendar_url="https://sync.example.test/calendars/user/work/",
         calendar_username="user@example.com",
-        kchat_url="https://cylro.kchat.infomaniak.com",
+        kchat_url="https://acme.kchat.infomaniak.com",
         make_default=True,
     )
     TokenStore().save_token("work", "secret-main-token")

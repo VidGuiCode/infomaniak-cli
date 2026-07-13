@@ -35,19 +35,19 @@ def test_profile_metadata_can_store_kchat_browser_url_details(tmp_path):
 
     manager.create_or_update(
         "work",
-        kchat_url="https://cylro.kchat.infomaniak.com",
-        kchat_ksuite_url="https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square",
-        kchat_ksuite_account_id="1988835",
-        kchat_workspace_slug="cylro",
+        kchat_url="https://acme.kchat.infomaniak.com",
+        kchat_ksuite_url="https://ksuite.infomaniak.com/1234567/kchat/acme/channels/town-square",
+        kchat_ksuite_account_id="1234567",
+        kchat_workspace_slug="acme",
         kchat_default_channel_slug="town-square",
         make_default=True,
     )
     profile = manager.get_current()
 
-    assert profile.kchat_url == "https://cylro.kchat.infomaniak.com"
-    assert profile.kchat_ksuite_url == "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
-    assert profile.kchat_ksuite_account_id == "1988835"
-    assert profile.kchat_workspace_slug == "cylro"
+    assert profile.kchat_url == "https://acme.kchat.infomaniak.com"
+    assert profile.kchat_ksuite_url == "https://ksuite.infomaniak.com/1234567/kchat/acme/channels/town-square"
+    assert profile.kchat_ksuite_account_id == "1234567"
+    assert profile.kchat_workspace_slug == "acme"
     assert profile.kchat_default_channel_slug == "town-square"
 
 

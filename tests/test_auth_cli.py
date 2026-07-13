@@ -135,7 +135,7 @@ def test_auth_contacts_defaults_to_infomaniak_sync_url(tmp_path, monkeypatch, ca
     # No address book discovered -> keep the default base URL (offline, no network).
     monkeypatch.setattr(cli, "discover_addressbooks", lambda *a, **k: [])
 
-    assert cli.main(["auth", "contacts", "--username", "VG04107", "--stdin"]) == 0
+    assert cli.main(["auth", "contacts", "--username", "VG00000", "--stdin"]) == 0
 
     captured = capsys.readouterr()
     assert password not in captured.out
@@ -143,7 +143,7 @@ def test_auth_contacts_defaults_to_infomaniak_sync_url(tmp_path, monkeypatch, ca
     assert ContactsPasswordStore().load_password("work") == password
     profile = ProfileManager().get("work")
     assert profile.contacts_url == "https://sync.infomaniak.com/"
-    assert profile.contacts_username == "VG04107"
+    assert profile.contacts_username == "VG00000"
 
 
 def test_auth_contacts_explicit_url_overrides_default(tmp_path, monkeypatch, capsys):
@@ -158,7 +158,7 @@ def test_auth_contacts_explicit_url_overrides_default(tmp_path, monkeypatch, cap
             "--url",
             "https://sync.example.test/addressbooks/user/default/",
             "--username",
-            "VG04107",
+            "VG00000",
             "--stdin",
         ]
     ) == 0
@@ -174,7 +174,7 @@ def test_auth_contacts_requires_username_first_time(tmp_path, monkeypatch, capsy
 
     captured = capsys.readouterr()
     assert "sync username" in captured.err
-    assert "VG04107" in captured.err
+    assert "VG00000" in captured.err
     assert not ContactsPasswordStore().has_password("work")
 
 
@@ -213,7 +213,7 @@ def test_auth_calendar_defaults_to_infomaniak_sync_url(tmp_path, monkeypatch, ca
     # No calendar discovered -> keep the default base URL (offline, no network).
     monkeypatch.setattr(cli, "discover_calendars", lambda *a, **k: [])
 
-    assert cli.main(["auth", "calendar", "--username", "VG04107", "--stdin"]) == 0
+    assert cli.main(["auth", "calendar", "--username", "VG00000", "--stdin"]) == 0
 
     captured = capsys.readouterr()
     assert password not in captured.out
@@ -221,7 +221,7 @@ def test_auth_calendar_defaults_to_infomaniak_sync_url(tmp_path, monkeypatch, ca
     assert CalendarPasswordStore().load_password("work") == password
     profile = ProfileManager().get("work")
     assert profile.calendar_url == "https://sync.infomaniak.com/"
-    assert profile.calendar_username == "VG04107"
+    assert profile.calendar_username == "VG00000"
 
 
 def test_auth_calendar_explicit_url_overrides_default(tmp_path, monkeypatch, capsys):
@@ -236,7 +236,7 @@ def test_auth_calendar_explicit_url_overrides_default(tmp_path, monkeypatch, cap
             "--url",
             "https://sync.example.test/calendars/user/work/",
             "--username",
-            "VG04107",
+            "VG00000",
             "--stdin",
         ]
     ) == 0
@@ -252,7 +252,7 @@ def test_auth_calendar_requires_username_first_time(tmp_path, monkeypatch, capsy
 
     captured = capsys.readouterr()
     assert "sync username" in captured.err
-    assert "VG04107" in captured.err
+    assert "VG00000" in captured.err
     assert not CalendarPasswordStore().has_password("work")
 
 
@@ -366,7 +366,7 @@ def test_auth_contacts_and_calendar_help_mentions_default_sync_url(capsys):
             assert exc.code == 0
         output = capsys.readouterr().out
         assert "https://sync.infomaniak.com/" in output
-        assert "VG04107" in output
+        assert "VG00000" in output
 
 
 def test_auth_chat_stdin_saves_token_and_metadata_without_echo(tmp_path, monkeypatch, capsys):
@@ -402,14 +402,14 @@ def test_auth_chat_url_uses_main_token_fallback_for_trusted_host(tmp_path, monke
     token = "secret-main-token"
     TokenStore().save_token("work", token)
 
-    assert cli.main(["auth", "chat", "--url", "https://cylro.kchat.infomaniak.com"]) == 0
+    assert cli.main(["auth", "chat", "--url", "https://acme.kchat.infomaniak.com"]) == 0
 
     captured = capsys.readouterr()
     assert token not in captured.out
     assert token not in captured.err
     assert not ChatTokenStore().has_token("work")
     profile = ProfileManager().get("work")
-    assert profile.kchat_url == "https://cylro.kchat.infomaniak.com"
+    assert profile.kchat_url == "https://acme.kchat.infomaniak.com"
     assert "main Informaniak API token fallback" in captured.out
 
 
@@ -434,7 +434,7 @@ def test_auth_chat_ksuite_url_discovers_working_api_base(tmp_path, monkeypatch, 
             "auth",
             "chat",
             "--url",
-            "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square",
+            "https://ksuite.infomaniak.com/1234567/kchat/acme/channels/town-square",
         ]
     ) == 0
 
@@ -443,16 +443,16 @@ def test_auth_chat_ksuite_url_discovers_working_api_base(tmp_path, monkeypatch, 
     assert token not in captured.err
     assert seen_clients == [
         (
-            "https://cylro.kchat.infomaniak.com",
+            "https://acme.kchat.infomaniak.com",
             token,
             {"auth_source": "main_token_fallback"},
         )
     ]
     profile = ProfileManager().get("work")
-    assert profile.kchat_url == "https://cylro.kchat.infomaniak.com"
-    assert profile.kchat_ksuite_url == "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
-    assert profile.kchat_ksuite_account_id == "1988835"
-    assert profile.kchat_workspace_slug == "cylro"
+    assert profile.kchat_url == "https://acme.kchat.infomaniak.com"
+    assert profile.kchat_ksuite_url == "https://ksuite.infomaniak.com/1234567/kchat/acme/channels/town-square"
+    assert profile.kchat_ksuite_account_id == "1234567"
+    assert profile.kchat_workspace_slug == "acme"
     assert profile.kchat_default_channel_slug == "town-square"
 
 
@@ -471,7 +471,7 @@ def test_auth_chat_ksuite_lookalike_does_not_probe_with_main_token(tmp_path, mon
             "auth",
             "chat",
             "--url",
-            "https://example.com/1988835/kchat/cylro/channels/town-square",
+            "https://example.com/1234567/kchat/acme/channels/town-square",
         ]
     ) == 2
 
@@ -502,7 +502,7 @@ def test_auth_chat_ksuite_discovery_failure_has_guidance(tmp_path, monkeypatch, 
             "auth",
             "chat",
             "--url",
-            "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square",
+            "https://ksuite.infomaniak.com/1234567/kchat/acme/channels/town-square",
         ]
     ) == 2
 
@@ -514,15 +514,15 @@ def test_auth_chat_ksuite_discovery_failure_has_guidance(tmp_path, monkeypatch, 
     assert "--stdin" in captured.err
     profile = ProfileManager().get("work")
     assert profile.kchat_url is None
-    assert profile.kchat_ksuite_account_id == "1988835"
-    assert profile.kchat_workspace_slug == "cylro"
+    assert profile.kchat_ksuite_account_id == "1234567"
+    assert profile.kchat_workspace_slug == "acme"
 
 
 def test_auth_chat_url_needs_token_or_main_fallback(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update("work", make_default=True)
 
-    assert cli.main(["auth", "chat", "--url", "https://cylro.kchat.infomaniak.com"]) == 2
+    assert cli.main(["auth", "chat", "--url", "https://acme.kchat.infomaniak.com"]) == 2
 
     captured = capsys.readouterr()
     assert "--token" in captured.err

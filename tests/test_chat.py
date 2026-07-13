@@ -440,27 +440,27 @@ def test_chat_client_errors_are_redacted():
 
 
 def test_trusted_infomaniak_kchat_host_detection():
-    assert is_trusted_infomaniak_kchat_url("https://cylro.kchat.infomaniak.com")
+    assert is_trusted_infomaniak_kchat_url("https://acme.kchat.infomaniak.com")
     assert is_trusted_infomaniak_kchat_url("https://team-name.kchat.infomaniak.com/")
     assert not is_trusted_infomaniak_kchat_url("https://kchat.infomaniak.com")
     assert not is_trusted_infomaniak_kchat_url("https://example.com")
-    assert not is_trusted_infomaniak_kchat_url("https://cylro.kchat.infomaniak.com.example.com")
+    assert not is_trusted_infomaniak_kchat_url("https://acme.kchat.infomaniak.com.example.com")
 
 
 def test_parse_ksuite_browser_kchat_url():
     parsed = parse_ksuite_kchat_url(
-        "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
+        "https://ksuite.infomaniak.com/1234567/kchat/acme/channels/town-square"
     )
 
     assert parsed is not None
-    assert parsed.account_id == "1988835"
-    assert parsed.workspace_slug == "cylro"
+    assert parsed.account_id == "1234567"
+    assert parsed.workspace_slug == "acme"
     assert parsed.channel_slug == "town-square"
-    assert parsed.original_url == "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
+    assert parsed.original_url == "https://ksuite.infomaniak.com/1234567/kchat/acme/channels/town-square"
 
 
 def test_ksuite_like_urls_are_not_trusted_on_other_hosts():
-    url = "https://example.com/1988835/kchat/cylro/channels/town-square"
+    url = "https://example.com/1234567/kchat/acme/channels/town-square"
 
     assert parse_ksuite_kchat_url(url) is None
     assert derive_kchat_api_base_candidates(url) == []
@@ -468,13 +468,13 @@ def test_ksuite_like_urls_are_not_trusted_on_other_hosts():
 
 def test_derive_kchat_api_base_candidate_from_ksuite_url():
     assert derive_kchat_api_base_candidates(
-        "https://ksuite.infomaniak.com/1988835/kchat/cylro/channels/town-square"
-    ) == ["https://cylro.kchat.infomaniak.com"]
+        "https://ksuite.infomaniak.com/1234567/kchat/acme/channels/town-square"
+    ) == ["https://acme.kchat.infomaniak.com"]
 
 
 def test_direct_trusted_kchat_url_candidate_is_normalized():
-    assert derive_kchat_api_base_candidates("https://cylro.kchat.infomaniak.com/some/path") == [
-        "https://cylro.kchat.infomaniak.com"
+    assert derive_kchat_api_base_candidates("https://acme.kchat.infomaniak.com/some/path") == [
+        "https://acme.kchat.infomaniak.com"
     ]
 
 
@@ -491,7 +491,7 @@ def test_chat_client_fallback_rejection_is_actionable_and_redacted():
         )
 
     client = ChatClient(
-        "https://cylro.kchat.infomaniak.com",
+        "https://acme.kchat.infomaniak.com",
         token,
         opener=opener,
         auth_source="main_token_fallback",
@@ -542,7 +542,7 @@ def test_cli_chat_uses_explicit_chat_token_before_main_token(tmp_path, monkeypat
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update(
         "work",
-        kchat_url="https://cylro.kchat.infomaniak.com",
+        kchat_url="https://acme.kchat.infomaniak.com",
         make_default=True,
     )
     TokenStore().save_token("work", "secret-main-token")
@@ -570,7 +570,7 @@ def test_cli_chat_uses_main_token_fallback_for_trusted_host(tmp_path, monkeypatc
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update(
         "work",
-        kchat_url="https://cylro.kchat.infomaniak.com",
+        kchat_url="https://acme.kchat.infomaniak.com",
         make_default=True,
     )
     TokenStore().save_token("work", "secret-main-token")
@@ -589,7 +589,7 @@ def test_cli_chat_uses_main_token_fallback_for_trusted_host(tmp_path, monkeypatc
     captured = capsys.readouterr()
     assert "secret-main-token" not in captured.out
     assert "secret-main-token" not in captured.err
-    assert created_clients[0].base_url == "https://cylro.kchat.infomaniak.com"
+    assert created_clients[0].base_url == "https://acme.kchat.infomaniak.com"
     assert created_clients[0].token == "secret-main-token"
     assert created_clients[0].kwargs["auth_source"] == "main_token_fallback"
 
@@ -621,7 +621,7 @@ def test_cli_chat_fallback_rejection_does_not_leak_token(tmp_path, monkeypatch, 
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update(
         "work",
-        kchat_url="https://cylro.kchat.infomaniak.com",
+        kchat_url="https://acme.kchat.infomaniak.com",
         make_default=True,
     )
     TokenStore().save_token("work", "secret-main-token")
@@ -647,7 +647,7 @@ def test_whoami_distinguishes_chat_auth_state(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
     ProfileManager().create_or_update(
         "work",
-        kchat_url="https://cylro.kchat.infomaniak.com",
+        kchat_url="https://acme.kchat.infomaniak.com",
         make_default=True,
     )
     TokenStore().save_token("work", "secret-main-token")
@@ -655,7 +655,7 @@ def test_whoami_distinguishes_chat_auth_state(tmp_path, monkeypatch, capsys):
     assert cli.main(["whoami", "--json"]) == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output["kchat_url"] == "https://cylro.kchat.infomaniak.com"
+    assert output["kchat_url"] == "https://acme.kchat.infomaniak.com"
     assert output["kchat_url_configured"] is True
     assert output["kchat_explicit_token_configured"] is False
     assert output["kchat_main_token_fallback_possible"] is True

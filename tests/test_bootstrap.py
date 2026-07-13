@@ -374,7 +374,7 @@ def test_bootstrap_does_not_wipe_existing_service_config_on_partial_discovery_fa
         contacts_username="existing@example.com",
         calendar_url="https://sync.example.test/calendars/user/work/",
         calendar_username="existing@example.com",
-        kchat_url="https://cylro.kchat.infomaniak.com",
+        kchat_url="https://acme.kchat.infomaniak.com",
         kchat_team_id="team-existing",
         make_default=True,
     )
@@ -397,7 +397,7 @@ def test_bootstrap_does_not_wipe_existing_service_config_on_partial_discovery_fa
     profile = manager.get("work")
     assert profile.contacts_url == "https://sync.example.test/addressbooks/user/default/"
     assert profile.calendar_url == "https://sync.example.test/calendars/user/work/"
-    assert profile.kchat_url == "https://cylro.kchat.infomaniak.com"
+    assert profile.kchat_url == "https://acme.kchat.infomaniak.com"
 
 
 def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_path):

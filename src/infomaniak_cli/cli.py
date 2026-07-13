@@ -814,7 +814,7 @@ def cmd_auth_contacts(args: argparse.Namespace) -> int:
     contacts_url = (args.url or profile.contacts_url or DEFAULT_DAV_URL).strip()
     contacts_username = (args.username or profile.contacts_username or "").strip()
     if not contacts_username:
-        print("error: --username is required for contacts; use your Infomaniak sync username, e.g. VG04107", file=sys.stderr)
+        print("error: --username is required for contacts; use your Infomaniak sync username, e.g. VG00000", file=sys.stderr)
         return 2
 
     if args.stdin:
@@ -855,7 +855,7 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
     calendar_url = (args.url or profile.calendar_url or DEFAULT_DAV_URL).strip()
     calendar_username = (args.username or profile.calendar_username or "").strip()
     if not calendar_username:
-        print("error: --username is required for calendar; use your Infomaniak sync username, e.g. VG04107", file=sys.stderr)
+        print("error: --username is required for calendar; use your Infomaniak sync username, e.g. VG00000", file=sys.stderr)
         return 2
 
     if args.stdin:
@@ -2680,14 +2680,14 @@ def build_parser() -> argparse.ArgumentParser:
     auth_mail.set_defaults(func=cmd_auth_mail)
     auth_contacts = auth_sub.add_parser("contacts", help="Store CardDAV contacts credentials for a profile")
     auth_contacts.add_argument("--url", help=f"CardDAV DAV URL. Defaults to {DEFAULT_DAV_URL}.")
-    auth_contacts.add_argument("--username", help="Infomaniak sync username, e.g. VG04107.")
+    auth_contacts.add_argument("--username", help="Infomaniak sync username, e.g. VG00000.")
     auth_contacts.add_argument("--password", help="CardDAV password. Omit to prompt.")
     auth_contacts.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
     auth_contacts.add_argument("--no-discover", action="store_true", help="Skip CardDAV discovery and save --url verbatim.")
     auth_contacts.set_defaults(func=cmd_auth_contacts)
     auth_calendar = auth_sub.add_parser("calendar", help="Store CalDAV calendar credentials for a profile")
     auth_calendar.add_argument("--url", help=f"CalDAV DAV URL. Defaults to {DEFAULT_DAV_URL}.")
-    auth_calendar.add_argument("--username", help="Infomaniak sync username, e.g. VG04107.")
+    auth_calendar.add_argument("--username", help="Infomaniak sync username, e.g. VG00000.")
     auth_calendar.add_argument("--password", help="CalDAV password. Omit to prompt.")
     auth_calendar.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
     auth_calendar.add_argument("--no-discover", action="store_true", help="Skip CalDAV discovery and save --url verbatim.")
