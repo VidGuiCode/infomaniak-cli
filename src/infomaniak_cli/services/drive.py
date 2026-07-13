@@ -28,6 +28,29 @@ def list_files(
     return _file_items(payload)
 
 
+def create_folder(
+    api: Any,
+    drive_id: str,
+    name: str,
+    *,
+    parent_id: str | None = None,
+) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {"type": "dir", "name": name}
+    if parent_id:
+        payload["parent_id"] = parent_id
+    response = api.post(f"/2/drive/{drive_id}/files", json=payload)
+    if not isinstance(response, Mapping):
+        raise DriveError("Unexpected kDrive file creation response: expected JSON object")
+    
+    file_item = response.get("data")
+    if file_item is None and response.get("id") is not None:
+        file_item = response
+    
+    if not isinstance(file_item, Mapping):
+        raise DriveError("Unexpected kDrive file creation response: missing data object")
+    return file_item
+
+
 def search_files(
     api: Any,
     drive_id: str,

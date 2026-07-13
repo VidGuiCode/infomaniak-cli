@@ -1948,6 +1948,43 @@ def cmd_drive_shared(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drive_mkdir(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    name = args.name
+    parent_id = getattr(args, "parent_id", None)
+    
+    if not _confirm(args, f"Create folder '{name}' in drive {drive_id} (parent: {parent_id or 'root'})?", action="mkdir"):
+        return 2
+        
+    try:
+        from .services.drive import create_folder
+        folder = create_folder(client, drive_id, name, parent_id=parent_id)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise _drive_404_error(drive_id) from exc
+        raise
+
+    if _machine_output(args):
+        from .services.drive import slim_file
+        output_folder = folder if _raw_output(args) else slim_file(folder, drive_id=drive_id)
+        print_machine(
+            {
+                "profile": profile.name,
+                "drive_id": drive_id,
+                "parent_id": parent_id,
+                "folder": output_folder,
+            },
+            args,
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(f"Successfully created folder: {name}")
+        print(_display_drive_item(folder))
+    return 0
+
+
 def cmd_drive_folders(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     drive_id = _drive_id_or_error(args, profile)
@@ -2566,6 +2603,17 @@ def build_parser() -> argparse.ArgumentParser:
     drive_folders.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     drive_folders.add_argument("--raw", action="store_true", help="With --json, emit the full raw folder payload.")
     drive_folders.set_defaults(func=cmd_drive_folders)
+
+    drive_mkdir = drive_sub.add_parser("mkdir", help="Create a new folder in kDrive")
+    drive_mkdir.add_argument("name", help="Name of the new folder")
+    drive_mkdir.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_mkdir.add_argument("--parent", "--path", dest="parent_id", help="Parent ID where the folder will be created. Defaults to root.")
+    drive_mkdir.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    drive_mkdir.add_argument("--json", action="store_true")
+    drive_mkdir.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_mkdir.add_argument("--raw", action="store_true", help="With --json, emit the full raw folder payload.")
+    drive_mkdir.set_defaults(func=cmd_drive_mkdir)
+
     drive_tree = drive_sub.add_parser("tree", help="Show a shallow read-only kDrive folder tree")
     drive_tree.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
     drive_tree.add_argument("--parent", "--path", dest="parent_id", help="Folder/parent ID to start from.")

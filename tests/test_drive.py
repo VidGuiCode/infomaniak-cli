@@ -9,6 +9,7 @@ from infomaniak_cli.profiles import ProfileManager
 from infomaniak_cli.services.drive import (
     DriveError,
     build_folder_tree,
+    create_folder,
     find_file,
     is_shared_file,
     list_files,
@@ -31,6 +32,29 @@ class FakeAPI:
         if isinstance(response, Exception):
             raise response
         return response
+
+    def post(self, path, json=None):
+        self.calls.append(("POST", path, json))
+        key = ("POST", path)
+        response = self.responses.get(key, self.responses.get(path))
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def test_drive_service_create_folder_success():
+    api = FakeAPI(
+        {
+            ("POST", "/2/drive/drive-1/files"): {
+                "result": "success",
+                "data": {"id": 999, "name": "new_folder", "type": "dir", "parent_id": 123},
+            }
+        }
+    )
+    folder = create_folder(api, "drive-1", "new_folder", parent_id="123")
+    assert folder["name"] == "new_folder"
+    assert folder["id"] == 999
+    assert api.calls[0] == ("POST", "/2/drive/drive-1/files", {"type": "dir", "name": "new_folder", "parent_id": "123"})
 
 
 def test_drive_service_lists_files_from_standard_envelope():
@@ -495,6 +519,30 @@ def test_cli_drive_recent_raw_compact_and_table_outputs(tmp_path, monkeypatch, c
     table_lines = capsys.readouterr().out.splitlines()
     assert table_lines[0].startswith("Type")
     assert "Invoice.pdf" in table_lines[-1]
+
+
+def test_cli_drive_mkdir_success(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    
+    api = FakeAPI(
+        {
+            ("POST", "/2/drive/drive-1/files"): {
+                "result": "success",
+                "data": {"id": 1234, "name": "new_folder", "type": "dir", "parent_id": 123},
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url=None: api)
+
+    # with --yes
+    assert cli.main(["drive", "mkdir", "new_folder", "--parent", "123", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "Successfully created folder: new_folder" in out
+    
+    assert len(api.calls) == 1
+    assert api.calls[0] == ("POST", "/2/drive/drive-1/files", {"type": "dir", "name": "new_folder", "parent_id": "123"})
 
 
 def test_cli_drive_recent_requires_drive_id(tmp_path, monkeypatch, capsys):

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0] - 2026-07-13
+### Added
+- **kDrive:** Introduced `ik drive mkdir <name>`, the first low-risk write command for the 0.2.x line.
+  - Safely creates a folder in kDrive without destructive potential.
+  - Includes `--parent` flag for nesting.
+  - Protected by interactive confirmation prompt.
+  - Supports `--yes` flag to bypass prompts for scripting and agent use.
+
 ## v0.1.28 - Chat Search Debug (2026-07-13)
 
 - **kChat**: Reverted the `in:` filter injection for channel searches as it causes 0 results on Infomaniak's API for certain channels. Added diagnostic warnings to the local filter to help identify mismatching channel IDs.
