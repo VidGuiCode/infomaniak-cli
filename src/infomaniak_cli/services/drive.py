@@ -28,6 +28,12 @@ def list_files(
     return _file_items(payload)
 
 
+# kDrive represents the drive root as the special directory whose id is 1
+# (visibility "is_root", depth 0). New folders are created *inside* a parent
+# directory, so mkdir at the top level targets this root id.
+DRIVE_ROOT_ID = "1"
+
+
 def create_folder(
     api: Any,
     drive_id: str,
@@ -35,10 +41,13 @@ def create_folder(
     *,
     parent_id: str | None = None,
 ) -> Mapping[str, Any]:
-    payload: dict[str, Any] = {"type": "dir", "name": name}
-    if parent_id:
-        payload["parent_id"] = parent_id
-    response = api.post(f"/2/drive/{drive_id}/files", json=payload)
+    # kDrive create-directory endpoint: the parent directory id lives in the URL
+    # path and the body carries only the name. Default to the drive root (id 1).
+    target_parent = str(parent_id) if parent_id else DRIVE_ROOT_ID
+    response = api.post(
+        f"/2/drive/{drive_id}/files/{target_parent}/directory",
+        json={"name": name},
+    )
     if not isinstance(response, Mapping):
         raise DriveError("Unexpected kDrive file creation response: expected JSON object")
     

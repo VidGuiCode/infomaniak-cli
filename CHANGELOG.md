@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1] - 2026-07-13
+### Fixed
+- **kDrive:** `ik drive mkdir` now actually works. The 0.2.0 implementation posted to a
+  non-existent endpoint (`POST /2/drive/{id}/files` with `{"type":"dir"}`) and failed with
+  `404 method_not_found`.
+  - Corrected to the real kDrive endpoint: `POST /2/drive/{id}/files/{parent_id}/directory`
+    with body `{"name": ...}`.
+  - Creating a folder at the top level now targets the drive root directory (id `1`,
+    `visibility: is_root`) instead of relying on fragile child-inspection. `--parent <id>`
+    nests under a specific directory.
+  - Verified live (create at root + under a parent, listed, then deleted).
+
 ## [0.2.0] - 2026-07-13
 ### Added
 - **kDrive:** Introduced `ik drive mkdir <name>`, the first low-risk write command for the 0.2.x line.

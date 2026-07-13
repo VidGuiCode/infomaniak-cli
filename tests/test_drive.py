@@ -45,7 +45,7 @@ class FakeAPI:
 def test_drive_service_create_folder_success():
     api = FakeAPI(
         {
-            ("POST", "/2/drive/drive-1/files"): {
+            ("POST", "/2/drive/drive-1/files/123/directory"): {
                 "result": "success",
                 "data": {"id": 999, "name": "new_folder", "type": "dir", "parent_id": 123},
             }
@@ -54,7 +54,22 @@ def test_drive_service_create_folder_success():
     folder = create_folder(api, "drive-1", "new_folder", parent_id="123")
     assert folder["name"] == "new_folder"
     assert folder["id"] == 999
-    assert api.calls[0] == ("POST", "/2/drive/drive-1/files", {"type": "dir", "name": "new_folder", "parent_id": "123"})
+    assert api.calls[0] == ("POST", "/2/drive/drive-1/files/123/directory", {"name": "new_folder"})
+
+
+def test_drive_service_create_folder_defaults_to_root():
+    api = FakeAPI(
+        {
+            ("POST", "/2/drive/drive-1/files/1/directory"): {
+                "result": "success",
+                "data": {"id": 555, "name": "top_level", "type": "dir", "parent_id": 1},
+            }
+        }
+    )
+    folder = create_folder(api, "drive-1", "top_level")
+    assert folder["id"] == 555
+    # No --parent given -> targets the drive root (id 1) in the URL path.
+    assert api.calls[0] == ("POST", "/2/drive/drive-1/files/1/directory", {"name": "top_level"})
 
 
 def test_drive_service_lists_files_from_standard_envelope():
@@ -528,7 +543,7 @@ def test_cli_drive_mkdir_success(tmp_path, monkeypatch, capsys):
     
     api = FakeAPI(
         {
-            ("POST", "/2/drive/drive-1/files"): {
+            ("POST", "/2/drive/drive-1/files/123/directory"): {
                 "result": "success",
                 "data": {"id": 1234, "name": "new_folder", "type": "dir", "parent_id": 123},
             }
@@ -540,9 +555,9 @@ def test_cli_drive_mkdir_success(tmp_path, monkeypatch, capsys):
     assert cli.main(["drive", "mkdir", "new_folder", "--parent", "123", "--yes"]) == 0
     out = capsys.readouterr().out
     assert "Successfully created folder: new_folder" in out
-    
+
     assert len(api.calls) == 1
-    assert api.calls[0] == ("POST", "/2/drive/drive-1/files", {"type": "dir", "name": "new_folder", "parent_id": "123"})
+    assert api.calls[0] == ("POST", "/2/drive/drive-1/files/123/directory", {"name": "new_folder"})
 
 
 def test_cli_drive_recent_requires_drive_id(tmp_path, monkeypatch, capsys):
