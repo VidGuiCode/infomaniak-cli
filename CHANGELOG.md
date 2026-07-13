@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.26 - DAV Live Validation (2026-07-13)
+
+- **DAV Polish**: Confirmed `0.1.17`'s DAV auto-discovery code against live Infomaniak environments. Discovery and payloads parse perfectly without modification!
+- **Docs**: Updated documentation to explicitly point users to `config.infomaniak.com` to generate the correct DAV application passwords, as account-level passwords are rejected.
+
 ## v0.1.25 - CLI polish: fix-path and keyring
 
 - **OS Keyring Integration**: Securely store API tokens and app passwords in the native OS credential manager (Windows Credential Locker, macOS Keychain, Linux Secret Service) via the `keyring` library, replacing plaintext token files.

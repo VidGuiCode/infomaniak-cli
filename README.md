@@ -152,7 +152,9 @@ Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.m
 
 ## Contacts setup
 
-Contacts use CardDAV through Infomaniak sync. Use your sync username, then paste the application password into stdin:
+Contacts use CardDAV through Infomaniak sync. You must generate an application password at **https://config.infomaniak.com/** (under *My Contacts & Calendars* -> *Windows* -> *CalDav Synchronizer*). Do not use an account-level password.
+
+Use your sync username, then paste the application password into stdin:
 
 ```bash
 ik --profile <profile> auth contacts --username <sync-username> --stdin
@@ -163,7 +165,9 @@ From the default DAV base `https://sync.infomaniak.com/`, `ik auth contacts` aut
 
 ## Calendar setup
 
-Calendar uses CalDAV through Infomaniak sync. Use your sync username, then paste the application password into stdin:
+Calendar uses CalDAV through Infomaniak sync. You must generate an application password at **https://config.infomaniak.com/** (under *My Contacts & Calendars* -> *Windows* -> *CalDav Synchronizer*). Do not use an account-level password.
+
+Use your sync username, then paste the application password into stdin:
 
 ```bash
 ik --profile <profile> auth calendar --username <sync-username> --stdin
