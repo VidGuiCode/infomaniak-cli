@@ -6,7 +6,11 @@ from infomaniak_cli.auth import CalendarPasswordStore
 from infomaniak_cli.profiles import ProfileManager
 from infomaniak_cli.services.calendar import (
     CalendarClient,
+    CalendarError,
+    build_event_ics,
     find_event,
+    format_ics_datetime,
+    parse_event_input,
     parse_ics_events,
     search_events,
     slim_calendar,
@@ -75,6 +79,10 @@ class FakeCalendarClient:
         if limit is not None:
             return events[:limit]
         return events
+
+    def create_event(self, ics, uid, *, calendar=None):
+        self.calls.append(("create_event", ics, uid, calendar))
+        return {"uid": uid, "url": f"{self.url}{uid}.ics", "status": 201}
 
 
 class FakeResponse:
@@ -454,10 +462,217 @@ def test_cli_calendar_requires_configuration(tmp_path, monkeypatch, capsys):
     assert "auth calendar" in captured.err
 
 
-def test_calendar_parser_exposes_no_write_commands():
+def test_calendar_parser_exposes_only_create_as_write_command():
     parser = cli.build_parser()
     calendar_parser = parser._subparsers._group_actions[0].choices["calendar"]
     choices = calendar_parser._subparsers._group_actions[0].choices
 
-    assert set(choices) == {"list", "upcoming", "today", "search", "show"}
-    assert not {"create", "update", "delete", "rsvp", "invite", "sync"} & set(choices)
+    # `create` is the single protected write added in 0.2.5; nothing destructive.
+    assert set(choices) == {"list", "upcoming", "today", "search", "show", "create"}
+    assert not {"update", "delete", "rsvp", "invite", "sync"} & set(choices)
+
+
+# --- event ICS building / parsing -----------------------------------------
+
+
+def test_parse_event_input_timed_and_all_day():
+    assert parse_event_input("2026-07-20T14:30", all_day=False) == datetime.datetime(2026, 7, 20, 14, 30)
+    assert parse_event_input("2026-07-20", all_day=True) == datetime.date(2026, 7, 20)
+
+
+def test_parse_event_input_rejects_bad_value():
+    import pytest
+
+    with pytest.raises(CalendarError):
+        parse_event_input("not-a-date", all_day=False)
+
+
+def test_format_ics_datetime_naive_floating_and_aware_utc():
+    naive = datetime.datetime(2026, 7, 20, 14, 30, 0)
+    assert format_ics_datetime(naive, all_day=False) == "20260720T143000"
+    aware = datetime.datetime(2026, 7, 20, 12, 30, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+    assert format_ics_datetime(aware, all_day=False) == "20260720T103000Z"
+    assert format_ics_datetime(datetime.date(2026, 7, 20), all_day=True) == "20260720"
+
+
+def test_build_event_ics_timed_and_escaping():
+    ics = build_event_ics(
+        uid="uid-x",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Lunch; with, team\nback-to-back",
+        start=datetime.datetime(2026, 7, 20, 14, 0),
+        end=datetime.datetime(2026, 7, 20, 15, 0),
+        location="Café, HQ",
+    )
+    assert "BEGIN:VEVENT" in ics
+    assert "UID:uid-x" in ics
+    assert "DTSTAMP:20260701T080000Z" in ics
+    assert "DTSTART:20260720T140000" in ics
+    assert "DTEND:20260720T150000" in ics
+    # text values are RFC 5545 escaped
+    assert "SUMMARY:Lunch\\; with\\, team\\nback-to-back" in ics
+    assert "LOCATION:Café\\, HQ" in ics
+    assert ics.endswith("END:VCALENDAR\r\n")
+
+
+def test_build_event_ics_all_day_uses_value_date():
+    ics = build_event_ics(
+        uid="uid-y",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Vacation",
+        start=datetime.date(2026, 8, 10),
+        end=datetime.date(2026, 8, 15),
+        all_day=True,
+    )
+    assert "DTSTART;VALUE=DATE:20260810" in ics
+    assert "DTEND;VALUE=DATE:20260815" in ics
+
+
+def test_create_event_puts_ics_with_if_none_match():
+    seen = []
+
+    def opener(request):
+        seen.append(request)
+        return FakeResponse(b"")
+
+    client = CalendarClient("https://sync.example.test/calendars/user/work/", "user@example.com", "pw", opener=opener)
+    result = client.create_event("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "uid-z")
+
+    assert result["uid"] == "uid-z"
+    assert result["url"].endswith("/uid-z.ics")
+    request = seen[0]
+    assert request.get_method() == "PUT"
+    assert request.headers["If-none-match"] == "*"
+    assert request.headers["Content-type"].startswith("text/calendar")
+    assert request.data == b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
+
+
+def test_create_event_conflict_raises():
+    import pytest
+    import urllib.error
+
+    def opener(request):
+        raise urllib.error.HTTPError(request.full_url, 412, "Precondition Failed", {}, None)
+
+    client = CalendarClient("https://sync.example.test/calendars/user/work/", "user@example.com", "pw", opener=opener)
+    with pytest.raises(CalendarError) as excinfo:
+        client.create_event("ics", "uid-dup")
+    assert "already exists" in str(excinfo.value)
+
+
+# --- calendar create CLI (protected write) --------------------------------
+
+
+def _make_recording_client(monkeypatch):
+    created = []
+
+    def make_client(url, username, password):
+        client = FakeCalendarClient(url, username, password)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "CalendarClient", make_client)
+    return created
+
+
+def test_cli_calendar_create_dry_run_does_not_create(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+
+    rc = cli.main([
+        "calendar", "create", "--summary", "Sync", "--start", "2026-08-01T15:00",
+        "--dry-run", "--json",
+    ])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["dry_run"] is True
+    assert out["created"] is False
+    assert "BEGIN:VCALENDAR" in out["ics"]
+    # end defaulted to +1h
+    assert out["end"] == "2026-08-01T16:00:00"
+    assert not any(c.calls for c in created)
+
+
+def test_cli_calendar_create_yes_requires_explicit_profile(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+
+    rc = cli.main(["calendar", "create", "--summary", "x", "--start", "2026-08-01T15:00", "--yes"])
+    assert rc == 1
+    assert "explicit" in capsys.readouterr().err.lower()
+    assert not any(call[0] == "create_event" for c in created for call in c.calls)
+
+
+def test_cli_calendar_create_yes_with_explicit_profile_creates(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+
+    rc = cli.main([
+        "--profile", "work", "calendar", "create",
+        "--summary", "Ship review", "--start", "2026-08-01T15:00", "--end", "2026-08-01T16:30",
+        "--yes", "--json",
+    ])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["created"] is True
+    assert out["event"]["status"] == 201
+    calls = [call for c in created for call in c.calls if call[0] == "create_event"]
+    assert len(calls) == 1
+    assert "SUMMARY:Ship review" in calls[0][1]
+
+
+def test_cli_calendar_create_without_yes_non_interactive_errors(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+
+    rc = cli.main(["--profile", "work", "calendar", "create", "--summary", "x", "--start", "2026-08-01T15:00"])
+    assert rc == 1
+    assert "requires --yes" in capsys.readouterr().err
+    assert not any(call[0] == "create_event" for c in created for call in c.calls)
+
+
+def test_cli_calendar_create_rejects_end_before_start(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    _make_recording_client(monkeypatch)
+
+    rc = cli.main([
+        "--profile", "work", "calendar", "create", "--summary", "x",
+        "--start", "2026-08-01T15:00", "--end", "2026-08-01T14:00", "--yes",
+    ])
+    assert rc == 1
+    assert "must be after" in capsys.readouterr().err
+
+
+def test_cli_calendar_create_empty_summary_refused(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    _make_recording_client(monkeypatch)
+
+    rc = cli.main(["--profile", "work", "calendar", "create", "--summary", "   ", "--start", "2026-08-01T15:00", "--yes"])
+    assert rc == 1
+    assert "empty --summary" in capsys.readouterr().err
+
+
+def test_cli_calendar_create_interactive_confirm_creates(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+    monkeypatch.setattr(cli, "_is_non_interactive", lambda args: False)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+
+    rc = cli.main(["--profile", "work", "calendar", "create", "--summary", "Standup", "--start", "2026-08-01T09:00"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Created event 'Standup'" in out
+    assert any(call[0] == "create_event" for c in created for call in c.calls)
+
+
+def test_cli_calendar_create_interactive_decline_does_not_create(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+    monkeypatch.setattr(cli, "_is_non_interactive", lambda args: False)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+
+    rc = cli.main(["--profile", "work", "calendar", "create", "--summary", "Standup", "--start", "2026-08-01T09:00"])
+    assert rc == 2
+    assert "cancelled" in capsys.readouterr().out.lower()
+    assert not any(call[0] == "create_event" for c in created for call in c.calls)

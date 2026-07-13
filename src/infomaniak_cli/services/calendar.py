@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import datetime
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import PurePosixPath
@@ -106,6 +107,42 @@ class CalendarClient:
                 "activated for this user yet - open the Calendar web app once, then retry."
             )
 
+    def create_event(self, ics: str, uid: str, *, calendar: str | None = None) -> dict[str, Any]:
+        """Create a calendar event by PUTting an iCalendar resource (CalDAV).
+
+        Writes to ``{collection}/{uid}.ics`` with ``If-None-Match: *`` so an
+        existing event with the same uid is never overwritten. The server side
+        is a create-only write; callers handle preview/confirmation first.
+        """
+        collection = self._calendar_url(calendar).rstrip("/")
+        event_url = f"{collection}/{urllib.parse.quote(uid, safe='')}.ics"
+        request = _MethodRequest(
+            event_url,
+            data=ics.encode("utf-8"),
+            method="PUT",
+            headers={
+                "Authorization": _basic_auth(self.username, self.password),
+                "Content-Type": "text/calendar; charset=utf-8",
+                "If-None-Match": "*",
+            },
+        )
+        try:
+            with self._opener(request) as response:
+                status = getattr(response, "status", None) or getattr(response, "code", 201)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 412:
+                raise CalendarError(
+                    f"An event with uid {uid} already exists at {event_url} (not overwritten)."
+                ) from exc
+            raise CalendarError(f"Calendar event creation failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise CalendarError(
+                f"Calendar event creation failed: {redact_secret(str(exc.reason))}"
+            ) from exc
+        except OSError as exc:
+            raise CalendarError(f"Calendar event creation failed: {redact_secret(str(exc))}") from exc
+        return {"uid": uid, "url": event_url, "status": status}
+
     def _calendar_url(self, calendar: str | None) -> str:
         if not calendar:
             return self.url
@@ -191,6 +228,80 @@ def find_event(events: list[Mapping[str, Any]], event_id: str) -> Mapping[str, A
         if str(event.get("id")) == str(event_id) or str(event.get("uid")) == str(event_id):
             return event
     return None
+
+
+def parse_event_input(value: str, *, all_day: bool) -> datetime.date:
+    """Parse a user-supplied event date/time.
+
+    ``all_day`` expects an ISO date (``YYYY-MM-DD``); otherwise an ISO 8601
+    datetime (``YYYY-MM-DDTHH:MM`` optionally with seconds and a ``Z``/offset).
+    A naive datetime is treated as floating local time; an aware one is
+    normalized to UTC when formatted.
+    """
+    text = value.strip()
+    try:
+        if all_day:
+            return datetime.date.fromisoformat(text[:10])
+        return datetime.datetime.fromisoformat(text)
+    except ValueError as exc:
+        kind = "date (YYYY-MM-DD)" if all_day else "datetime (e.g. 2026-07-20T14:00)"
+        raise CalendarError(f"Invalid {kind}: {value!r}") from exc
+
+
+def format_ics_datetime(value: datetime.date, *, all_day: bool) -> str:
+    if all_day:
+        day = value.date() if isinstance(value, datetime.datetime) else value
+        return day.strftime("%Y%m%d")
+    if not isinstance(value, datetime.datetime):
+        raise CalendarError("A timed event requires a datetime value.")
+    if value.tzinfo is None:
+        return value.strftime("%Y%m%dT%H%M%S")
+    return value.astimezone(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def build_event_ics(
+    *,
+    uid: str,
+    dtstamp: datetime.datetime,
+    summary: str,
+    start: datetime.date,
+    end: datetime.date,
+    all_day: bool = False,
+    description: str | None = None,
+    location: str | None = None,
+) -> str:
+    """Build a minimal RFC 5545 VEVENT calendar object (no attendees/invites)."""
+    value_date = ";VALUE=DATE" if all_day else ""
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//infomaniak-cli//EN",
+        "CALSCALE:GREGORIAN",
+        "BEGIN:VEVENT",
+        f"UID:{uid}",
+        f"DTSTAMP:{format_ics_datetime(dtstamp, all_day=False)}",
+        f"DTSTART{value_date}:{format_ics_datetime(start, all_day=all_day)}",
+        f"DTEND{value_date}:{format_ics_datetime(end, all_day=all_day)}",
+        f"SUMMARY:{_escape_ics_text(summary)}",
+    ]
+    if location:
+        lines.append(f"LOCATION:{_escape_ics_text(location)}")
+    if description:
+        lines.append(f"DESCRIPTION:{_escape_ics_text(description)}")
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _escape_ics_text(value: str) -> str:
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\r\n", "\\n")
+        .replace("\n", "\\n")
+        .replace("\r", "")
+    )
 
 
 def parse_ics_events(ics: str, *, calendar_id: str | None = None, fallback_id: str | None = None) -> list[dict[str, Any]]:

@@ -5,6 +5,7 @@ import datetime
 import os
 import sys
 import urllib.parse
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -24,7 +25,9 @@ from .services.account import list_accounts, list_products, list_services, slim_
 from .services.calendar import (
     CalendarClient,
     CalendarError,
+    build_event_ics,
     find_event,
+    parse_event_input,
     search_events,
     slim_calendar,
     slim_calendars,
@@ -2448,6 +2451,97 @@ def cmd_calendar_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_calendar_create_preview(profile: Any, target: str, plan: Mapping[str, Any]) -> None:
+    print(f"Profile: {profile.name}")
+    print(f"Calendar: {target}")
+    print(f"Summary: {plan['summary']}")
+    print(f"Start: {plan['start']}" + ("  (all day)" if plan["all_day"] else ""))
+    print(f"End: {plan['end']}")
+    if plan.get("location"):
+        print(f"Location: {plan['location']}")
+    if plan.get("description"):
+        print(f"Description: {plan['description']}")
+    print("(No attendees are invited; this only writes to your own calendar.)")
+
+
+def cmd_calendar_create(args: argparse.Namespace) -> int:
+    profile, client = _calendar_profile_and_client(args)
+
+    summary = args.summary
+    if not summary.strip():
+        raise ValueError("Refusing to create an event with an empty --summary.")
+
+    all_day = getattr(args, "all_day", False)
+    start = parse_event_input(args.start, all_day=all_day)
+    if args.end:
+        end = parse_event_input(args.end, all_day=all_day)
+    elif all_day:
+        end = start + datetime.timedelta(days=1)
+    else:
+        end = start + datetime.timedelta(hours=1)
+
+    if end <= start:
+        raise ValueError(f"--end ({args.end or end}) must be after --start ({args.start}).")
+
+    uid = f"{uuid.uuid4()}@infomaniak-cli"
+    dtstamp = datetime.datetime.now(datetime.UTC)
+    ics = build_event_ics(
+        uid=uid,
+        dtstamp=dtstamp,
+        summary=summary,
+        start=start,
+        end=end,
+        all_day=all_day,
+        description=args.description,
+        location=args.location,
+    )
+
+    target = args.calendar or profile.calendar_url
+    plan = {
+        "profile": profile.name,
+        "calendar": target,
+        "summary": summary,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "all_day": all_day,
+        "location": args.location,
+        "description": args.description,
+        "uid": uid,
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "ics": ics, "dry_run": True, "created": False}, args)
+        else:
+            _print_calendar_create_preview(profile, target, plan)
+            print("Dry run: no event was created. iCalendar body:")
+            print(ics.rstrip())
+        return 0
+
+    # Automation must target an explicit profile before writing unattended.
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            "Refusing to create with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
+        )
+
+    if not _machine_output(args):
+        _print_calendar_create_preview(profile, target, plan)
+
+    if not _confirm(args, "Create this event? [y/N] ", action="calendar create"):
+        print("Event creation cancelled.")
+        return 2
+
+    result = client.create_event(ics, uid, calendar=args.calendar)
+
+    if _machine_output(args):
+        print_machine({**plan, "created": True, "event": result}, args)
+    else:
+        print(f"Created event '{summary}' (uid {uid}).")
+        print(f"Location: {result.get('url')}")
+    return 0
+
+
 def cmd_chat_teams(args: argparse.Namespace) -> int:
     profile, client = _chat_profile_and_client(args)
     teams = client.list_teams()
@@ -3106,6 +3200,26 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_show.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     calendar_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
     calendar_show.set_defaults(func=cmd_calendar_show)
+
+    calendar_create = calendar_sub.add_parser("create", help="Create a calendar event (protected write)")
+    calendar_create.add_argument("--summary", required=True, help="Event title/summary.")
+    calendar_create.add_argument("--start", required=True, help="Start, ISO 8601 (e.g. 2026-07-20T14:00), or a date with --all-day.")
+    calendar_create.add_argument("--end", help="End, ISO 8601. Defaults to +1h (timed) or +1 day (all-day).")
+    calendar_create.add_argument("--all-day", action="store_true", help="Treat --start/--end as all-day dates (YYYY-MM-DD).")
+    calendar_create.add_argument("--location", help="Optional event location.")
+    calendar_create.add_argument("--description", help="Optional event description/notes.")
+    calendar_create.add_argument("--calendar", help="Target calendar ID or collection URL. Defaults to the profile calendar.")
+    calendar_create.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    calendar_create.add_argument(
+        "--dry-run", action="store_true",
+        help="Show the event and iCalendar body without creating it.",
+    )
+    calendar_create.add_argument("--json", action="store_true")
+    calendar_create.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    calendar_create.set_defaults(func=cmd_calendar_create)
 
     chat = sub.add_parser("chat", help="Read-only kChat discovery commands")
     chat_sub = chat.add_subparsers(dest="chat_command", required=True)

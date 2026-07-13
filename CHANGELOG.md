@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.5] - 2026-07-13
+### Added
+- **Calendar:** `ik calendar create --summary <s> --start <when>` — create an event on your own
+  calendar (CalDAV).
+  - Writes a minimal iCalendar VEVENT via `PUT {collection}/{uid}.ics` with `If-None-Match: *`
+    (never overwrites an existing uid).
+  - Protected-write contract: prints a profile/calendar/summary/start/end preview and **requires
+    confirmation**; `--dry-run` shows the event + full iCalendar body without writing.
+  - `--start`/`--end` take ISO 8601 datetimes (naive = floating local, offset/`Z` = UTC); `--all-day`
+    switches to `YYYY-MM-DD` dates. `--end` defaults to +1h (timed) or +1 day (all-day).
+  - `--yes` skips the prompt only with an explicit profile (`--profile`/`IK_PROFILE`).
+    `--location`/`--description` optional; **no attendees are invited**.
+  - `--json`/`--compact` emit the plan plus `{created, event}`.
+  - Still excluded: update, delete, RSVP, invites, reminder writes, sync.
+- **API/service:** binary-safe iCalendar builder (`build_event_ics`), input parser
+  (`parse_event_input`), and `CalendarClient.create_event` (CalDAV PUT).
+
 ## [0.2.4] - 2026-07-13
 ### Added
 - **kChat:** `ik chat post "<message>" --channel <slug|id>` — the first kChat write.

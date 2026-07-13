@@ -297,11 +297,20 @@ ik calendar show <event_id> --json
 ik calendar show <event_id> --json --raw
 ```
 
+Protected write (creates an event on your own calendar — off by default, confirmation required):
+
+```bash
+ik calendar create --summary "Deploy review" --start 2026-08-01T15:00 --end 2026-08-01T16:00 --dry-run
+ik calendar create --summary "Deploy review" --start 2026-08-01T15:00                       # prompts to confirm
+ik calendar create --summary "Vacation" --start 2026-08-10 --end 2026-08-15 --all-day
+ik --profile work calendar create --summary "Standup" --start 2026-08-01T09:00 --yes
+```
+
 `ik calendar list`, `ik calendar upcoming`, `ik calendar today`, `ik calendar search`, and `ik calendar show` use the configured CalDAV collection URL. `ik auth calendar` auto-discovers that collection from the default DAV base `https://sync.infomaniak.com/`; pass `--url` to override or `--no-discover` to save a URL verbatim. JSON output defaults to stable slim calendar/event schemas. Add `--raw` with `--json` to include full parsed calendar/event payloads, including raw ICS text for events when available.
 
 Search is client-side and matches available summary, description, location, organizer, and attendee fields case-insensitively.
 
-Not implemented in v0.1.x: event create, update, delete, RSVP, invites, reminder writes, or sync writes.
+`ik calendar create` creates an event by PUTting a minimal iCalendar VEVENT to the collection (`PUT {collection}/{uid}.ics` with `If-None-Match: *`, so it never overwrites an existing uid). It follows the protected-write contract: prints a profile/calendar/summary/start/end preview and requires confirmation. `--dry-run` shows the event and the full iCalendar body without writing. `--start`/`--end` take ISO 8601 datetimes (naive = floating local, offset/`Z` = normalized to UTC); with `--all-day` they take `YYYY-MM-DD` dates. `--end` defaults to +1h (timed) or +1 day (all-day). `--yes` skips the prompt only with an explicit profile (`--profile`/`IK_PROFILE`). `--location`/`--description` are optional. No attendees are invited. Still excluded: update, delete, RSVP, invites, reminder writes, sync.
 
 ## Output modes
 

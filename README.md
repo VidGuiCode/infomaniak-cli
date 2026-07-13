@@ -213,7 +213,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive mkdir`, `drive download` |
 | Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
 | Contacts | `contacts list`, `contacts search`, `contacts show` |
-| Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show` |
+| Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`, `calendar create` |
 | kChat | `chat teams`, `chat channels`, `chat users`, `chat search`, `chat thread`, `chat post` |
 
 Run `ik <command> --help` for full options on any command.
