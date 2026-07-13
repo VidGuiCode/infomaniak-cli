@@ -2937,6 +2937,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"error: {redact(str(exc))}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
