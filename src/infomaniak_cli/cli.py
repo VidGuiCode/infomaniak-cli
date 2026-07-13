@@ -2392,9 +2392,6 @@ def cmd_chat_search(args: argparse.Namespace) -> int:
     if not query:
         query = "*"
 
-    if channel_name:
-        query = f"{query} in:{channel_name}"
-
     limit = getattr(args, "limit", None)
     posts = client.search_posts(
         team_id,
@@ -2403,8 +2400,14 @@ def cmd_chat_search(args: argparse.Namespace) -> int:
         limit=limit,
     )
     if channel_id is not None:
-        # Extra local safety filter just in case Mattermost returns noise
-        posts = [post for post in posts if post.get("channel_id") == channel_id]
+        filtered = [post for post in posts if post.get("channel_id") == channel_id]
+        if not filtered and posts:
+            found_channels = {post.get("channel_id") for post in posts}
+            print(f"warning: global search found {len(posts)} posts, but none had channel_id {channel_id}.", file=sys.stderr)
+            print(f"Posts found belonged to these channel IDs: {found_channels}", file=sys.stderr)
+        posts = filtered
+        if limit is not None:
+            posts = posts[:limit]
 
     if _machine_output(args):
         output_posts = posts if _raw_output(args) else slim_posts(posts)

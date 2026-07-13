@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.28 - Chat Search Debug (2026-07-13)
+
+- **kChat**: Reverted the `in:` filter injection for channel searches as it causes 0 results on Infomaniak's API for certain channels. Added diagnostic warnings to the local filter to help identify mismatching channel IDs.
+
 ## v0.1.27 - Chat Search Polish (2026-07-13)
 
 - **kChat**: `ik chat search ""` now implicitly uses a `*` wildcard instead of failing with HTTP 422.
