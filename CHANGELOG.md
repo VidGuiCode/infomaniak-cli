@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.27 - Chat Search Polish (2026-07-13)
+
+- **kChat**: `ik chat search ""` now implicitly uses a `*` wildcard instead of failing with HTTP 422.
+- **kChat**: `ik chat search --channel <slug>` now correctly passes the `in:<channel>` filter to the Mattermost API, resolving an issue where the API would truncate results before the local filter could apply.
+- **Doctor**: Suppressed the `⚠` warning for `chat_explicit_token_configured` if the main token fallback is successfully handling the connection.
+
 ## v0.1.26 - DAV Live Validation (2026-07-13)
 
 - **DAV Polish**: Confirmed `0.1.17`'s DAV auto-discovery code against live Infomaniak environments. Discovery and payloads parse perfectly without modification!

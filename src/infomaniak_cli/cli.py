@@ -441,6 +441,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if check == "config_dir" or check == "profiles_found":
             continue
         marker = "✓" if ok else "⚠"
+        if not ok and check == "chat_explicit_token_configured" and data["checks"].get("chat_main_token_fallback_possible"):
+            marker = "-"
         print(f"{marker} {check}: {ok}")
     print(f"Install method: {data['install_method']}")
     _print_path_line(data["path"])
@@ -2379,22 +2381,30 @@ def cmd_chat_search(args: argparse.Namespace) -> int:
     team_id = _chat_team_id_or_error(args, profile, client)
 
     channel_id = None
+    channel_name = None
     channel_slug = getattr(args, "channel", None)
     if channel_slug:
         channel = client.resolve_channel(team_id, channel_slug)
         channel_id = channel.get("id")
+        channel_name = channel.get("name")
+
+    query = args.query.strip()
+    if not query:
+        query = "*"
+
+    if channel_name:
+        query = f"{query} in:{channel_name}"
 
     limit = getattr(args, "limit", None)
     posts = client.search_posts(
         team_id,
-        args.query,
+        query,
         is_or_search=bool(getattr(args, "or_search", False)),
-        limit=None if channel_id else limit,
+        limit=limit,
     )
     if channel_id is not None:
+        # Extra local safety filter just in case Mattermost returns noise
         posts = [post for post in posts if post.get("channel_id") == channel_id]
-        if limit is not None:
-            posts = posts[:limit]
 
     if _machine_output(args):
         output_posts = posts if _raw_output(args) else slim_posts(posts)
