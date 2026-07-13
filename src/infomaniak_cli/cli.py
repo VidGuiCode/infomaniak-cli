@@ -429,7 +429,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     data = run_doctor(profile_name)
 
     if getattr(args, "fix_path", False):
-        return _print_fix_path_preview(data["path"])
+        return _apply_fix_path(data["path"])
 
     if _machine_output(args):
         print_machine(data, args)
@@ -462,20 +462,25 @@ def _print_path_line(path_section: dict[str, Any]) -> None:
         print("  Then open a new terminal. Or run: ik doctor --fix-path")
 
 
-def _print_fix_path_preview(path_section: dict[str, Any]) -> int:
+def _apply_fix_path(path_section: dict[str, Any]) -> int:
     scripts_dir = path_section["scripts_dir"]
     plan = plan_path_fix(scripts_dir, os.environ.get("PATH", ""), os_name=os.name)
     if plan["already_on_path"]:
         print(f"✓ {scripts_dir} is already on PATH. Nothing to do.")
         return 0
-    print("Preview: add the ik scripts directory to your per-user PATH (no system or admin changes).")
-    print(f"Scripts dir: {scripts_dir}")
-    print(plan["change_description"])
-    print(f"Run: {plan['fix_command']}")
-    print("Then open a new terminal so the change takes effect.")
-    print("Note: automatic --fix-path apply is deferred; run the command above manually for now.")
-    return 0
-
+    print(f"Applying: {plan['change_description']}")
+    
+    from .pathcheck import apply_path_fix
+    success = apply_path_fix(scripts_dir)
+    
+    if success:
+        print(f"✓ Successfully added {scripts_dir} to your per-user PATH.")
+        print("Please open a new terminal or reload your shell so the change takes effect.")
+        return 0
+    else:
+        print(f"error: failed to apply the path fix.", file=sys.stderr)
+        print(f"Please run manually: {plan['fix_command']}", file=sys.stderr)
+        return 1
 
 def cmd_version(args: argparse.Namespace) -> int:
     print(__version__)

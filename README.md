@@ -63,7 +63,7 @@ ik update --yes
 
 A `pip install --user` install can put `ik` in a per-user scripts directory that is not on your `PATH` (Windows: `%APPDATA%\Python\PythonXYZ\Scripts`; Linux/macOS: `~/.local/bin`), so the shell reports `ik: command not found`.
 
-Run `ik doctor` to see your install method and a PATH check. When `ik` is installed but not on PATH, doctor prints the scripts directory and a copy-pasteable per-user fix command (it never changes the system PATH or needs admin). Preview it with:
+Run `ik doctor` to see your install method and a PATH check. When `ik` is installed but not on PATH, doctor prints the scripts directory. You can automatically fix this by running:
 
 ```bash
 ik doctor --fix-path

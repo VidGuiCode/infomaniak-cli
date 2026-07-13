@@ -112,18 +112,22 @@ def test_cmd_doctor_json_includes_install_method_and_path(tmp_path, monkeypatch,
     assert "profile_configured" in output["checks"]
 
 
-def test_cmd_doctor_fix_path_preview_when_not_on_path(monkeypatch, capsys):
+def test_cmd_doctor_apply_path_fix_when_not_on_path(monkeypatch, capsys):
     # OS-agnostic: do not patch os.name (pathlib derives PosixPath/WindowsPath from it).
     monkeypatch.setattr(cli, "run_doctor", lambda *a, **k: _doctor_data(on_path=False))
     monkeypatch.setenv("PATH", _path("/usr/bin", "/bin"))
+    
+    # Mock the actual apply so we don't modify the system
+    import infomaniak_cli.pathcheck
+    monkeypatch.setattr(infomaniak_cli.pathcheck, "apply_path_fix", lambda scripts_dir: True)
 
     assert cli.main(["doctor", "--fix-path"]) == 0
 
     out = capsys.readouterr().out
-    assert "Preview:" in out
+    assert "Applying:" in out
     assert POSIX_SCRIPTS in out
-    assert "Run:" in out
-    assert "apply is deferred" in out
+    assert "Successfully added" in out
+    assert "open a new terminal" in out
 
 
 def test_cmd_doctor_does_not_crash_on_cp1252_stdout(monkeypatch):

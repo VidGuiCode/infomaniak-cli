@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+import keyring
+from keyring.errors import KeyringError
 
 from .config_paths import get_config_dir, get_tokens_dir
 from .secure_store import secure_dir, secure_write
+
+logger = logging.getLogger(__name__)
+
+SERVICE_NAME = "infomaniak-cli"
 
 
 def _redact(value: str) -> str:
@@ -12,244 +20,193 @@ def _redact(value: str) -> str:
     return f"{value[:4]}…{value[-4:]}"
 
 
-class TokenStore:
-    def __init__(self, config_dir: Path | None = None) -> None:
+class BaseStore:
+    def __init__(self, service_suffix: str, config_dir: Path | None = None) -> None:
         self.config_dir = config_dir or get_config_dir()
         self.tokens_dir = get_tokens_dir(self.config_dir)
+        self.service_suffix = service_suffix
 
-    def save_token(self, profile: str, token: str) -> None:
-        clean_token = token.strip()
-        if not clean_token:
-            raise ValueError("Token is required")
-        secure_dir(self.tokens_dir)
-        secure_write(self._token_path(profile), clean_token)
-
-    def load_token(self, profile: str) -> str:
-        return self._token_path(profile).read_text(encoding="utf-8").strip()
-
-    def has_token(self, profile: str) -> bool:
-        path = self._token_path(profile)
-        return path.exists() and bool(path.read_text(encoding="utf-8").strip())
-
-    def redacted_token(self, profile: str) -> str | None:
-        if not self.has_token(profile):
-            return None
-        return _redact(self.load_token(profile))
-
-    def delete_token(self, profile: str) -> None:
-        self._token_path(profile).unlink(missing_ok=True)
-
-    def rename_profile(self, old: str, new: str) -> None:
-        old_path = self._token_path(old)
-        new_path = self._token_path(new)
-        if not old_path.exists():
-            return
-        if new_path.exists():
-            raise ValueError(f"Token already exists for profile: {new}")
-        secure_dir(self.tokens_dir)
-        old_path.replace(new_path)
-
-    def delete_profile(self, profile: str) -> None:
-        self.delete_token(profile)
-
-    def _token_path(self, profile: str) -> Path:
+    def _key(self, profile: str) -> str:
         safe_profile = profile.strip()
         if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
             raise ValueError(f"Invalid profile name: {profile!r}")
-        return self.tokens_dir / f"{safe_profile}.token"
+        return f"{safe_profile}.{self.service_suffix}"
+
+    def _path(self, profile: str) -> Path:
+        return self.tokens_dir / self._key(profile)
+
+    def save(self, profile: str, secret: str) -> None:
+        clean = secret.strip()
+        if not clean:
+            raise ValueError("Secret is required")
+        key = self._key(profile)
+        
+        # Try OS keyring first
+        try:
+            keyring.set_password(SERVICE_NAME, key, clean)
+            # Cleanup legacy plain-text file if keyring succeeded
+            self._path(profile).unlink(missing_ok=True)
+            return
+        except KeyringError as exc:
+            logger.debug("Keyring failed during save, falling back to file: %s", exc)
+            
+        # Fallback to restricted plain-text file
+        secure_dir(self.tokens_dir)
+        secure_write(self._path(profile), clean)
+
+    def load(self, profile: str) -> str:
+        key = self._key(profile)
+        
+        # Try OS keyring first
+        try:
+            val = keyring.get_password(SERVICE_NAME, key)
+            if val is not None:
+                return val
+        except KeyringError as exc:
+            logger.debug("Keyring failed during load, falling back to file: %s", exc)
+            
+        # Fallback to file
+        path = self._path(profile)
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+        return ""
+
+    def has(self, profile: str) -> bool:
+        return bool(self.load(profile))
+
+    def redacted(self, profile: str) -> str | None:
+        val = self.load(profile)
+        if not val:
+            return None
+        return _redact(val)
+
+    def delete(self, profile: str) -> None:
+        key = self._key(profile)
+        try:
+            if keyring.get_password(SERVICE_NAME, key) is not None:
+                keyring.delete_password(SERVICE_NAME, key)
+        except KeyringError as exc:
+            logger.debug("Keyring failed during delete: %s", exc)
+            
+        self._path(profile).unlink(missing_ok=True)
+
+    def rename_profile(self, old: str, new: str) -> None:
+        # Check if old exists at all
+        old_val = self.load(old)
+        if not old_val:
+            return
+            
+        # Check if new already exists
+        if self.has(new):
+            raise ValueError(f"Secret already exists for profile: {new}")
+            
+        # Perform rename (save to new, delete old)
+        self.save(new, old_val)
+        self.delete(old)
+
+    def delete_profile(self, profile: str) -> None:
+        self.delete(profile)
 
 
-class MailPasswordStore:
+class TokenStore(BaseStore):
+    def __init__(self, config_dir: Path | None = None) -> None:
+        super().__init__("token", config_dir)
+
+    def save_token(self, profile: str, token: str) -> None:
+        self.save(profile, token)
+
+    def load_token(self, profile: str) -> str:
+        return self.load(profile)
+
+    def has_token(self, profile: str) -> bool:
+        return self.has(profile)
+
+    def redacted_token(self, profile: str) -> str | None:
+        return self.redacted(profile)
+
+    def delete_token(self, profile: str) -> None:
+        self.delete(profile)
+
+
+class MailPasswordStore(BaseStore):
     """Stores mailbox app-specific passwords separately from REST API tokens."""
-
     def __init__(self, config_dir: Path | None = None) -> None:
-        self.config_dir = config_dir or get_config_dir()
-        self.tokens_dir = get_tokens_dir(self.config_dir)
+        super().__init__("mail", config_dir)
 
     def save_password(self, profile: str, password: str) -> None:
-        clean_password = password.strip()
-        if not clean_password:
-            raise ValueError("Mail password is required")
-        secure_dir(self.tokens_dir)
-        secure_write(self._password_path(profile), clean_password)
+        self.save(profile, password)
 
     def load_password(self, profile: str) -> str:
-        return self._password_path(profile).read_text(encoding="utf-8").strip()
+        return self.load(profile)
 
     def has_password(self, profile: str) -> bool:
-        path = self._password_path(profile)
-        return path.exists() and bool(path.read_text(encoding="utf-8").strip())
+        return self.has(profile)
 
     def redacted_password(self, profile: str) -> str | None:
-        if not self.has_password(profile):
-            return None
-        return _redact(self.load_password(profile))
+        return self.redacted(profile)
 
     def delete_password(self, profile: str) -> None:
-        self._password_path(profile).unlink(missing_ok=True)
-
-    def rename_profile(self, old: str, new: str) -> None:
-        old_path = self._password_path(old)
-        new_path = self._password_path(new)
-        if not old_path.exists():
-            return
-        if new_path.exists():
-            raise ValueError(f"Mail password already exists for profile: {new}")
-        secure_dir(self.tokens_dir)
-        old_path.replace(new_path)
-
-    def delete_profile(self, profile: str) -> None:
-        self.delete_password(profile)
-
-    def _password_path(self, profile: str) -> Path:
-        safe_profile = profile.strip()
-        if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
-            raise ValueError(f"Invalid profile name: {profile!r}")
-        return self.tokens_dir / f"{safe_profile}.mail"
+        self.delete(profile)
 
 
-class ContactsPasswordStore:
+class ContactsPasswordStore(BaseStore):
     """Stores CardDAV contacts passwords separately from REST API and mail credentials."""
-
     def __init__(self, config_dir: Path | None = None) -> None:
-        self.config_dir = config_dir or get_config_dir()
-        self.tokens_dir = get_tokens_dir(self.config_dir)
+        super().__init__("contacts", config_dir)
 
     def save_password(self, profile: str, password: str) -> None:
-        clean_password = password.strip()
-        if not clean_password:
-            raise ValueError("Contacts password is required")
-        secure_dir(self.tokens_dir)
-        secure_write(self._password_path(profile), clean_password)
+        self.save(profile, password)
 
     def load_password(self, profile: str) -> str:
-        return self._password_path(profile).read_text(encoding="utf-8").strip()
+        return self.load(profile)
 
     def has_password(self, profile: str) -> bool:
-        path = self._password_path(profile)
-        return path.exists() and bool(path.read_text(encoding="utf-8").strip())
+        return self.has(profile)
 
     def redacted_password(self, profile: str) -> str | None:
-        if not self.has_password(profile):
-            return None
-        return _redact(self.load_password(profile))
+        return self.redacted(profile)
 
     def delete_password(self, profile: str) -> None:
-        self._password_path(profile).unlink(missing_ok=True)
-
-    def rename_profile(self, old: str, new: str) -> None:
-        old_path = self._password_path(old)
-        new_path = self._password_path(new)
-        if not old_path.exists():
-            return
-        if new_path.exists():
-            raise ValueError(f"Contacts password already exists for profile: {new}")
-        secure_dir(self.tokens_dir)
-        old_path.replace(new_path)
-
-    def delete_profile(self, profile: str) -> None:
-        self.delete_password(profile)
-
-    def _password_path(self, profile: str) -> Path:
-        safe_profile = profile.strip()
-        if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
-            raise ValueError(f"Invalid profile name: {profile!r}")
-        return self.tokens_dir / f"{safe_profile}.contacts"
+        self.delete(profile)
 
 
-class CalendarPasswordStore:
+class CalendarPasswordStore(BaseStore):
     """Stores CalDAV calendar passwords separately from other profile credentials."""
-
     def __init__(self, config_dir: Path | None = None) -> None:
-        self.config_dir = config_dir or get_config_dir()
-        self.tokens_dir = get_tokens_dir(self.config_dir)
+        super().__init__("calendar", config_dir)
 
     def save_password(self, profile: str, password: str) -> None:
-        clean_password = password.strip()
-        if not clean_password:
-            raise ValueError("Calendar password is required")
-        secure_dir(self.tokens_dir)
-        secure_write(self._password_path(profile), clean_password)
+        self.save(profile, password)
 
     def load_password(self, profile: str) -> str:
-        return self._password_path(profile).read_text(encoding="utf-8").strip()
+        return self.load(profile)
 
     def has_password(self, profile: str) -> bool:
-        path = self._password_path(profile)
-        return path.exists() and bool(path.read_text(encoding="utf-8").strip())
+        return self.has(profile)
 
     def redacted_password(self, profile: str) -> str | None:
-        if not self.has_password(profile):
-            return None
-        return _redact(self.load_password(profile))
+        return self.redacted(profile)
 
     def delete_password(self, profile: str) -> None:
-        self._password_path(profile).unlink(missing_ok=True)
-
-    def rename_profile(self, old: str, new: str) -> None:
-        old_path = self._password_path(old)
-        new_path = self._password_path(new)
-        if not old_path.exists():
-            return
-        if new_path.exists():
-            raise ValueError(f"Calendar password already exists for profile: {new}")
-        secure_dir(self.tokens_dir)
-        old_path.replace(new_path)
-
-    def delete_profile(self, profile: str) -> None:
-        self.delete_password(profile)
-
-    def _password_path(self, profile: str) -> Path:
-        safe_profile = profile.strip()
-        if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
-            raise ValueError(f"Invalid profile name: {profile!r}")
-        return self.tokens_dir / f"{safe_profile}.calendar"
+        self.delete(profile)
 
 
-class ChatTokenStore:
+class ChatTokenStore(BaseStore):
     """Stores kChat/Mattermost tokens separately from other profile credentials."""
-
     def __init__(self, config_dir: Path | None = None) -> None:
-        self.config_dir = config_dir or get_config_dir()
-        self.tokens_dir = get_tokens_dir(self.config_dir)
+        super().__init__("chat", config_dir)
 
     def save_token(self, profile: str, token: str) -> None:
-        clean_token = token.strip()
-        if not clean_token:
-            raise ValueError("Chat token is required")
-        secure_dir(self.tokens_dir)
-        secure_write(self._token_path(profile), clean_token)
+        self.save(profile, token)
 
     def load_token(self, profile: str) -> str:
-        return self._token_path(profile).read_text(encoding="utf-8").strip()
+        return self.load(profile)
 
     def has_token(self, profile: str) -> bool:
-        path = self._token_path(profile)
-        return path.exists() and bool(path.read_text(encoding="utf-8").strip())
+        return self.has(profile)
 
     def redacted_token(self, profile: str) -> str | None:
-        if not self.has_token(profile):
-            return None
-        return _redact(self.load_token(profile))
+        return self.redacted(profile)
 
     def delete_token(self, profile: str) -> None:
-        self._token_path(profile).unlink(missing_ok=True)
-
-    def rename_profile(self, old: str, new: str) -> None:
-        old_path = self._token_path(old)
-        new_path = self._token_path(new)
-        if not old_path.exists():
-            return
-        if new_path.exists():
-            raise ValueError(f"Chat token already exists for profile: {new}")
-        secure_dir(self.tokens_dir)
-        old_path.replace(new_path)
-
-    def delete_profile(self, profile: str) -> None:
-        self.delete_token(profile)
-
-    def _token_path(self, profile: str) -> Path:
-        safe_profile = profile.strip()
-        if not safe_profile or any(part in safe_profile for part in ("/", "\\", "..")):
-            raise ValueError(f"Invalid profile name: {profile!r}")
-        return self.tokens_dir / f"{safe_profile}.chat"
+        self.delete(profile)

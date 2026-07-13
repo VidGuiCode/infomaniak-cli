@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sysconfig
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -110,6 +112,39 @@ def plan_path_fix(
         "change_description": f"Append {scripts_dir} to your per-user PATH.",
         "fix_command": fix_path_command(scripts_dir=scripts_dir, os_name=os_name),
     }
+
+
+def apply_path_fix(scripts_dir: str, *, os_name: str = os.name) -> bool:
+    """Permanently add scripts_dir to the per-user PATH. Returns True on success."""
+    if os_name == "nt":
+        command = fix_path_command(scripts_dir=scripts_dir, os_name=os_name)
+        try:
+            subprocess.run(command, check=True, shell=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    # POSIX: Native append to rc files
+    success = False
+    rc_files = [Path("~/.bashrc").expanduser()]
+    zshrc = Path("~/.zshrc").expanduser()
+    if zshrc.exists():
+        rc_files.append(zshrc)
+
+    line = f'\nexport PATH="{scripts_dir}:$PATH"\n'
+    for rc in rc_files:
+        try:
+            # Avoid redundant appends if they run it multiple times before reloading
+            if rc.exists() and line.strip() in rc.read_text(encoding="utf-8"):
+                success = True
+                continue
+            with rc.open("a", encoding="utf-8") as f:
+                f.write(line)
+            success = True
+        except OSError:
+            pass
+
+    return success
 
 
 def _normalize_dir(path: str) -> str:

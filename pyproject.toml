@@ -1,6 +1,6 @@
 [project]
 name = "infomaniak-cli"
-version = "0.1.24"
+version = "0.1.25"
 description = "Unified CLI bridge for Informaniak/kSuite with profiles and optional future MCP support."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Utilities",
 ]
-dependencies = []
+dependencies = [
+    "keyring>=24.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/VidGuiCode/infomaniak-cli"

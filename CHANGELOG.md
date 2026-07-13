@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.25 - CLI polish: fix-path and keyring
+
+- **OS Keyring Integration**: Securely store API tokens and app passwords in the native OS credential manager (Windows Credential Locker, macOS Keychain, Linux Secret Service) via the `keyring` library, replacing plaintext token files.
+- **Automated PATH Fix**: `ik doctor --fix-path` now permanently applies the required PATH changes to your shell/profile, instead of just printing the preview command.
+
 ## v0.1.24 - CLI UX polish and completions
 
 - `ik completion` command added to generate static shell completions for bash, zsh, fish, and powershell.

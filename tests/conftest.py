@@ -1,5 +1,7 @@
 import pytest
 
+import keyring
+from keyring.errors import KeyringError
 from infomaniak_cli import secure_store
 
 
@@ -23,3 +25,30 @@ def _no_real_icacls(monkeypatch):
     """
 
     monkeypatch.setattr(secure_store, "_default_runner", lambda command: _NoopRunResult())
+
+
+@pytest.fixture(autouse=True)
+def _mock_keyring(monkeypatch):
+    """Keep the test suite from writing to the developer's real OS keyring.
+    
+    This provides an in-memory mock of the keyring API so tests run fully
+    offline and side-effect free.
+    """
+    _store = {}
+
+    def mock_set_password(service, username, password):
+        _store[(service, username)] = password
+
+    def mock_get_password(service, username):
+        return _store.get((service, username))
+
+    def mock_delete_password(service, username):
+        if (service, username) in _store:
+            del _store[(service, username)]
+        else:
+            raise KeyringError("Password not found")
+
+    monkeypatch.setattr(keyring, "set_password", mock_set_password)
+    monkeypatch.setattr(keyring, "get_password", mock_get_password)
+    monkeypatch.setattr(keyring, "delete_password", mock_delete_password)
+
