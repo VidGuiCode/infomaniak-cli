@@ -2603,6 +2603,80 @@ def cmd_chat_thread(args: argparse.Namespace) -> int:
     return 0
 
 
+def _profile_is_explicit(args: argparse.Namespace) -> bool:
+    """True when the profile was chosen deliberately, not via the ambient default.
+
+    A deliberate choice is the `--profile` flag or the `IK_PROFILE` env var. This
+    gates `--yes` on writes so automation can never post to the wrong account by
+    silently inheriting the saved current profile.
+    """
+    return bool(getattr(args, "profile", None) or os.environ.get("IK_PROFILE"))
+
+
+def _print_chat_post_preview(profile: Any, team_id: str, channel: Mapping[str, Any], message: str) -> None:
+    channel_label = channel.get("display_name") or channel.get("name") or "-"
+    print(f"Profile: {profile.name}")
+    print(f"Team ID: {team_id}")
+    print(f"Channel: {channel_label} (id {channel.get('id')})")
+    print("Message:")
+    for line in message.splitlines() or [""]:
+        print(f"  {line}")
+
+
+def cmd_chat_post(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    team_id = _chat_team_id_or_error(args, profile, client)
+    channel = client.resolve_channel(team_id, args.channel)
+    channel_id = channel.get("id")
+    if not channel_id:
+        raise ValueError(f"Resolved kChat channel has no id: {args.channel}. Run `ik chat channels`.")
+
+    message = args.message
+    if not message.strip():
+        raise ValueError("Refusing to post an empty message.")
+
+    plan = {
+        "profile": profile.name,
+        "team_id": team_id,
+        "channel_id": str(channel_id),
+        "channel_name": channel.get("name"),
+        "channel_display_name": channel.get("display_name"),
+        "message": message,
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "posted": False}, args)
+        else:
+            _print_chat_post_preview(profile, team_id, channel, message)
+            print("Dry run: no message was posted.")
+        return 0
+
+    # Automation must target an explicit profile before it can post unattended.
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            "Refusing to post with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE) so automation cannot post to the wrong account."
+        )
+
+    if not _machine_output(args):
+        _print_chat_post_preview(profile, team_id, channel, message)
+
+    if not _confirm(args, "Post this message? [y/N] ", action="chat post"):
+        print("Post cancelled.")
+        return 2
+
+    post = client.create_post(str(channel_id), message)
+
+    if _machine_output(args):
+        output_post = post if _raw_output(args) else slim_post(post)
+        print_machine({**plan, "posted": True, "post": output_post}, args)
+    else:
+        channel_label = channel.get("display_name") or channel.get("name") or channel_id
+        print(f"Posted to {channel_label} (message id {post.get('id')}).")
+    return 0
+
+
 def cmd_debug_probe(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     result = probe_profile(profile.name, profile.account_id, client)
@@ -3072,6 +3146,23 @@ def build_parser() -> argparse.ArgumentParser:
     chat_thread.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     chat_thread.add_argument("--raw", action="store_true", help="With --json, emit the full raw post payload.")
     chat_thread.set_defaults(func=cmd_chat_thread)
+
+    chat_post = chat_sub.add_parser("post", help="Post a message to a kChat channel (protected write)")
+    chat_post.add_argument("message", help="Message text to post.")
+    chat_post.add_argument("--channel", required=True, help="Channel slug or id to post to.")
+    chat_post.add_argument("--team-id", help="Team ID. Defaults to saved profile team or the only available team.")
+    chat_post.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    chat_post.add_argument(
+        "--dry-run", action="store_true",
+        help="Resolve the target and show what would be posted, without posting.",
+    )
+    chat_post.add_argument("--json", action="store_true")
+    chat_post.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    chat_post.add_argument("--raw", action="store_true", help="With --json, emit the full raw post payload.")
+    chat_post.set_defaults(func=cmd_chat_post)
 
     return parser
 

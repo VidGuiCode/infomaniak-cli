@@ -222,6 +222,14 @@ ik chat search "invoice" --channel <channel_slug> --limit 20 --json
 ik chat thread <post_id> --json
 ```
 
+Protected write (posts a message — off by default, confirmation required):
+
+```bash
+ik chat post "Deploy finished" --channel <channel_slug> --dry-run
+ik chat post "Deploy finished" --channel <channel_slug>              # prompts to confirm
+ik --profile work chat post "Deploy finished" --channel <channel_slug> --yes
+```
+
 `ik chat teams` uses the configured kChat API base URL and calls the Mattermost-compatible `GET /api/v4/users/me/teams` endpoint. Authentication order is explicit saved kChat token first, then the saved main Informaniak API token only for trusted `*.kchat.infomaniak.com` hosts.
 
 `ik chat channels` lists channels for a team using `GET /api/v4/teams/{team_id}/channels`. If no team is saved and the profile has access to exactly one team, that team is used. Otherwise pass `--team-id <id>` or save one with `ik auth chat --team-id <id>`.
@@ -231,6 +239,8 @@ ik chat thread <post_id> --json
 `ik chat search "<query>"` searches posts read-only via `POST /api/v4/teams/{team_id}/posts/search`. Use `--or` to match any term instead of all terms, `--limit` to cap results, and `--channel <slug>` to resolve a channel name read-only (`GET /api/v4/teams/{team_id}/channels/name/{name}`) and filter results to that channel.
 
 `ik chat thread <post_id>` reads a thread read-only via `GET /api/v4/posts/{post_id}/thread`, preserving the server's post order.
+
+`ik chat post "<message>" --channel <slug|id>` posts a message via `POST /api/v4/posts` (confirmed live for channel resolution). It is the first kChat write and follows the protected-write contract: it resolves the channel, prints a profile/team/channel/message preview, and requires confirmation before posting. `--dry-run` resolves the target and shows the plan without posting. `--yes` skips the prompt but only when the profile is explicit (`--profile <name>` or `IK_PROFILE`), so automation cannot post to the wrong account. Empty messages are refused. Still excluded: reactions, edits, deletes, channel creation, membership changes, and webhooks.
 
 If the trusted-host fallback is rejected, save a dedicated token with `ik auth chat --url <url> --stdin`.
 

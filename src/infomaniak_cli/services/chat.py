@@ -84,6 +84,20 @@ class ChatClient:
             raise ChatError("Unexpected kChat channel response: expected a JSON object")
         return payload
 
+    def create_post(self, channel_id: str, message: str) -> Mapping[str, Any]:
+        """Post a message to a channel via Mattermost ``POST /api/v4/posts``.
+
+        Returns the created post object. This is the only write in the kChat
+        client; callers must handle confirmation/preview before invoking it.
+        """
+        payload = self._post(
+            "/api/v4/posts",
+            {"channel_id": str(channel_id), "message": message},
+        )
+        if not isinstance(payload, Mapping):
+            raise ChatError("Unexpected kChat post response: expected a JSON object")
+        return payload
+
     def get_channel(self, channel_id: str) -> Mapping[str, Any]:
         payload = self._get(
             f"/api/v4/channels/{urllib.parse.quote(str(channel_id), safe='')}",

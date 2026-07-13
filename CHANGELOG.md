@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.4] - 2026-07-13
+### Added
+- **kChat:** `ik chat post "<message>" --channel <slug|id>` — the first kChat write.
+  - Posts via Mattermost `POST /api/v4/posts` (channel resolution confirmed live).
+  - Follows the protected-write contract: resolves the channel, prints a
+    profile/team/channel/message preview, and **requires confirmation** before posting.
+  - `--dry-run` resolves the target and shows the plan without posting.
+  - `--yes` skips the prompt **only** when the profile is explicit (`--profile` or `IK_PROFILE`),
+    so automation cannot post to the wrong account. Empty messages are refused.
+  - `--json`/`--compact` emit `{profile, team_id, channel_*, message, posted, post}`.
+  - Still excluded: reactions, edits, deletes, channel creation, membership changes, webhooks.
+
 ## [0.2.3] - 2026-07-13
 ### Changed
 - **`ik update` is quieter, faster, and self-verifying.**

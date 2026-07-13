@@ -123,7 +123,11 @@ class FakeChatClient:
 
     def resolve_channel(self, team_id, ref):
         self.calls.append(("resolve_channel", team_id, ref))
-        return {"id": "channel-2", "team_id": team_id, "name": ref}
+        return {"id": "channel-2", "team_id": team_id, "name": ref, "display_name": "Dev"}
+
+    def create_post(self, channel_id, message):
+        self.calls.append(("create_post", channel_id, message))
+        return {"id": "post-new", "channel_id": channel_id, "message": message, "create_at": 1700000000000}
 
 
 class FakeResponse:
@@ -923,10 +927,158 @@ def test_cli_chat_thread_does_not_leak_token(tmp_path, monkeypatch, capsys):
     assert "kChat rejected the main Informaniak API token" in captured.err
 
 
-def test_chat_parser_exposes_no_write_commands():
+def test_chat_parser_exposes_only_post_as_write_command():
     parser = cli.build_parser()
     chat_parser = parser._subparsers._group_actions[0].choices["chat"]
     choices = chat_parser._subparsers._group_actions[0].choices
 
-    assert set(choices) == {"teams", "channels", "users", "search", "thread"}
-    assert not {"post", "create", "delete", "edit", "react", "webhook"} & set(choices)
+    # `post` is the single protected write added in 0.2.4; nothing destructive.
+    assert set(choices) == {"teams", "channels", "users", "search", "thread", "post"}
+    assert not {"create", "delete", "edit", "react", "webhook"} & set(choices)
+
+
+# --- chat post (protected write) ------------------------------------------
+
+
+def test_create_post_constructs_request_and_returns_post():
+    seen = []
+
+    def opener(request, timeout=30):
+        seen.append(request)
+        return FakeResponse(json.dumps({"id": "post-9", "channel_id": "channel-2", "message": "hi"}).encode("utf-8"))
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+    post = client.create_post("channel-2", "hi")
+
+    assert post["id"] == "post-9"
+    request = seen[0]
+    assert request.full_url.endswith("/api/v4/posts")
+    assert request.get_method() == "POST"
+    assert json.loads(request.data.decode("utf-8")) == {"channel_id": "channel-2", "message": "hi"}
+
+
+def test_cli_chat_post_dry_run_does_not_post(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+
+    assert cli.main(["chat", "post", "hello team", "--channel", "dev", "--dry-run", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["dry_run"] is True
+    assert output["posted"] is False
+    assert output["channel_id"] == "channel-2"
+    assert output["message"] == "hello team"
+    # resolved the channel but never posted
+    assert ("resolve_channel", "team-1", "dev") in created[0].calls
+    assert not any(call[0] == "create_post" for call in created[0].calls)
+
+
+def test_cli_chat_post_yes_requires_explicit_profile(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+
+    # --yes but no explicit --profile: refuse, do not post.
+    assert cli.main(["chat", "post", "hi", "--channel", "dev", "--yes"]) == 1
+    err = capsys.readouterr().err
+    assert "explicit" in err.lower()
+    assert not any(call[0] == "create_post" for call in created[0].calls)
+
+
+def test_cli_chat_post_yes_with_explicit_profile_posts(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+
+    assert cli.main(["--profile", "work", "chat", "post", "ship it", "--channel", "dev", "--yes", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["posted"] is True
+    assert output["post"]["id"] == "post-new"
+    assert ("create_post", "channel-2", "ship it") in created[0].calls
+
+
+def test_cli_chat_post_without_yes_in_non_interactive_errors(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+
+    # No --yes, non-interactive (pytest stdin is not a TTY): must not post.
+    assert cli.main(["--profile", "work", "chat", "post", "hi", "--channel", "dev"]) == 1
+    err = capsys.readouterr().err
+    assert "requires --yes" in err
+    assert not any(call[0] == "create_post" for call in created[0].calls)
+
+
+def test_cli_chat_post_empty_message_refused(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    monkeypatch.setattr(cli, "ChatClient", FakeChatClient)
+
+    assert cli.main(["--profile", "work", "chat", "post", "   ", "--channel", "dev", "--yes"]) == 1
+    assert "empty message" in capsys.readouterr().err.lower()
+
+
+def test_cli_chat_post_interactive_confirm_posts(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+    # Simulate a real terminal answering "y".
+    monkeypatch.setattr(cli, "_is_non_interactive", lambda args: False)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+
+    assert cli.main(["--profile", "work", "chat", "post", "hi there", "--channel", "dev"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Message:" in out
+    assert "Posted to Dev" in out
+    assert ("create_post", "channel-2", "hi there") in created[0].calls
+
+
+def test_cli_chat_post_interactive_decline_does_not_post(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch, team_id="team-1")
+    created = []
+
+    def make_client(base_url, token, **kwargs):
+        client = FakeChatClient(base_url, token)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", make_client)
+    monkeypatch.setattr(cli, "_is_non_interactive", lambda args: False)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+
+    assert cli.main(["--profile", "work", "chat", "post", "hi", "--channel", "dev"]) == 2
+    assert "cancelled" in capsys.readouterr().out.lower()
+    assert not any(call[0] == "create_post" for call in created[0].calls)
