@@ -9,8 +9,10 @@ from infomaniak_cli.update import (
     UpdateCheckError,
     build_update_plan,
     detect_install_method,
+    installed_version,
     is_newer_version,
     parse_latest_release,
+    prune_broken_distributions,
     update_failure_hint,
 )
 
@@ -132,6 +134,22 @@ def test_build_update_plan_for_pipx_updates_existing_venv_with_runpip():
     plan = build_update_plan("0.1.2", release, install_method="pipx")
 
     assert plan.can_auto_update is True
+    # Default uses --upgrade so unchanged dependencies are not reinstalled.
+    assert plan.command == [
+        "pipx",
+        "runpip",
+        "infomaniak-cli",
+        "install",
+        "--upgrade",
+        release.wheel_url,
+    ]
+
+
+def test_build_update_plan_force_uses_force_reinstall():
+    release = parse_latest_release(_release_payload("0.1.3"))
+
+    plan = build_update_plan("0.1.2", release, install_method="pipx", force=True)
+
     assert plan.command == [
         "pipx",
         "runpip",
@@ -140,6 +158,48 @@ def test_build_update_plan_for_pipx_updates_existing_venv_with_runpip():
         "--force-reinstall",
         release.wheel_url,
     ]
+
+
+def test_build_update_plan_pip_default_uses_upgrade():
+    release = parse_latest_release(_release_payload("0.1.3"))
+
+    plan = build_update_plan("0.1.2", release, install_method="pip")
+
+    assert plan.command[-2:] == ["--upgrade", release.wheel_url]
+    assert "--force-reinstall" not in plan.command
+
+
+def test_installed_version_reads_subprocess_stdout():
+    def runner(command):
+        return subprocess.CompletedProcess(command, 0, stdout="0.2.3\n", stderr="")
+
+    assert installed_version(runner=runner) == "0.2.3"
+
+
+def test_installed_version_returns_none_on_failure():
+    def runner(command):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="boom")
+
+    assert installed_version(runner=runner) is None
+
+
+def test_prune_broken_distributions_removes_tilde_dirs_only(tmp_path):
+    broken = tmp_path / "~ywin32-ctypes"
+    broken.mkdir()
+    (broken / "leftover.dll").write_text("x")
+    real = tmp_path / "keyring"
+    real.mkdir()
+    (real / "__init__.py").write_text("")
+
+    removed = prune_broken_distributions(site_packages=tmp_path)
+
+    assert removed == ["~ywin32-ctypes"]
+    assert not broken.exists()
+    assert real.exists()
+
+
+def test_prune_broken_distributions_missing_dir_is_safe(tmp_path):
+    assert prune_broken_distributions(site_packages=tmp_path / "does-not-exist") == []
 
 
 def test_build_update_plan_for_source_does_not_auto_update():
@@ -220,7 +280,7 @@ def test_cli_update_dry_run_shows_command_but_does_not_run(monkeypatch, capsys):
     assert cli.main(["update", "--dry-run"]) == 0
 
     out = capsys.readouterr().out
-    assert "Would run: pipx runpip infomaniak-cli install --force-reinstall" in out
+    assert "Would run: pipx runpip infomaniak-cli install --upgrade" in out
     assert "Update now?" not in out
 
 
@@ -239,7 +299,7 @@ def test_cli_update_json_returns_shape_and_does_not_prompt(monkeypatch, capsys):
     assert output["update_available"] is True
     assert output["install_method"] == "pipx"
     assert output["can_auto_update"] is True
-    assert output["command"][0:5] == ["pipx", "runpip", "infomaniak-cli", "install", "--force-reinstall"]
+    assert output["command"][0:5] == ["pipx", "runpip", "infomaniak-cli", "install", "--upgrade"]
 
 
 def test_cli_update_json_yes_runs_supported_updater_and_stays_json(monkeypatch, capsys):
@@ -251,11 +311,17 @@ def test_cli_update_json_yes_runs_supported_updater_and_stays_json(monkeypatch, 
         return subprocess.CompletedProcess(command, 0, stdout="updated", stderr="")
 
     monkeypatch.setattr(cli.update_module, "run_update_command", fake_run)
+    monkeypatch.setattr(cli.update_module, "prune_broken_distributions", lambda *a, **k: [])
+    monkeypatch.setattr(cli.update_module, "installed_version", lambda *a, **k: "0.1.3")
 
     assert cli.main(["update", "--json", "--yes"]) == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output["updater"] == {"ran": True, "returncode": 0, "stdout": "updated", "stderr": ""}
+    updater = output["updater"]
+    assert updater["ran"] is True
+    assert updater["returncode"] == 0
+    assert updater["installed_version"] == "0.1.3"
+    assert updater["cleaned"] == []
 
 
 def test_cli_update_json_check_yes_never_runs_subprocess(monkeypatch, capsys):
@@ -282,12 +348,16 @@ def test_cli_update_yes_runs_supported_updater(monkeypatch, capsys):
         return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(cli.update_module, "run_update_command", fake_run)
+    monkeypatch.setattr(cli.update_module, "prune_broken_distributions", lambda *a, **k: [])
+    monkeypatch.setattr(cli.update_module, "installed_version", lambda *a, **k: "0.1.3")
 
     assert cli.main(["update", "--yes"]) == 0
 
     assert calls
-    assert calls[0][0:5] == ["pipx", "runpip", "infomaniak-cli", "install", "--force-reinstall"]
-    assert "Running: pipx runpip infomaniak-cli install --force-reinstall" in capsys.readouterr().out
+    assert calls[0][0:5] == ["pipx", "runpip", "infomaniak-cli", "install", "--upgrade"]
+    out = capsys.readouterr().out
+    assert "Running: pipx runpip infomaniak-cli install --upgrade" in out
+    assert "✓ Updated infomaniak-cli 0.1.2 → 0.1.3" in out
 
 
 def test_cli_update_pipx_uv_backend_failure_prints_recovery_hint(monkeypatch, capsys):

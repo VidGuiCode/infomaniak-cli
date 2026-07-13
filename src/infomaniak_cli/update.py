@@ -119,22 +119,33 @@ def detect_install_method(
     return "unknown"
 
 
-def build_update_plan(current_version: str, release: ReleaseInfo, *, install_method: str | None = None) -> UpdatePlan:
+def build_update_plan(
+    current_version: str,
+    release: ReleaseInfo,
+    *,
+    install_method: str | None = None,
+    force: bool = False,
+) -> UpdatePlan:
     method = install_method or detect_install_method()
     update_available = is_newer_version(current_version, release.version)
     command: list[str] | None = None
     instructions: list[str] | None = None
     can_auto_update = False
 
+    # `--upgrade` replaces only infomaniak-cli and leaves already-satisfied
+    # dependencies untouched (quiet, fewer network round-trips). `--force`
+    # opts back into a full `--force-reinstall` for recovery.
+    pip_mode = "--force-reinstall" if force else "--upgrade"
+
     if update_available and release.wheel_url:
         if method == "pipx":
-            command = ["pipx", "runpip", "infomaniak-cli", "install", "--force-reinstall", release.wheel_url]
+            command = ["pipx", "runpip", "infomaniak-cli", "install", pip_mode, release.wheel_url]
             can_auto_update = True
         elif method == "uv_tool":
             command = ["uv", "tool", "install", "--force", release.wheel_url]
             can_auto_update = True
         elif method == "pip":
-            command = [sys.executable, "-m", "pip", "install", "--force-reinstall", release.wheel_url]
+            command = [sys.executable, "-m", "pip", "install", pip_mode, release.wheel_url]
             can_auto_update = True
         elif method == "unknown":
             command = ["pipx", "install", "--force", "--backend", "pip", release.wheel_url]
@@ -158,6 +169,67 @@ def build_update_plan(current_version: str, release: ReleaseInfo, *, install_met
 
 def run_update_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, capture_output=True, check=False)
+
+
+def installed_version(runner: Any = None) -> str | None:
+    """Return the infomaniak-cli version as seen by a *fresh* interpreter.
+
+    Runs the venv's Python in a subprocess so it imports the just-installed
+    code (the in-process module still holds the old version). Best-effort:
+    returns None if the check cannot run or the output is unusable.
+    """
+    runner = runner or run_update_command
+    try:
+        result = runner([sys.executable, "-c", "import infomaniak_cli as m; print(m.__version__)"])
+    except OSError:
+        return None
+    if getattr(result, "returncode", 1) != 0:
+        return None
+    value = (getattr(result, "stdout", "") or "").strip().splitlines()
+    if not value:
+        return None
+    candidate = normalize_version(value[-1].strip())
+    return candidate or None
+
+
+def prune_broken_distributions(site_packages: str | Path | None = None) -> list[str]:
+    """Best-effort removal of broken ``~*`` leftover dirs in site-packages.
+
+    pip leaves ``~``-prefixed copies behind when it cannot delete a file mid
+    upgrade (common on Windows with locked DLLs). They are never real packages,
+    so pruning them only silences the recurring "invalid distribution" warning.
+    Never raises; returns the names it removed.
+    """
+    import shutil
+    import sysconfig
+
+    if site_packages is None:
+        try:
+            site_packages = sysconfig.get_paths().get("purelib")
+        except Exception:
+            return []
+    if not site_packages:
+        return []
+
+    base = Path(site_packages)
+    removed: list[str] = []
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.name.startswith("~"):
+            continue
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink()
+            if not entry.exists():
+                removed.append(entry.name)
+        except OSError:
+            continue
+    return removed
 
 
 def update_failure_hint(command: list[str], stderr: str) -> str | None:

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.3] - 2026-07-13
+### Changed
+- **`ik update` is quieter, faster, and self-verifying.**
+  - Uses `pip install --upgrade` instead of `--force-reinstall`, so unchanged dependencies
+    (keyring and its transitive deps) are no longer torn out and reinstalled on every update.
+    This removes most of the installer output and the extra network round-trips.
+  - On success, prints a one-line summary (`✓ Updated infomaniak-cli X → Y`) and shows the full
+    installer log only on failure or with `--verbose`.
+  - Verifies the installed version in a fresh interpreter after installing and reports it.
+  - Best-effort removes broken `~*` leftover directories from the venv's site-packages, silencing
+    the recurring pip "Ignoring invalid distribution" warning.
+### Added
+- **`ik update --force`** — opt back into a full `--force-reinstall` (reinstalls dependencies too)
+  for recovery. **`ik update --verbose`** — show the full installer log even on success.
+
 ## [0.2.2] - 2026-07-13
 ### Added
 - **kDrive:** `ik drive download <file_id>` — download a file's bytes to a local path.

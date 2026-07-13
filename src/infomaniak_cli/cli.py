@@ -497,7 +497,9 @@ def cmd_update(args: argparse.Namespace) -> int:
     try:
         release = update_module.fetch_latest_release()
         install_method = update_module.detect_install_method()
-        plan = update_module.build_update_plan(__version__, release, install_method=install_method)
+        plan = update_module.build_update_plan(
+            __version__, release, install_method=install_method, force=getattr(args, "force", False)
+        )
     except update_module.UpdateCheckError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -536,7 +538,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         print("Update cancelled.")
         return 0
 
-    return _run_update_plan(plan)
+    return _run_update_plan(plan, verbose=getattr(args, "verbose", False))
 
 
 def _print_update_plan(plan: update_module.UpdatePlan) -> None:
@@ -566,22 +568,44 @@ def _print_manual_update_guidance(plan: update_module.UpdatePlan) -> None:
         print("Open the release URL above to update manually.")
 
 
-def _run_update_plan(plan: update_module.UpdatePlan) -> int:
+def _run_update_plan(plan: update_module.UpdatePlan, *, verbose: bool = False) -> int:
     if not plan.can_auto_update or not plan.command:
         _print_manual_update_guidance(plan)
         return 0
     print(f"Running: {_format_command(plan.command)}")
     result = update_module.run_update_command(plan.command)
-    if result.stdout:
-        print(result.stdout.rstrip())
-    if result.stderr:
-        print(result.stderr.rstrip(), file=sys.stderr)
+
     if result.returncode != 0:
+        # On failure, surface everything to aid diagnosis.
+        if result.stdout:
+            print(result.stdout.rstrip())
+        if result.stderr:
+            print(result.stderr.rstrip(), file=sys.stderr)
         print(f"error: updater command failed with exit code {result.returncode}", file=sys.stderr)
         hint = update_module.update_failure_hint(plan.command, result.stderr)
         if hint:
             print(hint, file=sys.stderr)
         return result.returncode
+
+    # Success: keep it quiet unless asked. The raw pip log is rarely useful.
+    if verbose and result.stdout:
+        print(result.stdout.rstrip())
+
+    removed = update_module.prune_broken_distributions()
+    if removed:
+        print(f"Cleaned up {len(removed)} broken package leftover(s): {', '.join(removed)}")
+
+    installed = update_module.installed_version()
+    if installed == plan.latest_version:
+        print(f"✓ Updated infomaniak-cli {plan.current_version} → {installed}")
+    elif installed:
+        print(f"✓ Updated infomaniak-cli {plan.current_version} → {installed}")
+        print(
+            f"warning: expected version {plan.latest_version} but the installed package reports {installed}.",
+            file=sys.stderr,
+        )
+    else:
+        print(f"✓ Updated infomaniak-cli to {plan.latest_version} (could not confirm the installed version).")
     return 0
 
 
@@ -595,6 +619,9 @@ def _run_update_plan_json(plan: update_module.UpdatePlan) -> tuple[int, dict[str
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
+    if result.returncode == 0:
+        payload["cleaned"] = update_module.prune_broken_distributions()
+        payload["installed_version"] = update_module.installed_version()
     hint = update_module.update_failure_hint(plan.command, result.stderr)
     if hint:
         payload["hint"] = hint
@@ -2762,6 +2789,8 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--check", action="store_true", help="Only check update status; never install.")
     update.add_argument("--json", action="store_true", help="Emit machine-readable update status.")
     update.add_argument("--dry-run", action="store_true", help="Show the updater command without running it.")
+    update.add_argument("--force", action="store_true", help="Force a full reinstall (reinstalls dependencies too).")
+    update.add_argument("--verbose", "-v", action="store_true", help="Show the full installer log even on success.")
     update.set_defaults(func=cmd_update)
 
     profile = sub.add_parser("profile", help="Manage profiles")
