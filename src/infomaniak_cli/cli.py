@@ -5,6 +5,7 @@ import datetime
 import os
 import sys
 import urllib.parse
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from . import __version__
@@ -57,7 +58,10 @@ from .services.dav_discovery import (
 )
 from .services.drive import (
     build_folder_tree,
+    download_file,
     find_file,
+    get_file,
+    is_folder,
     recent_files,
     list_files,
     list_folders,
@@ -2127,6 +2131,80 @@ def cmd_drive_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_download_destination(output: str | None, remote_name: str) -> Path:
+    """Compute the local path to write a downloaded file to.
+
+    - no ``--output``            -> ``./<remote_name>`` in the current directory;
+    - ``--output`` is a dir      -> ``<output>/<remote_name>``;
+    - ``--output`` otherwise     -> used verbatim as the destination file.
+    """
+    safe_name = os.path.basename(remote_name) or "download"
+    if output is None:
+        return Path.cwd() / safe_name
+    dest = Path(output)
+    if dest.is_dir():
+        return dest / safe_name
+    return dest
+
+
+def cmd_drive_download(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    file_id = args.file_id
+
+    try:
+        file_item = get_file(client, drive_id, file_id)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise ValueError(
+                f"kDrive file not found in drive {drive_id}: {file_id}. "
+                f"Use `ik drive list`/`ik drive search` to find a file id."
+            ) from exc
+        raise
+
+    remote_name = str(file_item.get("name") or f"file-{file_id}")
+    if is_folder(file_item):
+        raise ValueError(
+            f"'{remote_name}' (id {file_id}) is a folder, not a file. "
+            f"`ik drive download` only downloads files."
+        )
+
+    destination = _resolve_download_destination(getattr(args, "output", None), remote_name)
+    if destination.exists() and not getattr(args, "force", False):
+        raise ValueError(
+            f"Refusing to overwrite existing file: {destination}. "
+            f"Pass --force to overwrite the local file."
+        )
+
+    content, _headers = download_file(client, drive_id, file_id)
+
+    destination_parent = destination.parent
+    if destination_parent and not destination_parent.exists():
+        raise ValueError(f"Destination directory does not exist: {destination_parent}")
+    destination.write_bytes(content)
+
+    size = len(content)
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "drive_id": drive_id,
+                "file_id": file_id,
+                "name": remote_name,
+                "destination": str(destination),
+                "bytes": size,
+            },
+            args,
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(f"Source: {remote_name} (id {file_id})")
+        print(f"Destination: {destination}")
+        print(f"Downloaded {size} bytes.")
+    return 0
+
+
 def cmd_contacts_list(args: argparse.Namespace) -> int:
     profile, client = _contacts_profile_and_client(args)
     contacts = client.list_contacts(limit=args.limit)
@@ -2655,6 +2733,21 @@ def build_parser() -> argparse.ArgumentParser:
     drive_info.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     drive_info.add_argument("--raw", action="store_true", help="With --json, emit the full raw file payload.")
     drive_info.set_defaults(func=cmd_drive_info)
+
+    drive_download = drive_sub.add_parser("download", help="Download a kDrive file to a local path")
+    drive_download.add_argument("file_id", help="File ID to download (see `ik drive list`/`ik drive search`).")
+    drive_download.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_download.add_argument(
+        "--output", "-o",
+        help="Destination file or directory. Defaults to the file's name in the current directory.",
+    )
+    drive_download.add_argument(
+        "--force", action="store_true",
+        help="Overwrite the local destination if it already exists (local overwrite only).",
+    )
+    drive_download.add_argument("--json", action="store_true")
+    drive_download.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_download.set_defaults(func=cmd_drive_download)
 
     debug = sub.add_parser("debug", help="Advanced read-only diagnostics")
     debug_sub = debug.add_subparsers(dest="debug_command", required=True)

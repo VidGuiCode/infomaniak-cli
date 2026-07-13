@@ -60,6 +60,23 @@ def create_folder(
     return file_item
 
 
+def get_file(api: Any, drive_id: str, file_id: str) -> Mapping[str, Any]:
+    """Fetch a single kDrive file/folder's metadata by id."""
+    payload = api.get(f"/2/drive/{drive_id}/files/{file_id}")
+    data = _unwrap_success_data(payload)
+    if not isinstance(data, Mapping):
+        raise DriveError("Unexpected kDrive file response: expected result=success with a data object")
+    return data
+
+
+def download_file(api: Any, drive_id: str, file_id: str) -> tuple[bytes, Mapping[str, str]]:
+    """Download a kDrive file's raw bytes, returning ``(content, headers)``.
+
+    Server-side read only: uses ``GET /2/drive/{drive_id}/files/{file_id}/download``.
+    """
+    return api.download(f"/2/drive/{drive_id}/files/{file_id}/download")
+
+
 def search_files(
     api: Any,
     drive_id: str,

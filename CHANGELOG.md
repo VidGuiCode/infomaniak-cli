@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.2] - 2026-07-13
+### Added
+- **kDrive:** `ik drive download <file_id>` — download a file's bytes to a local path.
+  - Server side is **read-only** (`GET /2/drive/{id}/files/{id}/download`, confirmed live); no
+    server-side change is made.
+  - Resolves the filename from metadata and **rejects folders** before downloading.
+  - `--output <path>` (a directory keeps the remote name; otherwise exact path); defaults to the
+    remote name in the current directory.
+  - **Never overwrites** an existing local file unless `--force` is given.
+  - `--json` / `--compact` machine output with `{name, destination, bytes}`.
+- **API:** binary-safe download path (`InformaniakAPIClient.download` + `Transport.download`) that
+  returns raw bytes and never UTF-8-decodes the body, so downloaded files are byte-exact.
+
 ## [0.2.1] - 2026-07-13
 ### Fixed
 - **kDrive:** `ik drive mkdir` now actually works. The 0.2.0 implementation posted to a

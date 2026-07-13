@@ -179,6 +179,15 @@ ik drive search "RCS"
 ik drive info <file_id>
 ```
 
+Server-read-only write helper (downloads bytes; makes no server-side change):
+
+```bash
+ik drive download <file_id>
+ik drive download <file_id> --output ./downloads/
+ik drive download <file_id> --output ./logo.png --force
+ik drive download <file_id> --json
+```
+
 `ik drive list` uses the selected profile's default kDrive ID and calls `GET /2/drive/{drive_id}/files`. Use `--drive-id <id>` to override the profile default. `--parent <folder_id>` is passed to the same endpoint as `parent_id`.
 
 `ik drive folders` uses the same files endpoint and filters the returned items to folders/directories only. It supports `--drive-id`, `--parent`, `--limit`, `--json`, and `--raw`.
@@ -189,9 +198,11 @@ ik drive info <file_id>
 
 `ik drive shared` uses the same files endpoint and filters client-side only when file payloads expose explicit shared/public/link-visible fields. It supports `--drive-id`, `--limit`, `--json`, `--compact`, `--table`, and `--raw`. It never creates, edits, or removes shares.
 
-`ik drive search <query>` is currently implemented by listing files and filtering by file/folder name client-side because no separate search endpoint has been confirmed. `ik drive info <file_id>` is currently implemented by finding the item in the list endpoint response because no single-file metadata endpoint has been confirmed.
+`ik drive search <query>` is currently implemented by listing files and filtering by file/folder name client-side because no separate search endpoint has been confirmed. `ik drive info <file_id>` is currently implemented by finding the item in the list endpoint response.
 
-Not implemented: download, upload, move, delete, share changes, trash, recursive sync, or any write behavior.
+`ik drive download <file_id>` fetches a file's raw bytes via `GET /2/drive/{drive_id}/files/{file_id}/download` (confirmed live) and writes them locally. It first reads the file's metadata via `GET /2/drive/{drive_id}/files/{file_id}` to resolve the name and reject folders. The server side is read-only — no server change is made. `--output <path>` sets the destination (a directory keeps the remote name; otherwise the exact path is used); with no `--output` it writes the remote name into the current directory. It never overwrites an existing local file unless `--force` is given. Supports `--drive-id`, `--json`, and `--compact`.
+
+Not implemented: upload, move, delete, share changes, trash, recursive sync, or any server-side write behavior.
 
 ## kChat
 

@@ -41,6 +41,15 @@ class FakeAPI:
             raise response
         return response
 
+    def download(self, path, params=None):
+        self.calls.append(("DOWNLOAD", path, params))
+        response = self.responses.get(("DOWNLOAD", path))
+        if isinstance(response, Exception):
+            raise response
+        if response is None:
+            raise KeyError(f"no download stub for {path}")
+        return response  # (content_bytes, headers)
+
 
 def test_drive_service_create_folder_success():
     api = FakeAPI(
@@ -558,6 +567,122 @@ def test_cli_drive_mkdir_success(tmp_path, monkeypatch, capsys):
 
     assert len(api.calls) == 1
     assert api.calls[0] == ("POST", "/2/drive/drive-1/files/123/directory", {"name": "new_folder"})
+
+
+# --- drive download -------------------------------------------------------
+
+
+def test_drive_service_get_file_returns_metadata():
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/82": {
+                "result": "success",
+                "data": {"id": 82, "name": "logo.png", "type": "file", "size": 5},
+            }
+        }
+    )
+    from infomaniak_cli.services.drive import get_file
+
+    meta = get_file(api, "drive-1", "82")
+    assert meta["name"] == "logo.png"
+    assert api.calls[0] == ("/2/drive/drive-1/files/82", None)
+
+
+def test_drive_service_download_file_returns_bytes():
+    from infomaniak_cli.services.drive import download_file
+
+    api = FakeAPI({("DOWNLOAD", "/2/drive/drive-1/files/82/download"): (b"\x89PNG\x00", {"Content-Type": "image/png"})})
+    content, headers = download_file(api, "drive-1", "82")
+    assert content == b"\x89PNG\x00"
+    assert headers["Content-Type"] == "image/png"
+    assert api.calls[0] == ("DOWNLOAD", "/2/drive/drive-1/files/82/download", None)
+
+
+def _download_api(content=b"binary-bytes", *, name="logo.png", ftype="file"):
+    return FakeAPI(
+        {
+            "/2/drive/drive-1/files/82": {
+                "result": "success",
+                "data": {"id": 82, "name": name, "type": ftype},
+            },
+            ("DOWNLOAD", "/2/drive/drive-1/files/82/download"): (content, {"Content-Type": "application/octet-stream"}),
+        }
+    )
+
+
+def _setup_drive_profile(tmp_path, monkeypatch, api):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url=None: api)
+
+
+def test_cli_drive_download_to_directory(tmp_path, monkeypatch, capsys):
+    api = _download_api(b"\x00\x01\x02\x03binary")
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+    dest_dir = tmp_path / "out"
+    dest_dir.mkdir()
+
+    assert cli.main(["drive", "download", "82", "--output", str(dest_dir)]) == 0
+    out = capsys.readouterr().out
+    written = dest_dir / "logo.png"
+    assert written.read_bytes() == b"\x00\x01\x02\x03binary"
+    assert "Downloaded 10 bytes." in out
+
+
+def test_cli_drive_download_explicit_output_path(tmp_path, monkeypatch, capsys):
+    api = _download_api(b"hello")
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+    target = tmp_path / "renamed.bin"
+
+    assert cli.main(["drive", "download", "82", "--output", str(target)]) == 0
+    assert target.read_bytes() == b"hello"
+
+
+def test_cli_drive_download_refuses_overwrite(tmp_path, monkeypatch, capsys):
+    api = _download_api(b"new-content")
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+    target = tmp_path / "renamed.bin"
+    target.write_bytes(b"original")
+
+    assert cli.main(["drive", "download", "82", "--output", str(target)]) == 1
+    err = capsys.readouterr().err
+    assert "Refusing to overwrite" in err
+    # untouched
+    assert target.read_bytes() == b"original"
+
+
+def test_cli_drive_download_force_overwrites(tmp_path, monkeypatch, capsys):
+    api = _download_api(b"new-content")
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+    target = tmp_path / "renamed.bin"
+    target.write_bytes(b"original")
+
+    assert cli.main(["drive", "download", "82", "--output", str(target), "--force"]) == 0
+    assert target.read_bytes() == b"new-content"
+
+
+def test_cli_drive_download_rejects_folder(tmp_path, monkeypatch, capsys):
+    api = _download_api(name="myFolder", ftype="dir")
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "download", "82", "--output", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "is a folder, not a file" in err
+    # never hit the download endpoint
+    assert not any(call[0] == "DOWNLOAD" for call in api.calls)
+
+
+def test_cli_drive_download_json_output(tmp_path, monkeypatch, capsys):
+    api = _download_api(b"12345")
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+    target = tmp_path / "f.bin"
+
+    assert cli.main(["drive", "download", "82", "--output", str(target), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["bytes"] == 5
+    assert payload["name"] == "logo.png"
+    assert payload["destination"] == str(target)
 
 
 def test_cli_drive_recent_requires_drive_id(tmp_path, monkeypatch, capsys):

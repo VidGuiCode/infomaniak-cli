@@ -38,6 +38,7 @@ class TransportResponse:
     status_code: int
     text: str
     headers: Mapping[str, str] | None = None
+    content: bytes | None = None
 
 
 class Transport(Protocol):
@@ -49,6 +50,16 @@ class Transport(Protocol):
         headers: Mapping[str, str],
         params: Mapping[str, Any] | None = None,
         json: Any | None = None,
+    ) -> TransportResponse:
+        ...
+
+    def download(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        params: Mapping[str, Any] | None = None,
     ) -> TransportResponse:
         ...
 
@@ -86,6 +97,42 @@ class UrllibTransport:
                 status_code=exc.code,
                 text=text,
                 headers=dict(exc.headers.items()),
+            )
+        except URLError as exc:
+            raise InformaniakAPIError(0, f"Network error while calling {url}: {exc}") from exc
+
+    def download(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        params: Mapping[str, Any] | None = None,
+    ) -> TransportResponse:
+        # Binary-safe sibling of request(): returns the raw response bytes in
+        # `content` and never UTF-8 decodes the body (which would corrupt files).
+        if params:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}{urlencode(params, doseq=True)}"
+
+        request = Request(url=url, headers=dict(headers), method=method.upper())
+        try:
+            # Downloads can be large/slow; use a generous timeout vs the 30s default.
+            with urlopen(request, timeout=300) as response:
+                raw = response.read()
+                return TransportResponse(
+                    status_code=response.status,
+                    text="",
+                    headers=dict(response.headers.items()),
+                    content=raw,
+                )
+        except HTTPError as exc:
+            raw = exc.read()
+            return TransportResponse(
+                status_code=exc.code,
+                text=raw.decode("utf-8", errors="replace"),
+                headers=dict(exc.headers.items()),
+                content=raw,
             )
         except URLError as exc:
             raise InformaniakAPIError(0, f"Network error while calling {url}: {exc}") from exc
@@ -129,6 +176,44 @@ class InformaniakAPIClient:
 
     def post(self, path: str, json: Any | None = None) -> Any:
         return self.request("POST", path, json=json)
+
+    def download(
+        self, path: str, params: Mapping[str, Any] | None = None
+    ) -> tuple[bytes, Mapping[str, str]]:
+        """Fetch a binary resource, returning ``(content_bytes, headers)``.
+
+        Unlike :meth:`request`, this never JSON-decodes or UTF-8-decodes the
+        body, so it is safe for arbitrary file downloads. Non-2xx responses
+        still raise :class:`InformaniakAPIError`, redacting the token.
+        """
+        headers = {
+            "Accept": "*/*",
+            "Authorization": f"Bearer {self.token}",
+        }
+        response = self.transport.download("GET", self._url(path), headers=headers, params=params)
+        content = response.content if response.content is not None else (response.text or "").encode("utf-8")
+
+        if response.status_code >= 400:
+            message = self._download_error_message(response, content)
+            if response.status_code in (401, 403):
+                message = f"authentication failed or insufficient scope ({message})"
+            raise InformaniakAPIError(
+                response.status_code,
+                f"GET {path} failed: {message}",
+                secrets=[self.token],
+            )
+
+        return content, response.headers or {}
+
+    def _download_error_message(self, response: TransportResponse, content: bytes) -> str:
+        text = response.text or content.decode("utf-8", errors="replace")
+        try:
+            payload = json_module.loads(text)
+        except json_module.JSONDecodeError:
+            return text[:200]
+        if isinstance(payload, Mapping):
+            return self._error_message(payload)
+        return str(payload)[:200]
 
     def request(
         self,

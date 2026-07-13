@@ -20,6 +20,38 @@ class FakeTransport:
         )
         return self.responses.pop(0)
 
+    def download(self, method, url, *, headers, params=None):
+        self.requests.append(
+            {"method": method, "url": url, "headers": dict(headers), "params": params, "download": True}
+        )
+        return self.responses.pop(0)
+
+
+def test_api_client_download_returns_raw_bytes():
+    # A response whose bytes are NOT valid UTF-8 must survive untouched.
+    raw = b"\x89PNG\r\n\x1a\n\xff\xfe\x00"
+    transport = FakeTransport(TransportResponse(status_code=200, text="", headers={"Content-Type": "image/png"}, content=raw))
+    client = InformaniakAPIClient(token="secret-token", base_url="https://api.example.test", transport=transport)
+
+    content, headers = client.download("/2/drive/1/files/82/download")
+
+    assert content == raw
+    assert headers["Content-Type"] == "image/png"
+    assert transport.requests[0]["download"] is True
+    assert transport.requests[0]["url"] == "https://api.example.test/2/drive/1/files/82/download"
+
+
+def test_api_client_download_raises_on_error_status_and_redacts_token():
+    token = "secret-token"
+    body = f'{{"result":"error","error":{{"description":"nope for {token}"}}}}'
+    transport = FakeTransport(TransportResponse(status_code=403, text=body, content=body.encode()))
+    client = InformaniakAPIClient(token=token, base_url="https://api.example.test", transport=transport)
+
+    with pytest.raises(InformaniakAPIError) as excinfo:
+        client.download("/2/drive/1/files/82/download")
+    assert excinfo.value.status_code == 403
+    assert token not in str(excinfo.value)
+
 
 def test_redact_secret_removes_bearer_tokens():
     bearer = "Bea" + "rer "

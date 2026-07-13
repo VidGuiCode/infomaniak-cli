@@ -101,6 +101,7 @@ ik drive recent --limit 10 --json
 ik drive shared --json
 ik drive search "invoice" --json
 ik drive info <file_id> --json
+ik drive download <file_id> --output ./downloads/
 
 ik mail folders --json
 ik mail mailboxes --json
@@ -209,7 +210,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | Auth | `auth token`, `auth check`, `auth status`, `auth logout`, `auth mail`, `auth contacts`, `auth calendar`, `auth chat` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
-| kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info` |
+| kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive mkdir`, `drive download` |
 | Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
 | Contacts | `contacts list`, `contacts search`, `contacts show` |
 | Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show` |
@@ -242,6 +243,7 @@ ik drive recent --limit 10 --json
 ik drive shared --json
 ik drive search "invoice" --json
 ik drive info <file_id> --json
+ik drive download <file_id> --output ./downloads/
 
 ik mail folders --json
 ik mail mailboxes --json
