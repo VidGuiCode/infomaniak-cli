@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.6] - 2026-07-14
+### Added
+- **kDrive:** `ik drive rm <file_id>` moves exactly one resolved file or folder to kDrive trash via
+  `DELETE /2/drive/{drive_id}/files/{file_id}`.
+  - Resolves metadata first and previews profile, drive, name, type, and id before acting.
+  - Protected-write contract: confirmation by default, `--dry-run`, and `--yes` only with an
+    explicit profile (`--profile` or `IK_PROFILE`).
+  - `--json`/`--compact` return the resolved target, `trashed` state, and undo metadata such as the
+    API `cancel_id`; errors continue through the shared secret-redacting API path.
+  - Refuses the kDrive root. Permanent, recursive, and bulk deletion are not implemented.
+
 ## [0.2.5] - 2026-07-13
 ### Added
 - **Calendar:** `ik calendar create --summary <s> --start <when>` — create an event on your own

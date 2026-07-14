@@ -73,6 +73,7 @@ from .services.drive import (
     slim_file,
     slim_files,
     slim_folder_tree,
+    trash_file,
 )
 from .services.mail import IMAPClient, MailError, slim_message
 from .services.mail_discovery import (
@@ -2235,6 +2236,72 @@ def cmd_drive_download(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_drive_rm_preview(profile: Any, drive_id: str, target: Mapping[str, Any]) -> None:
+    print(f"Profile: {profile.name}")
+    print(f"Drive ID: {drive_id}")
+    print(f"Target: {target.get('name') or 'unnamed'}")
+    print(f"Type: {target.get('type') or '-'}")
+    print(f"File ID: {target.get('id') or '-'}")
+    print("Action: move this single item to kDrive trash (undoable; not a permanent delete)")
+
+
+def cmd_drive_rm(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    file_id = str(args.file_id)
+
+    try:
+        file_item = get_file(client, drive_id, file_id)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise ValueError(
+                f"kDrive file not found in drive {drive_id}: {file_id}. "
+                "Use `ik drive list`/`ik drive search` to find a file id."
+            ) from exc
+        raise
+
+    if file_id == "1" or str(file_item.get("visibility") or "").casefold() == "is_root":
+        raise ValueError("Refusing to trash the kDrive root directory.")
+
+    target = slim_file(file_item, drive_id=drive_id)
+    plan = {
+        "profile": profile.name,
+        "drive_id": drive_id,
+        "file_id": file_id,
+        "target": target,
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "trashed": False}, args)
+        else:
+            _print_drive_rm_preview(profile, drive_id, target)
+            print("Dry run: nothing was moved to trash.")
+        return 0
+
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            "Refusing to trash with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
+        )
+
+    if not _machine_output(args):
+        _print_drive_rm_preview(profile, drive_id, target)
+
+    if not _confirm(args, "Move this item to trash? [y/N] ", action="drive rm"):
+        print("Trash operation cancelled.")
+        return 2
+
+    trash = trash_file(client, drive_id, file_id)
+    if _machine_output(args):
+        print_machine({**plan, "trashed": True, "trash": dict(trash)}, args)
+    else:
+        print(f"Moved '{target.get('name') or file_id}' to kDrive trash.")
+        if trash.get("cancel_id"):
+            print(f"Undo token: {trash['cancel_id']}")
+    return 0
+
+
 def cmd_contacts_list(args: argparse.Namespace) -> int:
     profile, client = _contacts_profile_and_client(args)
     contacts = client.list_contacts(limit=args.limit)
@@ -2943,6 +3010,15 @@ def build_parser() -> argparse.ArgumentParser:
     drive_download.add_argument("--json", action="store_true")
     drive_download.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     drive_download.set_defaults(func=cmd_drive_download)
+
+    drive_rm = drive_sub.add_parser("rm", help="Move one kDrive file or folder to trash (protected write)")
+    drive_rm.add_argument("file_id", help="Single file/folder ID to move to trash.")
+    drive_rm.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_rm.add_argument("--dry-run", action="store_true", help="Resolve and preview the target without deleting it.")
+    drive_rm.add_argument("--yes", "-y", action="store_true", help="Skip confirmation (requires an explicit profile).")
+    drive_rm.add_argument("--json", action="store_true")
+    drive_rm.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_rm.set_defaults(func=cmd_drive_rm)
 
     debug = sub.add_parser("debug", help="Advanced read-only diagnostics")
     debug_sub = debug.add_subparsers(dest="debug_command", required=True)

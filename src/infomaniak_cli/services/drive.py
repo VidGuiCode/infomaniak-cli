@@ -69,6 +69,15 @@ def get_file(api: Any, drive_id: str, file_id: str) -> Mapping[str, Any]:
     return data
 
 
+def trash_file(api: Any, drive_id: str, file_id: str) -> Mapping[str, Any]:
+    """Soft-delete one kDrive item to trash and return its undo metadata."""
+    payload = api.delete(f"/2/drive/{drive_id}/files/{file_id}")
+    data = _unwrap_success_data(payload)
+    if not isinstance(data, Mapping):
+        raise DriveError("Unexpected kDrive trash response: expected result=success with a data object")
+    return data
+
+
 def download_file(api: Any, drive_id: str, file_id: str) -> tuple[bytes, Mapping[str, str]]:
     """Download a kDrive file's raw bytes, returning ``(content, headers)``.
 

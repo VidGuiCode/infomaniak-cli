@@ -36,6 +36,11 @@ write behavior is added.
 
 ## Shipped recently
 
+- **`0.2.6` — protected kDrive trash:** `ik drive rm <file_id>` resolves and previews one
+  file/folder, confirms by default, supports `--dry-run`, and permits unattended `--yes` only
+  with an explicit profile. It moves the item to undoable trash; permanent, recursive, and bulk
+  deletion remain excluded.
+
 - **`0.1.22` — Release, CI & docs hygiene** (plus offline bug fixes): a CI
   workflow running the offline suite on Linux + Windows, packaging verification,
   contributor/architecture docs, and fixes surfaced by hands-on testing

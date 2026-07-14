@@ -53,6 +53,31 @@ def test_api_client_download_raises_on_error_status_and_redacts_token():
     assert token not in str(excinfo.value)
 
 
+def test_api_client_delete_constructs_authenticated_request():
+    transport = FakeTransport(
+        TransportResponse(200, '{"result":"success","data":{"cancel_id":"undo-123"}}')
+    )
+    client = InformaniakAPIClient(
+        "secret-token", base_url="https://api.example.test", transport=transport
+    )
+
+    payload = client.delete("/2/drive/1/files/82")
+
+    assert payload["data"]["cancel_id"] == "undo-123"
+    assert transport.requests == [
+        {
+            "method": "DELETE",
+            "url": "https://api.example.test/2/drive/1/files/82",
+            "headers": {
+                "Accept": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+            "params": None,
+            "json": None,
+        }
+    ]
+
+
 def test_redact_secret_removes_bearer_tokens():
     bearer = "Bea" + "rer "
     message = "Authorization: " + bearer + "example-token failed"

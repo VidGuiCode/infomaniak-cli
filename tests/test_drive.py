@@ -41,6 +41,13 @@ class FakeAPI:
             raise response
         return response
 
+    def delete(self, path, params=None):
+        self.calls.append(("DELETE", path, params))
+        response = self.responses.get(("DELETE", path), self.responses.get(path))
+        if isinstance(response, Exception):
+            raise response
+        return response
+
     def download(self, path, params=None):
         self.calls.append(("DOWNLOAD", path, params))
         response = self.responses.get(("DOWNLOAD", path))
@@ -683,6 +690,100 @@ def test_cli_drive_download_json_output(tmp_path, monkeypatch, capsys):
     assert payload["bytes"] == 5
     assert payload["name"] == "logo.png"
     assert payload["destination"] == str(target)
+
+
+# --- drive rm (protected soft-delete) ------------------------------------
+
+
+def test_drive_service_trash_file_uses_delete_and_returns_undo_metadata():
+    from infomaniak_cli.services.drive import trash_file
+
+    api = FakeAPI(
+        {
+            ("DELETE", "/2/drive/drive-1/files/82"): {
+                "result": "success",
+                "data": {"cancel_id": "undo-123"},
+            }
+        }
+    )
+
+    result = trash_file(api, "drive-1", "82")
+
+    assert result == {"cancel_id": "undo-123"}
+    assert api.calls == [("DELETE", "/2/drive/drive-1/files/82", None)]
+
+
+def _rm_api(*, name="Disposable test folder", ftype="dir"):
+    return FakeAPI(
+        {
+            "/2/drive/drive-1/files/82": {
+                "result": "success",
+                "data": {"id": 82, "name": name, "type": ftype, "parent_id": 1},
+            },
+            ("DELETE", "/2/drive/drive-1/files/82"): {
+                "result": "success",
+                "data": {"cancel_id": "undo-123"},
+            },
+        }
+    )
+
+
+def test_cli_drive_rm_dry_run_resolves_target_without_deleting(tmp_path, monkeypatch, capsys):
+    api = _rm_api()
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "rm", "82", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["profile"] == "work"
+    assert payload["drive_id"] == "drive-1"
+    assert payload["file_id"] == "82"
+    assert payload["target"]["id"] == "82"
+    assert payload["target"]["name"] == "Disposable test folder"
+    assert payload["target"]["type"] == "dir"
+    assert payload["dry_run"] is True
+    assert payload["trashed"] is False
+    assert api.calls == [("/2/drive/drive-1/files/82", None)]
+
+
+def test_cli_drive_rm_yes_requires_explicit_profile(tmp_path, monkeypatch, capsys):
+    api = _rm_api()
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "rm", "82", "--yes"]) == 1
+
+    assert "unless the profile is explicit" in capsys.readouterr().err
+    assert not any(call[0] == "DELETE" for call in api.calls)
+
+
+def test_cli_drive_rm_yes_with_explicit_profile_trashes_target(tmp_path, monkeypatch, capsys):
+    api = _rm_api(ftype="file")
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["--profile", "work", "drive", "rm", "82", "--yes", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["trashed"] is True
+    assert payload["target"]["name"] == "Disposable test folder"
+    assert payload["trash"] == {"cancel_id": "undo-123"}
+    assert api.calls[-1] == ("DELETE", "/2/drive/drive-1/files/82", None)
+
+
+def test_cli_drive_rm_refuses_drive_root(tmp_path, monkeypatch, capsys):
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/1": {
+                "result": "success",
+                "data": {"id": 1, "name": "Root", "type": "dir", "visibility": "is_root"},
+            }
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "rm", "1", "--dry-run"]) == 1
+
+    assert "Refusing to trash the kDrive root" in capsys.readouterr().err
+    assert not any(call[0] == "DELETE" for call in api.calls)
 
 
 def test_cli_drive_recent_requires_drive_id(tmp_path, monkeypatch, capsys):

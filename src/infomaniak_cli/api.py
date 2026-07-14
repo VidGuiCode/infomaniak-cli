@@ -177,6 +177,9 @@ class InformaniakAPIClient:
     def post(self, path: str, json: Any | None = None) -> Any:
         return self.request("POST", path, json=json)
 
+    def delete(self, path: str, params: Mapping[str, Any] | None = None) -> Any:
+        return self.request("DELETE", path, params=params)
+
     def download(
         self, path: str, params: Mapping[str, Any] | None = None
     ) -> tuple[bytes, Mapping[str, str]]:

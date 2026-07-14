@@ -188,6 +188,14 @@ ik drive download <file_id> --output ./logo.png --force
 ik drive download <file_id> --json
 ```
 
+Protected soft-delete (one resolved target, trash only):
+
+```bash
+ik --profile work drive rm <file_id> --dry-run
+ik --profile work drive rm <file_id>
+ik --profile work drive rm <file_id> --yes --json
+```
+
 `ik drive list` uses the selected profile's default kDrive ID and calls `GET /2/drive/{drive_id}/files`. Use `--drive-id <id>` to override the profile default. `--parent <folder_id>` is passed to the same endpoint as `parent_id`.
 
 `ik drive folders` uses the same files endpoint and filters the returned items to folders/directories only. It supports `--drive-id`, `--parent`, `--limit`, `--json`, and `--raw`.
@@ -202,7 +210,9 @@ ik drive download <file_id> --json
 
 `ik drive download <file_id>` fetches a file's raw bytes via `GET /2/drive/{drive_id}/files/{file_id}/download` (confirmed live) and writes them locally. It first reads the file's metadata via `GET /2/drive/{drive_id}/files/{file_id}` to resolve the name and reject folders. The server side is read-only — no server change is made. `--output <path>` sets the destination (a directory keeps the remote name; otherwise the exact path is used); with no `--output` it writes the remote name into the current directory. It never overwrites an existing local file unless `--force` is given. Supports `--drive-id`, `--json`, and `--compact`.
 
-Not implemented: upload, move, delete, share changes, trash, recursive sync, or any server-side write behavior.
+`ik drive rm <file_id>` resolves one target via `GET /2/drive/{drive_id}/files/{file_id}`, previews its name/type/id, then moves it to trash via `DELETE /2/drive/{drive_id}/files/{file_id}`. This is an undoable soft-delete; JSON includes returned undo metadata such as `cancel_id`. Confirmation is required unless `--yes` is used with an explicit profile. `--dry-run` resolves and previews without deleting. The drive root is refused; permanent, recursive, and bulk deletion are not available.
+
+Not implemented: upload, move, permanent delete, recursive/bulk trash, restore, share changes, or recursive sync.
 
 ## kChat
 
