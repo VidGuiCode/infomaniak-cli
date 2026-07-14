@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.2.9-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.10-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -92,8 +92,9 @@ ik auth calendar --username <sync-username> --stdin
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 
 ik account list
-ik account products
 ik account services
+ik account services --json --raw
+ik account products --json --raw  # lower-level catalog diagnostics
 
 ik drive list
 ik drive list --json
@@ -248,8 +249,8 @@ ik doctor --json
 
 # 2. Discover
 ik account list --json
-ik account products --json
 ik account services --json
+ik account products --json --raw  # only when debugging catalog/discovery mismatches
 
 # 3. Use services
 ik drive list --json
@@ -292,6 +293,12 @@ ik chat users --json
 ```
 
 Use `--json` for pretty structured output, `--compact` for single-line slim JSON (available on all discovery and read-only commands), and `--table` for dense human tables on supported list commands. `ik mail read --json` includes full readable `body_text` without `--raw` (plain text is the default human output; pass `--html` for the raw HTML body); `--raw` keeps fuller parsed message metadata such as `body_preview`. `ik mail search` takes a plain-substring positional query and/or structured `--from`/`--to`/`--subject` filters (not Gmail-style operators). Use `--profile` to target a specific account, or set `IK_PROFILE` for one terminal session.
+
+`ik account services` is the primary workflow discovery command. Its default JSON is a stable,
+slim inventory with an `actionable` flag and next-command hints such as `ik drive list`,
+`ik mail mailboxes`, and `ik chat channels`; use `--json --raw` for the full upstream payload.
+`ik account products` is lower-level catalog data kept for bootstrap diagnostics and support, not
+as a daily workflow surface.
 
 When `--json` or `--compact` is active, common command errors use a structured JSON error envelope on stderr.
 

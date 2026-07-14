@@ -37,6 +37,49 @@ def list_services(api: Any, account_id: str) -> list[Mapping[str, Any]]:
     return _as_items(_unwrap(api.get(f"/1/accounts/{account_id}/services")))
 
 
+_SERVICE_WORKFLOWS: dict[str, tuple[str, str]] = {
+    "drive": ("drive", "ik drive list"),
+    "kdrive": ("drive", "ik drive list"),
+    "email_hosting": ("mail", "ik mail mailboxes"),
+    "mail_hosting": ("mail", "ik mail mailboxes"),
+    "mail": ("mail", "ik mail mailboxes"),
+    "kchat": ("chat", "ik chat channels"),
+    "chat": ("chat", "ik chat channels"),
+    "calendar": ("calendar", "ik calendar upcoming"),
+    "caldav": ("calendar", "ik calendar upcoming"),
+    "contacts": ("contacts", "ik contacts list"),
+    "carddav": ("contacts", "ik contacts list"),
+}
+
+
+def slim_service(service: Mapping[str, Any]) -> dict[str, Any]:
+    """Project catalog service data into a stable workflow-facing shape."""
+    service_id = service.get("id") or service.get("service_id") or service.get("product_id")
+    name = service.get("name") or service.get("service_name") or service.get("type")
+    projected: dict[str, Any] = {}
+    if service_id is not None:
+        projected["id"] = service_id
+    if name is not None:
+        projected["name"] = name
+    if service.get("count") is not None:
+        projected["count"] = service["count"]
+
+    key = str(name or "").strip().lower().replace("-", "_").replace(" ", "_")
+    workflow = _SERVICE_WORKFLOWS.get(key)
+    if workflow is not None:
+        area, command = workflow
+        projected["area"] = area
+        projected["actionable"] = True
+        projected["command"] = command
+    else:
+        projected["actionable"] = False
+    return projected
+
+
+def slim_services(services: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [slim_service(service) for service in services]
+
+
 def _unwrap(payload: Any) -> Any:
     if isinstance(payload, Mapping) and payload.get("result") == "success" and "data" in payload:
         return payload["data"]

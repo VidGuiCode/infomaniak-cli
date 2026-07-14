@@ -101,13 +101,24 @@ These commands describe what the authenticated user/profile can access. An emplo
 
 ```bash
 ik account list
-ik account products
-ik account products --account-id <id>
 ik account services
 ik account services --account-id <id>
+ik account services --json --raw
+ik account products --json --raw
+ik account products --account-id <id> --json --raw
 ```
 
 These commands stay read-only and intentionally cover user-accessible discovery, not company/account administration.
+
+`ik account services` is the primary workflow discovery command. Default JSON/compact output is
+normalized to stable fields: `id`, `name`, optional `count`, `actionable`, and—when the service has
+a supported daily workflow—`area` plus `command`. Current hints include `ik drive list`,
+`ik mail mailboxes`, `ik chat channels`, `ik calendar upcoming`, and `ik contacts list`.
+Use `--table` for a compact inventory or `--json --raw` to inspect the full upstream response.
+
+`ik account products` is lower-level catalog data. It remains available, especially with
+`--json --raw`, for bootstrap debugging, support, and understanding product/service relationships;
+normal drive/mail/calendar/contacts/chat workflows should not depend on it.
 
 ## Admin / Informaniak Manager
 

@@ -14,6 +14,8 @@ from infomaniak_cli.services.account import (
     slim_account,
     slim_product,
     slim_products,
+    slim_service,
+    slim_services,
 )
 
 
@@ -101,6 +103,43 @@ def test_slim_products_projects_each_item():
     assert slim_products(raw) == [
         {"id": 123, "name": "drive", "type": "drive"},
         {"id": 456, "name": "kchat", "type": "kchat"},
+    ]
+
+
+def test_slim_service_maps_known_catalog_services_to_daily_workflows():
+    assert slim_service({"id": 40, "name": "drive", "count": 2}) == {
+        "id": 40,
+        "name": "drive",
+        "count": 2,
+        "area": "drive",
+        "actionable": True,
+        "command": "ik drive list",
+    }
+    assert slim_service({"id": 23, "name": "email_hosting", "count": 1}) == {
+        "id": 23,
+        "name": "email_hosting",
+        "count": 1,
+        "area": "mail",
+        "actionable": True,
+        "command": "ik mail mailboxes",
+    }
+    assert slim_service({"id": 54, "name": "kchat", "count": 1}) == {
+        "id": 54,
+        "name": "kchat",
+        "count": 1,
+        "area": "chat",
+        "actionable": True,
+        "command": "ik chat channels",
+    }
+
+
+def test_slim_service_keeps_unknown_or_parent_catalog_entries_non_actionable():
+    assert slim_services([
+        {"id": 52, "name": "ksuite", "count": 1},
+        {"service_id": 99, "service_name": "future_service"},
+    ]) == [
+        {"id": 52, "name": "ksuite", "count": 1, "actionable": False},
+        {"id": 99, "name": "future_service", "actionable": False},
     ]
 
 
@@ -231,7 +270,12 @@ def test_cli_account_services_json_allows_explicit_account_id(tmp_path, monkeypa
     assert cli.main(["account", "services", "--account-id", "99", "--json"]) == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output == {"profile": "work", "account_id": "99", "services": [{"id": "drive-1"}]}
+    assert output == {
+        "profile": "work",
+        "account_id": "99",
+        "count": 1,
+        "services": [{"id": "drive-1", "actionable": False}],
+    }
     assert fake_api.calls == [("/1/accounts/99/services", None)]
 
 
@@ -246,7 +290,43 @@ def test_cli_account_services_compact_is_single_line_slim_json(tmp_path, monkeyp
 
     captured = capsys.readouterr()
     assert "\n" not in captured.out.rstrip("\n")
-    assert json.loads(captured.out) == {"profile": "work", "account_id": "42", "services": [{"id": "drive-1"}]}
+    assert json.loads(captured.out) == {
+        "profile": "work",
+        "account_id": "42",
+        "count": 1,
+        "services": [{"id": "drive-1", "actionable": False}],
+    }
+
+
+def test_cli_account_services_json_slims_by_default_and_raw_preserves_payload(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", account_id="42", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    raw_service = {"id": 40, "name": "drive", "count": 2, "internal": "diagnostic"}
+    fake_api = FakeAPI({"/1/accounts/42/services": {"result": "success", "data": [raw_service]}})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url: fake_api)
+
+    assert cli.main(["account", "services", "--json"]) == 0
+    slim_output = json.loads(capsys.readouterr().out)
+    assert slim_output == {
+        "profile": "work",
+        "account_id": "42",
+        "count": 1,
+        "services": [{
+            "id": 40,
+            "name": "drive",
+            "count": 2,
+            "area": "drive",
+            "actionable": True,
+            "command": "ik drive list",
+        }],
+    }
+
+    assert cli.main(["account", "services", "--json", "--raw"]) == 0
+    raw_output = json.loads(capsys.readouterr().out)
+    assert raw_output == {
+        "profile": "work", "account_id": "42", "count": 1, "services": [raw_service],
+    }
 
 
 def test_cli_account_services_table_handles_empty_result(tmp_path, monkeypatch, capsys):
@@ -290,3 +370,17 @@ def test_cli_admin_accounts_is_not_a_discovery_alias(tmp_path):
 
     assert result.returncode != 0
     assert "invalid choice" in result.stderr
+
+
+def test_public_docs_make_services_primary_and_products_diagnostic():
+    docs = "\n".join([
+        open("README.md", encoding="utf-8").read(),
+        open("docs/commands.md", encoding="utf-8").read(),
+        open("docs/agent-workflow.md", encoding="utf-8").read(),
+    ])
+
+    assert "`ik account services` is the primary workflow discovery command" in docs
+    assert "`ik account products` is lower-level catalog data" in docs
+    assert "ik account services --json --raw" in docs
+    for command in ("ik drive list", "ik mail mailboxes", "ik chat channels"):
+        assert command in docs

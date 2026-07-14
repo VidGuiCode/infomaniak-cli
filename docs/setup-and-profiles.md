@@ -169,8 +169,8 @@ Use neutral account commands for user-accessible inventory:
 
 ```bash
 ik account list
-ik account products
 ik account services
+ik account products --json --raw  # lower-level catalog diagnostics
 ```
 
 Manager/admin commands are deferred until a separate, explicit surface exists. A normal employee should be able to use `ik setup`, `ik bootstrap`, `ik account ...`, and service commands without touching an admin namespace.

@@ -15,6 +15,7 @@ htmlcov/
 .venv/
 venv/
 dist/
+.release-assets/
 build/
 *.egg-info/
 .eggs/

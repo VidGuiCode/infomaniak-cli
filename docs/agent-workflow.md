@@ -126,6 +126,10 @@ ik --profile work contacts search "accountant" --compact
 ik --profile work chat channels --compact
 ```
 
+`ik account services` is the primary workflow discovery command: its slim records state whether a
+service is actionable and provide the next CLI command. `ik account products` is lower-level
+catalog data; agents should request `ik account products --json --raw` only for diagnostics.
+
 ## Environment variables
 
 | Var | Effect |

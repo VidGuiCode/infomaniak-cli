@@ -21,7 +21,14 @@ from .output import compact_json, error_json, pretty_json, redact, render_table
 from .pathcheck import plan_path_fix
 from .profiles import ProfileManager
 from .readiness import build_readiness
-from .services.account import list_accounts, list_products, list_services, slim_accounts, slim_products
+from .services.account import (
+    list_accounts,
+    list_products,
+    list_services,
+    slim_accounts,
+    slim_products,
+    slim_services,
+)
 from .services.calendar import (
     CalendarClient,
     CalendarError,
@@ -2021,6 +2028,7 @@ def cmd_account_products(args: argparse.Namespace) -> int:
     else:
         print(f"Profile: {profile.name}")
         print(f"Account ID: {account_id}")
+        print("Catalog products (diagnostic): use `ik account services` for workflow discovery.")
         if not products:
             print("No products found.")
         for product in products:
@@ -2029,20 +2037,42 @@ def cmd_account_products(args: argparse.Namespace) -> int:
 
 
 def cmd_account_services(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
     profile, client = _profile_and_client(args.profile, args.base_url)
     account_id = _account_id_or_error(args, profile)
     services = list_services(client, account_id)
+    workflow_services = slim_services(services)
     if _machine_output(args):
-        print_machine({"profile": profile.name, "account_id": account_id, "services": services}, args)
+        output_services = services if _raw_output(args) else workflow_services
+        print_machine(
+            {
+                "profile": profile.name,
+                "account_id": account_id,
+                "count": len(services),
+                "services": output_services,
+            },
+            args,
+        )
     elif getattr(args, "table", False):
-        print(render_table(services, [("id", "ID"), ("name", "Name"), ("type", "Type"), ("service_name", "Service")]))
+        print(render_table(workflow_services, [
+            ("id", "ID"),
+            ("name", "Service"),
+            ("count", "Count"),
+            ("area", "Area"),
+            ("command", "Next command"),
+        ]))
     else:
         print(f"Profile: {profile.name}")
         print(f"Account ID: {account_id}")
+        print(f"Services: {len(services)}")
         if not services:
             print("No services found.")
-        for service in services:
-            print(_display_item(service))
+        for service in workflow_services:
+            service_id = service.get("id") or "-"
+            name = service.get("name") or "unnamed"
+            count = service.get("count") if service.get("count") is not None else "-"
+            command = service.get("command") or "catalog only"
+            print(f"{service_id}\t{name}\t{count}\t{command}")
     return 0
 
 
@@ -3270,17 +3300,22 @@ def build_parser() -> argparse.ArgumentParser:
     account_list.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     account_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw account payload.")
     account_list.set_defaults(func=cmd_account_list)
-    account_products = account_sub.add_parser("products", help="List products for an account")
+    account_products = account_sub.add_parser(
+        "products", help="List lower-level product catalog data (diagnostic)"
+    )
     account_products.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
     account_products.add_argument("--json", action="store_true")
     account_products.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     account_products.add_argument("--raw", action="store_true", help="With --json, emit the full raw product payload.")
     account_products.set_defaults(func=cmd_account_products)
-    account_services = account_sub.add_parser("services", help="List services for an account")
+    account_services = account_sub.add_parser(
+        "services", help="List workflow-facing services and actionable next commands"
+    )
     account_services.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
     account_services.add_argument("--json", action="store_true")
     account_services.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     account_services.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
+    account_services.add_argument("--raw", action="store_true", help="With --json, emit the full raw service payload.")
     account_services.set_defaults(func=cmd_account_services)
 
     drive = sub.add_parser("drive", help="Use kDrive as the selected profile")

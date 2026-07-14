@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.10] - 2026-07-15
+### Changed
+- `ik account services` is now the primary workflow-facing inventory. Default JSON/compact output
+  normalizes upstream catalog records to stable `id`, `name`, optional `count`, and `actionable`
+  fields; supported service families also expose an `area` and a concrete next CLI `command`.
+- Added `ik account services --json --raw` for full upstream diagnostics and a workflow-oriented
+  table/human view. Known hints cover drive, mail, chat, calendar, and contacts.
+- `ik account products` remains compatible but is explicitly labeled lower-level catalog data for
+  bootstrap debugging, support, and product/service relationship inspection rather than daily use.
+
 ## [0.2.9] - 2026-07-14
 ### Added
 - **Protected mail drafts:** `ik mail draft` builds one plain-text RFC message and appends it to
