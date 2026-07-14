@@ -1109,7 +1109,7 @@ def _mail_profile_and_client(args: argparse.Namespace) -> tuple[Any, IMAPClient]
     return profile, IMAPClient(host, port, mailbox, password)
 
 
-def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, ContactsClient]:
+def _contacts_profile(args: argparse.Namespace) -> Any:
     manager = ProfileManager()
     name = _resolve_profile_name(manager, args.profile)
 
@@ -1121,14 +1121,27 @@ def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, Contact
             "it auto-discovers the address-book collection, or pass --url <collection-url> to set it explicitly."
         )
 
+    return profile
+
+
+def _contacts_client(profile: Any) -> ContactsClient:
     contacts_store = ContactsPasswordStore()
-    if not contacts_store.has_password(name):
+    if not contacts_store.has_password(profile.name):
         raise ValueError(
             f"No contacts password configured for profile: {profile.name}. "
             f"Run `ik --profile {profile.name} auth contacts --username <sync-username> --stdin` first."
         )
 
-    return profile, ContactsClient(profile.contacts_url, profile.contacts_username, contacts_store.load_password(name))
+    return ContactsClient(
+        profile.contacts_url,
+        profile.contacts_username,
+        contacts_store.load_password(profile.name),
+    )
+
+
+def _contacts_profile_and_client(args: argparse.Namespace) -> tuple[Any, ContactsClient]:
+    profile = _contacts_profile(args)
+    return profile, _contacts_client(profile)
 
 
 def _calendar_profile_and_client(args: argparse.Namespace) -> tuple[Any, CalendarClient]:
@@ -2501,7 +2514,7 @@ def _print_contact_write_preview(
 
 
 def cmd_contacts_create(args: argparse.Namespace) -> int:
-    profile, client = _contacts_profile_and_client(args)
+    profile = _contacts_profile(args)
     uid = str(uuid.uuid4())
     contact = _contact_from_args(args, uid=uid)
     vcard = _contact_vcard(contact)
@@ -2519,6 +2532,7 @@ def cmd_contacts_create(args: argparse.Namespace) -> int:
             print("Dry run: no contact was created.")
         return 0
 
+    client = _contacts_client(profile)
     if getattr(args, "yes", False) and not _profile_is_explicit(args):
         raise ValueError(
             "Refusing to create a contact with --yes unless the profile is explicit. "

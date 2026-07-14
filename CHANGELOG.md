@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.8.post1] - 2026-07-14
+### Fixed
+- `ik contacts create --dry-run` is now a genuinely offline preview: it requires configured
+  address-book metadata, but no stored Contacts password and no CardDAV client or network call.
+
 ## [0.2.8] - 2026-07-14
 ### Added
 - **Contacts create:** `ik contacts create --name <name>` writes one vCard with confirmation,

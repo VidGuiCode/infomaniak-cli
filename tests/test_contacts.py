@@ -537,7 +537,28 @@ def test_cli_contacts_create_dry_run_does_not_write(tmp_path, monkeypatch, capsy
     assert output["created"] is False
     assert output["contact"]["display_name"] == "Disposable Contact"
     assert "BEGIN:VCARD" in output["vcard"]
-    assert not any(call[0] == "create_contact" for call in clients[0].calls)
+    assert clients == []
+
+
+def test_cli_contacts_create_dry_run_needs_no_password_or_client(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work",
+        contacts_url="https://sync.example.test/addressbooks/user/default/",
+        contacts_username="user@example.com",
+        make_default=True,
+    )
+
+    assert cli.main([
+        "contacts", "create", "--name", "Offline Preview",
+        "--email", "preview@example.test", "--dry-run", "--json",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["dry_run"] is True
+    assert output["created"] is False
+    assert output["contact"]["display_name"] == "Offline Preview"
+    assert "BEGIN:VCARD" in output["vcard"]
 
 
 def test_cli_contacts_create_yes_requires_explicit_profile(tmp_path, monkeypatch, capsys):
