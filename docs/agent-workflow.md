@@ -24,6 +24,9 @@ no kDrive upload, no kChat post); those will arrive later behind confirmation an
 2. `IK_PROFILE` env var (per-terminal session).
 3. The saved current/default profile (lowest — fine for humans, not automation).
 
+Global `--profile` and `--base-url` options may be placed before or after commands/subcommands;
+automation should still pass `--profile` explicitly.
+
 ## Output modes
 
 | Flag | Use |

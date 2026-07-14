@@ -36,6 +36,10 @@ write behavior is added.
 
 ## Shipped recently
 
+- **`0.2.7` — Calendar history and CLI ergonomics:** explicit `calendar search --from/--to`
+  ranges, global `--profile`/`--base-url` placement at any command depth, Windows/MSYS kDrive
+  download-path translation, and pipx stale-metadata guidance.
+
 - **`0.2.6` — protected kDrive trash:** `ik drive rm <file_id>` resolves and previews one
   file/folder, confirms by default, supports `--dry-run`, and permits unattended `--yes` only
   with an explicit profile. It moves the item to undoable trash; permanent, recursive, and bulk

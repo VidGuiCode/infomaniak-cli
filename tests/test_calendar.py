@@ -429,6 +429,81 @@ def test_cli_calendar_search_filters_client_side(tmp_path, monkeypatch, capsys):
     assert output["events"][0]["id"] == "event-2"
 
 
+def test_cli_calendar_search_explicit_range_reaches_caldav_client(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created_clients = []
+
+    def make_client(url, username, password):
+        client = FakeCalendarClient(url, username, password)
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "CalendarClient", make_client)
+
+    assert cli.main([
+        "calendar", "search", "invoice",
+        "--from", "2026-01-01",
+        "--to", "2026-02-01T12:30:00+01:00",
+        "--json",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["from"] == "2026-01-01T00:00:00Z"
+    assert output["to"] == "2026-02-01T11:30:00Z"
+    assert output["days"] is None
+    call = created_clients[0].calls[0]
+    assert call[2] == datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+    assert call[3] == datetime.datetime(2026, 2, 1, 11, 30, tzinfo=datetime.UTC)
+
+
+def test_cli_calendar_search_range_requires_both_bounds(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main(["calendar", "search", "invoice", "--from", "2026-01-01"]) == 1
+
+    assert "--from and --to must be used together" in capsys.readouterr().err
+
+
+def test_cli_calendar_search_rejects_days_with_explicit_range(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main([
+        "calendar", "search", "invoice", "--days", "7",
+        "--from", "2026-01-01", "--to", "2026-02-01",
+    ]) == 1
+
+    assert "--days cannot be combined with --from/--to" in capsys.readouterr().err
+
+
+def test_cli_calendar_search_rejects_reversed_range(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main([
+        "calendar", "search", "invoice",
+        "--from", "2026-02-01", "--to", "2026-01-01",
+    ]) == 1
+
+    assert "--to must be after --from" in capsys.readouterr().err
+
+
+def test_cli_calendar_create_accepts_global_profile_after_subcommand(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created_clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create",
+        "--summary", "Placement check",
+        "--start", "2026-07-20T14:00",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    assert json.loads(capsys.readouterr().out)["created"] is True
+    assert created_clients[0].calls[-1][0] == "create_event"
+
+
 def test_cli_calendar_show_existing_event(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)

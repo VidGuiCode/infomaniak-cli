@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.2.6-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.7-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -58,6 +58,9 @@ ik update --yes
 ```
 
 `ik update` checks the latest GitHub release and can update pipx, uv tool, or pip installs when a release wheel is available. Source checkouts stay manual and print `git pull` / `uv sync` instructions.
+
+For pipx installs, `ik update` upgrades the package inside the pipx environment using `pipx runpip`.
+`pipx list` can therefore show stale package metadata; use `ik version` as the source of truth.
 
 ### Troubleshooting: `ik` not found / not on PATH
 
@@ -122,7 +125,7 @@ ik contacts show <contact_id> --json
 ik calendar list --json
 ik calendar upcoming --days 14 --json
 ik calendar today --json
-ik calendar search "invoice" --json
+ik calendar search "invoice" --from 2026-01-01 --to 2026-02-01 --json
 ik calendar show <event_id> --json
 
 ik chat teams --json
@@ -130,7 +133,7 @@ ik chat channels --json
 ik chat users --json
 ```
 
-Context (profile, account, drive) is sticky — set it once and every command uses it. Profile selection precedence is explicit `--profile`, then `IK_PROFILE`, then the saved current profile.
+Context (profile, account, drive) is sticky — set it once and every command uses it. Profile selection precedence is explicit `--profile`, then `IK_PROFILE`, then the saved current profile. Global `--profile` and `--base-url` flags work before or after subcommands.
 
 `ik bootstrap` refreshes safe read-only defaults such as account, mail hosting, default mailbox, and default kDrive. It also prints readiness and missing setup actions for Mail, Contacts, Calendar, and kChat without guessing or storing credentials.
 
@@ -265,7 +268,7 @@ ik contacts show <contact_id> --json
 ik calendar list --json
 ik calendar upcoming --days 14 --json
 ik calendar today --json
-ik calendar search "invoice" --json
+ik calendar search "invoice" --from 2026-01-01 --to 2026-02-01 --json
 ik calendar show <event_id> --json
 
 ik chat teams --json

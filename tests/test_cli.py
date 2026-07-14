@@ -136,6 +136,32 @@ def test_cli_root_without_args_prints_friendly_next_steps(tmp_path):
     assert result.stderr == ""
 
 
+def test_global_profile_and_base_url_are_normalized_from_any_depth():
+    argv = [
+        "calendar", "search", "invoice", "--json",
+        "--profile", "work", "--base-url=https://api.example.test",
+    ]
+
+    assert cli._normalize_global_options(argv) == [
+        "--profile", "work", "--base-url=https://api.example.test",
+        "calendar", "search", "invoice", "--json",
+    ]
+
+
+def test_global_option_normalization_respects_double_dash():
+    argv = ["chat", "post", "--", "message --profile work"]
+
+    assert cli._normalize_global_options(argv) == argv
+
+
+def test_main_accepts_global_options_after_subcommand(capsys):
+    assert cli.main([
+        "version", "--profile", "work", "--base-url", "https://api.example.test"
+    ]) == 0
+
+    assert capsys.readouterr().out.strip() == cli.__version__
+
+
 def test_public_docs_do_not_advertise_unimplemented_commands():
     docs = "\n".join(
         [

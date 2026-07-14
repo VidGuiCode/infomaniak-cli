@@ -692,6 +692,32 @@ def test_cli_drive_download_json_output(tmp_path, monkeypatch, capsys):
     assert payload["destination"] == str(target)
 
 
+def test_normalize_download_path_translates_msys_drive_path_on_windows():
+    normalized = cli._normalize_download_path(
+        "/c/Users/Gui/Downloads/report.pdf", os_name="nt"
+    )
+
+    assert normalized == r"C:\Users\Gui\Downloads\report.pdf"
+
+
+def test_normalize_download_path_leaves_msys_shape_on_non_windows():
+    assert cli._normalize_download_path(
+        "/c/tmp/report.pdf", os_name="posix"
+    ) == "/c/tmp/report.pdf"
+
+
+def test_cli_drive_download_missing_parent_has_actionable_error(tmp_path, monkeypatch, capsys):
+    api = _download_api(b"hello")
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+    target = tmp_path / "missing" / "report.pdf"
+
+    assert cli.main(["drive", "download", "82", "--output", str(target)]) == 1
+
+    error = capsys.readouterr().err
+    assert "Destination directory does not exist" in error
+    assert "Create it first or pass an existing directory" in error
+
+
 # --- drive rm (protected soft-delete) ------------------------------------
 
 

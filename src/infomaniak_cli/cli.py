@@ -1217,6 +1217,46 @@ def _now_utc() -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC)
 
 
+def _parse_calendar_boundary(value: str, option: str) -> datetime.datetime:
+    text = value.strip()
+    try:
+        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Invalid {option}: {value!r}. Use an ISO date or datetime.") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed.astimezone(datetime.UTC)
+
+
+def _calendar_range(
+    args: argparse.Namespace, *, default_days: int
+) -> tuple[datetime.datetime, datetime.datetime, int | None]:
+    from_value = getattr(args, "from_value", None)
+    to_value = getattr(args, "to_value", None)
+    days = getattr(args, "days", None)
+
+    if bool(from_value) != bool(to_value):
+        raise ValueError("--from and --to must be used together")
+    if from_value and to_value:
+        if days is not None:
+            raise ValueError("--days cannot be combined with --from/--to")
+        start = _parse_calendar_boundary(from_value, "--from")
+        end = _parse_calendar_boundary(to_value, "--to")
+        if end <= start:
+            raise ValueError("--to must be after --from")
+        return start, end, None
+
+    resolved_days = default_days if days is None else days
+    if resolved_days < 1:
+        raise ValueError("--days must be at least 1")
+    start = _now_utc()
+    return start, start + datetime.timedelta(days=resolved_days), resolved_days
+
+
+def _iso_utc(value: datetime.datetime) -> str:
+    return value.astimezone(datetime.UTC).isoformat().replace("+00:00", "Z")
+
+
 def _resolve_mail_dates(args: argparse.Namespace) -> tuple[str | None, str | None, str | None]:
     """Resolve --since/--before/--days/--on into (since, before, on) ISO dates.
 
@@ -2172,10 +2212,27 @@ def _resolve_download_destination(output: str | None, remote_name: str) -> Path:
     safe_name = os.path.basename(remote_name) or "download"
     if output is None:
         return Path.cwd() / safe_name
-    dest = Path(output)
+    dest = Path(_normalize_download_path(output))
     if dest.is_dir():
         return dest / safe_name
     return dest
+
+
+def _normalize_download_path(path: str, *, os_name: str | None = None) -> str:
+    """Translate an MSYS ``/c/...`` path to native Windows form."""
+    platform = os.name if os_name is None else os_name
+    if (
+        platform == "nt"
+        and len(path) >= 2
+        and path[0] == "/"
+        and path[1].isalpha()
+        and (len(path) == 2 or path[2] == "/")
+    ):
+        drive = path[1].upper()
+        tail = path[3:] if len(path) > 2 else ""
+        native_tail = tail.replace("/", "\\")
+        return f"{drive}:\\{native_tail}"
+    return path
 
 
 def cmd_drive_download(args: argparse.Namespace) -> int:
@@ -2211,7 +2268,10 @@ def cmd_drive_download(args: argparse.Namespace) -> int:
 
     destination_parent = destination.parent
     if destination_parent and not destination_parent.exists():
-        raise ValueError(f"Destination directory does not exist: {destination_parent}")
+        raise ValueError(
+            f"Destination directory does not exist: {destination_parent}. "
+            "Create it first or pass an existing directory/path with --output."
+        )
     destination.write_bytes(content)
 
     size = len(content)
@@ -2461,8 +2521,7 @@ def cmd_calendar_today(args: argparse.Namespace) -> int:
 
 def cmd_calendar_search(args: argparse.Namespace) -> int:
     profile, client = _calendar_profile_and_client(args)
-    start = _now_utc()
-    end = start + datetime.timedelta(days=args.days)
+    start, end, days = _calendar_range(args, default_days=30)
     events = search_events(client.list_events(calendar=args.calendar, start=start, end=end), args.query, limit=args.limit)
 
     if _machine_output(args):
@@ -2472,7 +2531,9 @@ def cmd_calendar_search(args: argparse.Namespace) -> int:
                 "profile": profile.name,
                 "calendar": args.calendar,
                 "query": args.query,
-                "days": args.days,
+                "days": days,
+                "from": _iso_utc(start),
+                "to": _iso_utc(end),
                 "count": len(events),
                 "events": output_events,
             },
@@ -2483,6 +2544,7 @@ def cmd_calendar_search(args: argparse.Namespace) -> int:
         if args.calendar:
             print(f"Calendar: {args.calendar}")
         print(f"Query: {args.query}")
+        print(f"Range: {_iso_utc(start)} to {_iso_utc(end)}")
         print(f"Events: {len(events)}")
         if not events:
             print("No matching events found.")
@@ -2878,7 +2940,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     setup = sub.add_parser("setup", help="Create/update a ready-to-configure profile")
-    setup.add_argument("--profile", required=False, help="Profile name to create/update")
+    setup.add_argument(
+        "--profile",
+        required=False,
+        default=argparse.SUPPRESS,
+        help="Profile name to create/update",
+    )
     setup.add_argument("--non-interactive", action="store_true", help="Fail instead of prompting")
     setup.set_defaults(func=cmd_setup)
 
@@ -3262,7 +3329,18 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_today.set_defaults(func=cmd_calendar_today)
     calendar_search = calendar_sub.add_parser("search", help="Search calendar events")
     calendar_search.add_argument("query", help="Case-insensitive event search query.")
-    calendar_search.add_argument("--days", type=int, default=30, help="Days to search from now. Defaults to 30.")
+    calendar_search.add_argument(
+        "--days", type=int,
+        help="Days to search from now. Defaults to 30 when no explicit range is given.",
+    )
+    calendar_search.add_argument(
+        "--from", dest="from_value",
+        help="Range start as an ISO date/datetime (UTC when no offset is supplied).",
+    )
+    calendar_search.add_argument(
+        "--to", dest="to_value",
+        help="Range end as an ISO date/datetime (UTC when no offset is supplied).",
+    )
     calendar_search.add_argument("--calendar", help="Calendar ID or URL to query.")
     calendar_search.add_argument("--limit", type=int, help="Maximum matching events to show.")
     calendar_search.add_argument("--json", action="store_true")
@@ -3376,6 +3454,32 @@ def _configure_output_encoding() -> None:
             pass
 
 
+def _normalize_global_options(argv: list[str]) -> list[str]:
+    """Move global options before the command so argparse accepts them anywhere."""
+    global_options: list[str] = []
+    command_options: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            command_options.extend(argv[index:])
+            break
+        if token in {"--profile", "--base-url"}:
+            global_options.append(token)
+            if index + 1 < len(argv):
+                global_options.append(argv[index + 1])
+                index += 2
+                continue
+            index += 1
+            continue
+        if token.startswith("--profile=") or token.startswith("--base-url="):
+            global_options.append(token)
+        else:
+            command_options.append(token)
+        index += 1
+    return [*global_options, *command_options]
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_output_encoding()
     parser = build_parser()
@@ -3391,7 +3495,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  ik account services --json")
         print("  ik --help")
         return 0
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_normalize_global_options(argv))
     try:
         _validate_output_modes(args)
         return args.func(args)

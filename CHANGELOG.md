@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.7] - 2026-07-14
+### Added
+- **Calendar history:** `ik calendar search <query> --from <ISO> --to <ISO>` queries an explicit
+  CalDAV time range, including past events. Date-only and offset-aware datetime bounds are
+  accepted; `--days` remains the default convenience when no explicit range is supplied.
+### Fixed
+- Global `--profile` and `--base-url` options are accepted before or after commands/subcommands.
+- On Windows, kDrive download destinations in MSYS form (`/c/Users/...`) are translated to native
+  drive paths before validation; missing-parent errors now state how to resolve them.
+### Documented
+- `pipx list` may retain stale metadata after the quiet `pipx runpip` updater path; `ik version`
+  is the authoritative installed version.
+
 ## [0.2.6] - 2026-07-14
 ### Added
 - **kDrive:** `ik drive rm <file_id>` moves exactly one resolved file or folder to kDrive trash via

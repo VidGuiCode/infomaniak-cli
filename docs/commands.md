@@ -210,6 +210,8 @@ ik --profile work drive rm <file_id> --yes --json
 
 `ik drive download <file_id>` fetches a file's raw bytes via `GET /2/drive/{drive_id}/files/{file_id}/download` (confirmed live) and writes them locally. It first reads the file's metadata via `GET /2/drive/{drive_id}/files/{file_id}` to resolve the name and reject folders. The server side is read-only — no server change is made. `--output <path>` sets the destination (a directory keeps the remote name; otherwise the exact path is used); with no `--output` it writes the remote name into the current directory. It never overwrites an existing local file unless `--force` is given. Supports `--drive-id`, `--json`, and `--compact`.
 
+On Windows, MSYS paths such as `/c/Users/Gui/Downloads/report.pdf` are translated to native `C:\\Users\\Gui\\Downloads\\report.pdf` paths. The destination parent must already exist; the error names the missing directory and tells you to create it or select an existing path.
+
 `ik drive rm <file_id>` resolves one target via `GET /2/drive/{drive_id}/files/{file_id}`, previews its name/type/id, then moves it to trash via `DELETE /2/drive/{drive_id}/files/{file_id}`. This is an undoable soft-delete; JSON includes returned undo metadata such as `cancel_id`. Confirmation is required unless `--yes` is used with an explicit profile. `--dry-run` resolves and previews without deleting. The drive root is refused; permanent, recursive, and bulk deletion are not available.
 
 Not implemented: upload, move, permanent delete, recursive/bulk trash, restore, share changes, or recursive sync.
@@ -303,6 +305,7 @@ ik calendar today --calendar <calendar_id_or_url> --json
 ik calendar upcoming --days 14
 ik calendar upcoming --days 30 --limit 20 --json
 ik calendar search "invoice" --days 30 --json
+ik calendar search "invoice" --from 2026-01-01 --to 2026-02-01 --json
 ik calendar show <event_id> --json
 ik calendar show <event_id> --json --raw
 ```
@@ -319,6 +322,8 @@ ik --profile work calendar create --summary "Standup" --start 2026-08-01T09:00 -
 `ik calendar list`, `ik calendar upcoming`, `ik calendar today`, `ik calendar search`, and `ik calendar show` use the configured CalDAV collection URL. `ik auth calendar` auto-discovers that collection from the default DAV base `https://sync.infomaniak.com/`; pass `--url` to override or `--no-discover` to save a URL verbatim. JSON output defaults to stable slim calendar/event schemas. Add `--raw` with `--json` to include full parsed calendar/event payloads, including raw ICS text for events when available.
 
 Search is client-side and matches available summary, description, location, organizer, and attendee fields case-insensitively.
+
+`ik calendar search` accepts `--from` and `--to` together for explicit historical or future ranges. Bounds accept ISO dates or datetimes; a missing offset is interpreted as UTC. `--days` defaults to 30 only when no explicit range is supplied and cannot be combined with `--from`/`--to`.
 
 `ik calendar create` creates an event by PUTting a minimal iCalendar VEVENT to the collection (`PUT {collection}/{uid}.ics` with `If-None-Match: *`, so it never overwrites an existing uid). It follows the protected-write contract: prints a profile/calendar/summary/start/end preview and requires confirmation. `--dry-run` shows the event and the full iCalendar body without writing. `--start`/`--end` take ISO 8601 datetimes (naive = floating local, offset/`Z` = normalized to UTC); with `--all-day` they take `YYYY-MM-DD` dates. `--end` defaults to +1h (timed) or +1 day (all-day). `--yes` skips the prompt only with an explicit profile (`--profile`/`IK_PROFILE`). `--location`/`--description` are optional. No attendees are invited. Still excluded: update, delete, RSVP, invites, reminder writes, sync.
 

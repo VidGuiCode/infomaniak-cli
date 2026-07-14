@@ -53,6 +53,11 @@ pipx install https://github.com/VidGuiCode/infomaniak-cli/releases/download/<tag
 
 ## Upgrade
 
+`ik update` is the recommended in-CLI upgrade path. For pipx installs it uses `pipx runpip`, which
+updates the package in the environment without refreshing pipx's metadata record. As a result,
+`pipx list` may display an older version even after a successful update. `ik version` runs the
+installed package and is the source of truth.
+
 For `pipx` installs:
 
 ```bash
