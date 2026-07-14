@@ -289,7 +289,18 @@ ik contacts show <contact_id> --json --raw
 
 Search is client-side and matches available name, email, phone, and organization fields case-insensitively.
 
-Not implemented in v0.1.x: contact create, update, delete, import, bulk export, sync writes, or groups. `contacts groups` is deferred until address-book/group discovery is confirmed cleanly.
+Protected writes:
+
+```bash
+ik --profile work contacts create --name "Example Person" --email person@example.com --dry-run
+ik --profile work contacts create --name "Example Person" --email person@example.com
+ik --profile work contacts update <contact_id> --organization "Example Co" --dry-run
+ik --profile work contacts update <contact_id> --phone "+352 123" --yes --json
+```
+
+Create writes one vCard with `If-None-Match: *`, so it never overwrites an existing resource. Update first resolves exactly one contact, previews before/after fields, preserves unmodeled raw vCard properties, and writes with the resolved ETag in `If-Match` to prevent lost updates. Both require confirmation by default, support `--dry-run` and structured output, and allow `--yes` only with an explicit profile.
+
+Not implemented: contact delete, import, bulk export, sync writes, or groups. `contacts groups` is deferred until address-book/group discovery is confirmed cleanly.
 
 ## Calendar
 

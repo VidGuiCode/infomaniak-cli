@@ -36,6 +36,10 @@ write behavior is added.
 
 ## Shipped recently
 
+- **`0.2.8` — protected Contacts writes:** create uses collision-safe CardDAV PUT; update resolves
+  one contact, preserves unmodeled vCard properties, and uses ETag `If-Match` protection. Both
+  require preview/confirmation and support `--dry-run` plus explicit-profile-gated `--yes`.
+
 - **`0.2.7` — Calendar history and CLI ergonomics:** explicit `calendar search --from/--to`
   ranges, global `--profile`/`--base-url` placement at any command depth, Windows/MSYS kDrive
   download-path translation, and pipx stale-metadata guidance.

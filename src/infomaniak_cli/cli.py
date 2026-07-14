@@ -49,7 +49,9 @@ from .services.chat import (
 from .services.contacts import (
     ContactError,
     ContactsClient,
+    build_vcard,
     find_contact,
+    merge_vcard,
     search_contacts,
     slim_contact,
     slim_contacts,
@@ -2437,6 +2439,166 @@ def cmd_contacts_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _contact_from_args(
+    args: argparse.Namespace,
+    *,
+    uid: str,
+    existing: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    current = existing or {}
+    display_name = getattr(args, "name", None)
+    if display_name is None:
+        display_name = current.get("display_name")
+    if not str(display_name or "").strip():
+        raise ValueError("Contact --name is required and cannot be empty.")
+
+    def resolved(name: str, key: str) -> Any:
+        value = getattr(args, name, None)
+        return current.get(key) if value is None else value
+
+    return {
+        "id": uid,
+        "display_name": str(display_name),
+        "given_name": resolved("given_name", "given_name"),
+        "family_name": resolved("family_name", "family_name"),
+        "emails": resolved("emails", "emails") or [],
+        "phones": resolved("phones", "phones") or [],
+        "organization": resolved("organization", "organization"),
+    }
+
+
+def _contact_vcard(contact: Mapping[str, Any]) -> str:
+    return build_vcard(
+        uid=str(contact["id"]),
+        display_name=str(contact["display_name"]),
+        given_name=contact.get("given_name"),
+        family_name=contact.get("family_name"),
+        emails=list(contact.get("emails") or []),
+        phones=list(contact.get("phones") or []),
+        organization=contact.get("organization"),
+    )
+
+
+def _print_contact_write_preview(
+    profile: Any,
+    action: str,
+    after: Mapping[str, Any],
+    *,
+    before: Mapping[str, Any] | None = None,
+) -> None:
+    print(f"Profile: {profile.name}")
+    print(f"Address book: {profile.contacts_url}")
+    print(f"Action: {action} one contact")
+    if before is not None:
+        print(f"Target: {before.get('display_name') or 'unnamed'} (id {before.get('id')})")
+    print(f"Name: {after.get('display_name')}")
+    if after.get("emails"):
+        print(f"Email: {', '.join(after['emails'])}")
+    if after.get("phones"):
+        print(f"Phone: {', '.join(after['phones'])}")
+    if after.get("organization"):
+        print(f"Organization: {after['organization']}")
+
+
+def cmd_contacts_create(args: argparse.Namespace) -> int:
+    profile, client = _contacts_profile_and_client(args)
+    uid = str(uuid.uuid4())
+    contact = _contact_from_args(args, uid=uid)
+    vcard = _contact_vcard(contact)
+    plan = {
+        "profile": profile.name,
+        "addressbook": profile.contacts_url,
+        "contact": slim_contact(contact),
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "vcard": vcard, "dry_run": True, "created": False}, args)
+        else:
+            _print_contact_write_preview(profile, "create", contact)
+            print("Dry run: no contact was created.")
+        return 0
+
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            "Refusing to create a contact with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE)."
+        )
+    if not _machine_output(args):
+        _print_contact_write_preview(profile, "create", contact)
+    if not _confirm(args, "Create this contact? [y/N] ", action="contacts create"):
+        print("Contact creation cancelled.")
+        return 2
+
+    result = client.create_contact(vcard, uid)
+    if _machine_output(args):
+        print_machine({**plan, "created": True, "result": result}, args)
+    else:
+        print(f"Created contact '{contact['display_name']}' (id {uid}).")
+    return 0
+
+
+def cmd_contacts_update(args: argparse.Namespace) -> int:
+    profile, client = _contacts_profile_and_client(args)
+    changed_fields = ("name", "given_name", "family_name", "emails", "phones", "organization")
+    if not any(getattr(args, field, None) is not None for field in changed_fields):
+        raise ValueError("Contact update requires at least one field option.")
+    resolved_contact = find_contact(client.list_contacts(), args.contact_id)
+    if resolved_contact is None:
+        raise ValueError(f"Contact not found: {args.contact_id}")
+    uid = str(resolved_contact.get("id") or args.contact_id)
+    after = _contact_from_args(args, uid=uid, existing=resolved_contact)
+    before = slim_contact(resolved_contact)
+    after_slim = slim_contact(after)
+    raw_vcard = resolved_contact.get("raw_vcard")
+    if not isinstance(raw_vcard, str):
+        raise ValueError("Resolved contact has no raw vCard; refusing an unsafe update.")
+    names_changed = args.given_name is not None or args.family_name is not None
+    vcard = merge_vcard(
+        raw_vcard,
+        uid=uid,
+        display_name=after["display_name"] if args.name is not None else None,
+        given_name=after.get("given_name") if names_changed else None,
+        family_name=after.get("family_name") if names_changed else None,
+        emails=list(after.get("emails") or []) if args.emails is not None else None,
+        phones=list(after.get("phones") or []) if args.phones is not None else None,
+        organization=after.get("organization") if args.organization is not None else None,
+    )
+    plan = {
+        "profile": profile.name,
+        "addressbook": profile.contacts_url,
+        "contact_id": uid,
+        "before": before,
+        "after": after_slim,
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "vcard": vcard, "dry_run": True, "updated": False}, args)
+        else:
+            _print_contact_write_preview(profile, "update", after, before=before)
+            print("Dry run: no contact was updated.")
+        return 0
+
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            "Refusing to update a contact with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE)."
+        )
+    if not _machine_output(args):
+        _print_contact_write_preview(profile, "update", after, before=before)
+    if not _confirm(args, "Update this contact? [y/N] ", action="contacts update"):
+        print("Contact update cancelled.")
+        return 2
+
+    result = client.update_contact(vcard, resolved_contact)
+    if _machine_output(args):
+        print_machine({**plan, "updated": True, "result": result}, args)
+    else:
+        print(f"Updated contact '{after['display_name']}' (id {uid}).")
+    return 0
+
+
 def cmd_calendar_list(args: argparse.Namespace) -> int:
     profile, client = _calendar_profile_and_client(args)
     calendars = client.list_calendars()
@@ -3281,7 +3443,7 @@ def build_parser() -> argparse.ArgumentParser:
     mail_threads.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_threads.set_defaults(func=cmd_mail_threads)
 
-    contacts = sub.add_parser("contacts", help="Read-only CardDAV contacts commands")
+    contacts = sub.add_parser("contacts", help="CardDAV contacts commands")
     contacts_sub = contacts.add_subparsers(dest="contacts_command", required=True)
     contacts_list = contacts_sub.add_parser("list", help="List contacts")
     contacts_list.add_argument("--limit", type=int, help="Maximum contacts to fetch.")
@@ -3303,6 +3465,33 @@ def build_parser() -> argparse.ArgumentParser:
     contacts_show.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     contacts_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw contact payload.")
     contacts_show.set_defaults(func=cmd_contacts_show)
+
+    contacts_create = contacts_sub.add_parser("create", help="Create one contact (protected write)")
+    contacts_create.add_argument("--name", required=True, help="Display name.")
+    contacts_create.add_argument("--given-name")
+    contacts_create.add_argument("--family-name")
+    contacts_create.add_argument("--email", dest="emails", action="append", help="Email address; repeatable.")
+    contacts_create.add_argument("--phone", dest="phones", action="append", help="Phone number; repeatable.")
+    contacts_create.add_argument("--organization")
+    contacts_create.add_argument("--dry-run", action="store_true", help="Preview vCard without writing.")
+    contacts_create.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    contacts_create.add_argument("--json", action="store_true")
+    contacts_create.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_create.set_defaults(func=cmd_contacts_create)
+
+    contacts_update = contacts_sub.add_parser("update", help="Update one resolved contact (protected write)")
+    contacts_update.add_argument("contact_id", help="Contact ID from `ik contacts list`.")
+    contacts_update.add_argument("--name", help="Replacement display name.")
+    contacts_update.add_argument("--given-name")
+    contacts_update.add_argument("--family-name")
+    contacts_update.add_argument("--email", dest="emails", action="append", help="Replacement email; repeatable.")
+    contacts_update.add_argument("--phone", dest="phones", action="append", help="Replacement phone; repeatable.")
+    contacts_update.add_argument("--organization")
+    contacts_update.add_argument("--dry-run", action="store_true", help="Resolve and preview without writing.")
+    contacts_update.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    contacts_update.add_argument("--json", action="store_true")
+    contacts_update.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_update.set_defaults(func=cmd_contacts_update)
 
     calendar = sub.add_parser("calendar", help="Read-only CalDAV calendar commands")
     calendar_sub = calendar.add_subparsers(dest="calendar_command", required=True)

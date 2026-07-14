@@ -3,7 +3,14 @@ import json
 from infomaniak_cli import cli
 from infomaniak_cli.auth import ContactsPasswordStore
 from infomaniak_cli.profiles import ProfileManager
-from infomaniak_cli.services.contacts import ContactsClient, find_contact, search_contacts, slim_contact
+from infomaniak_cli.services.contacts import (
+    ContactsClient,
+    build_vcard,
+    find_contact,
+    merge_vcard,
+    search_contacts,
+    slim_contact,
+)
 
 
 CONTACTS = [
@@ -15,7 +22,9 @@ CONTACTS = [
         "emails": ["person@example.com"],
         "phones": ["+352 111"],
         "organization": "Example Co",
-        "raw_vcard": "BEGIN:VCARD",
+        "raw_vcard": "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:contact-1\r\nFN:Example Person\r\nN:Person;Example;;;\r\nEMAIL:person@example.com\r\nTEL:+352 111\r\nORG:Example Co\r\nNOTE:Preserve me\r\nEND:VCARD\r\n",
+        "resource_url": "https://sync.example.test/addressbooks/user/default/contact-1.vcf",
+        "etag": '"etag-1"',
     },
     {
         "id": "contact-2",
@@ -25,6 +34,8 @@ CONTACTS = [
         "emails": ["alice@example.net"],
         "phones": ["+352 222"],
         "organization": "Ops Team",
+        "resource_url": "https://sync.example.test/addressbooks/user/default/contact-2.vcf",
+        "etag": '"etag-2"',
     },
 ]
 
@@ -43,10 +54,24 @@ class FakeContactsClient:
             return self.contacts[:limit]
         return self.contacts
 
+    def create_contact(self, vcard, uid):
+        self.calls.append(("create_contact", vcard, uid))
+        return {"uid": uid, "url": f"{self.url}{uid}.vcf", "status": 201}
+
+    def update_contact(self, vcard, contact):
+        self.calls.append(("update_contact", vcard, contact))
+        return {
+            "uid": contact["id"],
+            "url": contact["resource_url"],
+            "status": 204,
+        }
+
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, *, status=200, headers=None):
         self.payload = payload
+        self.status = status
+        self.headers = headers or {}
 
     def read(self):
         return self.payload
@@ -140,6 +165,7 @@ END:VCARD</C:address-data>
     assert contacts[0]["emails"] == ["person@example.com"]
     assert contacts[0]["phones"] == ["+352 111"]
     assert contacts[0]["organization"] == "Example Co"
+    assert contacts[0]["resource_url"] == "https://sync.example.test/addressbooks/user/default/contact-1.vcf"
     assert seen_requests[0].get_method() == "REPORT"
     assert seen_requests[0].headers["Depth"] == "1"
 
@@ -283,7 +309,7 @@ def test_cli_contacts_list_raw_json(tmp_path, monkeypatch, capsys):
     assert cli.main(["contacts", "list", "--json", "--raw"]) == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output["contacts"][0]["raw_vcard"] == "BEGIN:VCARD"
+    assert output["contacts"][0]["raw_vcard"].startswith("BEGIN:VCARD")
 
 
 def test_cli_contacts_list_limit(tmp_path, monkeypatch, capsys):
@@ -372,10 +398,234 @@ def test_cli_contacts_requires_contacts_configuration(tmp_path, monkeypatch, cap
     assert "auth contacts" in captured.err
 
 
-def test_contacts_parser_exposes_no_write_commands():
+def test_build_vcard_emits_escaped_vcard_3_fields():
+    vcard = build_vcard(
+        uid="uid-1",
+        display_name="Example, Person",
+        given_name="Example",
+        family_name="Person",
+        emails=["person@example.com"],
+        phones=["+352 111"],
+        organization="Example; Co",
+    )
+
+    assert vcard.startswith("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:uid-1\r\n")
+    assert "FN:Example\\, Person\r\n" in vcard
+    assert "N:Person;Example;;;\r\n" in vcard
+    assert "EMAIL:person@example.com\r\n" in vcard
+    assert "TEL:+352 111\r\n" in vcard
+    assert "ORG:Example\\; Co\r\n" in vcard
+    assert vcard.endswith("END:VCARD\r\n")
+
+
+def test_carddav_create_uses_put_if_none_match():
+    seen = []
+
+    def opener(request):
+        seen.append(request)
+        return FakeResponse(b"", status=201, headers={"ETag": '"new"'})
+
+    client = ContactsClient(
+        "https://sync.example.test/addressbooks/user/default/",
+        "user@example.com", "pw", opener=opener,
+    )
+    result = client.create_contact("BEGIN:VCARD\r\nEND:VCARD\r\n", "uid-new")
+
+    assert result["status"] == 201
+    assert result["url"].endswith("/uid-new.vcf")
+    assert seen[0].get_method() == "PUT"
+    assert seen[0].headers["If-none-match"] == "*"
+
+
+def test_carddav_update_uses_resolved_url_and_if_match():
+    seen = []
+
+    def opener(request):
+        seen.append(request)
+        return FakeResponse(b"", status=204)
+
+    client = ContactsClient(
+        "https://sync.example.test/addressbooks/user/default/",
+        "user@example.com", "pw", opener=opener,
+    )
+    contact = {
+        "id": "contact-1",
+        "resource_url": "https://sync.example.test/addressbooks/user/default/contact-1.vcf",
+        "etag": '"etag-1"',
+    }
+    result = client.update_contact("BEGIN:VCARD\r\nEND:VCARD\r\n", contact)
+
+    assert result["status"] == 204
+    assert seen[0].full_url == contact["resource_url"]
+    assert seen[0].headers["If-match"] == '"etag-1"'
+
+
+def test_merge_vcard_preserves_unmodeled_properties():
+    merged = merge_vcard(
+        CONTACTS[0]["raw_vcard"],
+        uid="contact-1",
+        display_name="Example Person",
+        given_name="Example",
+        family_name="Person",
+        emails=["new@example.test"],
+        phones=["+352 999"],
+        organization="Updated Org",
+    )
+
+    assert "NOTE:Preserve me\r\n" in merged
+    assert "EMAIL:new@example.test\r\n" in merged
+    assert "EMAIL:person@example.com" not in merged
+    assert "ORG:Updated Org\r\n" in merged
+
+
+def test_carddav_update_refuses_missing_etag():
+    import pytest
+    from infomaniak_cli.services.contacts import ContactError
+
+    client = ContactsClient(
+        "https://sync.example.test/addressbooks/user/default/",
+        "user@example.com", "pw", opener=lambda request: None,
+    )
+    with pytest.raises(ContactError, match="no ETag"):
+        client.update_contact("vcard", {"id": "contact-1", "resource_url": "https://example.test/1.vcf"})
+
+
+def test_carddav_write_error_redacts_password():
+    import urllib.error
+    import pytest
+    from infomaniak_cli.services.contacts import ContactError
+
+    password = "super-secret-contact-password"
+
+    def opener(request):
+        raise urllib.error.URLError(f"connection failed near {password}")
+
+    client = ContactsClient(
+        "https://sync.example.test/addressbooks/user/default/",
+        "user@example.com", password, opener=opener,
+    )
+    with pytest.raises(ContactError) as excinfo:
+        client.create_contact("vcard", "uid-new")
+
+    assert password not in str(excinfo.value)
+    assert "***" in str(excinfo.value)
+
+
+def _recording_contacts_client(monkeypatch):
+    clients = []
+
+    def make_client(url, username, password):
+        client = FakeContactsClient(url, username, password)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ContactsClient", make_client)
+    return clients
+
+
+def test_cli_contacts_create_dry_run_does_not_write(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _recording_contacts_client(monkeypatch)
+
+    assert cli.main([
+        "contacts", "create", "--name", "Disposable Contact",
+        "--email", "disposable@example.test", "--dry-run", "--json",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["dry_run"] is True
+    assert output["created"] is False
+    assert output["contact"]["display_name"] == "Disposable Contact"
+    assert "BEGIN:VCARD" in output["vcard"]
+    assert not any(call[0] == "create_contact" for call in clients[0].calls)
+
+
+def test_cli_contacts_create_yes_requires_explicit_profile(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _recording_contacts_client(monkeypatch)
+
+    assert cli.main([
+        "contacts", "create", "--name", "Disposable Contact", "--yes",
+    ]) == 1
+
+    assert "unless the profile is explicit" in capsys.readouterr().err
+    assert not any(call[0] == "create_contact" for call in clients[0].calls)
+
+
+def test_cli_contacts_create_explicit_yes_writes_once(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _recording_contacts_client(monkeypatch)
+
+    assert cli.main([
+        "contacts", "create", "--name", "Disposable Contact",
+        "--email", "disposable@example.test", "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["created"] is True
+    assert output["result"]["status"] == 201
+    assert len([call for call in clients[0].calls if call[0] == "create_contact"]) == 1
+
+
+def test_cli_contacts_update_dry_run_resolves_and_merges_target(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _recording_contacts_client(monkeypatch)
+
+    assert cli.main([
+        "contacts", "update", "contact-1", "--organization", "Updated Org",
+        "--dry-run", "--json",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["dry_run"] is True
+    assert output["updated"] is False
+    assert output["before"]["organization"] == "Example Co"
+    assert output["after"]["organization"] == "Updated Org"
+    assert output["after"]["emails"] == ["person@example.com"]
+    assert "NOTE:Preserve me" in output["vcard"]
+    assert not any(call[0] == "update_contact" for call in clients[0].calls)
+
+
+def test_cli_contacts_update_explicit_yes_uses_resolved_target(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _recording_contacts_client(monkeypatch)
+
+    assert cli.main([
+        "contacts", "update", "contact-1", "--phone", "+352 999",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["updated"] is True
+    call = [call for call in clients[0].calls if call[0] == "update_contact"][0]
+    assert call[2]["resource_url"].endswith("contact-1.vcf")
+
+
+def test_cli_contacts_update_yes_requires_explicit_profile(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _recording_contacts_client(monkeypatch)
+
+    assert cli.main([
+        "contacts", "update", "contact-1", "--organization", "Updated Org", "--yes",
+    ]) == 1
+
+    assert "unless the profile is explicit" in capsys.readouterr().err
+    assert not any(call[0] == "update_contact" for call in clients[0].calls)
+
+
+def test_cli_contacts_update_requires_changed_field(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    _recording_contacts_client(monkeypatch)
+
+    assert cli.main(["contacts", "update", "contact-1", "--dry-run"]) == 1
+
+    assert "requires at least one field" in capsys.readouterr().err
+
+
+def test_contacts_parser_exposes_only_protected_write_commands():
     parser = cli.build_parser()
     contacts_parser = parser._subparsers._group_actions[0].choices["contacts"]
     choices = contacts_parser._subparsers._group_actions[0].choices
 
-    assert set(choices) == {"list", "search", "show"}
-    assert not {"create", "update", "delete", "import", "export", "sync"} & set(choices)
+    assert set(choices) == {"list", "search", "show", "create", "update"}
+    assert not {"delete", "import", "export", "sync"} & set(choices)

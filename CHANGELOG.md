@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.8] - 2026-07-14
+### Added
+- **Contacts create:** `ik contacts create --name <name>` writes one vCard with confirmation,
+  `--dry-run`, structured output, and explicit-profile-gated `--yes`. Creation uses CardDAV PUT
+  with `If-None-Match: *`, so an existing resource is never overwritten.
+- **Contacts update:** `ik contacts update <contact_id> <field options>` resolves the existing
+  contact first and previews before/after values. It preserves unmodeled raw vCard properties and
+  writes to the resolved resource URL with `If-Match: <etag>` to prevent lost updates.
+- Supported fields are display/given/family name, repeatable email and phone, and organization.
+  Delete, bulk import, export, and sync writes remain excluded.
+
 ## [0.2.7] - 2026-07-14
 ### Added
 - **Calendar history:** `ik calendar search <query> --from <ISO> --to <ISO>` queries an explicit

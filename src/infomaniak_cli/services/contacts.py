@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import PurePosixPath
@@ -25,7 +26,7 @@ class _MethodRequest(urllib.request.Request):
 
 
 class ContactsClient:
-    """Small read-only CardDAV client for a configured address-book collection URL."""
+    """Small CardDAV client for a configured address-book collection URL."""
 
     def __init__(
         self,
@@ -68,12 +69,71 @@ class ContactsClient:
         except OSError as exc:
             raise ContactError(f"Contacts CardDAV request failed: {redact_secret(str(exc))}") from exc
 
-        contacts = _parse_carddav_multistatus(payload)
+        contacts = _parse_carddav_multistatus(payload, default_url=self.url)
         if not contacts:
             self._verify_collection_when_empty()
         if limit is not None:
             return contacts[:limit]
         return contacts
+
+    def create_contact(self, vcard: str, uid: str) -> dict[str, Any]:
+        collection = self.url.rstrip("/")
+        resource_url = f"{collection}/{urllib.parse.quote(uid, safe='')}.vcf"
+        return self._put_vcard(resource_url, vcard, uid=uid, if_none_match=True)
+
+    def update_contact(self, vcard: str, contact: Mapping[str, Any]) -> dict[str, Any]:
+        resource_url = contact.get("resource_url")
+        etag = contact.get("etag")
+        if not resource_url:
+            raise ContactError("Resolved contact has no CardDAV resource URL; refusing update.")
+        if not etag:
+            raise ContactError("Resolved contact has no ETag; refusing an unsafe update.")
+        uid = str(contact.get("id") or "")
+        return self._put_vcard(str(resource_url), vcard, uid=uid, etag=str(etag))
+
+    def _put_vcard(
+        self,
+        resource_url: str,
+        vcard: str,
+        *,
+        uid: str,
+        etag: str | None = None,
+        if_none_match: bool = False,
+    ) -> dict[str, Any]:
+        headers = {
+            "Authorization": _basic_auth(self.username, self.password),
+            "Content-Type": "text/vcard; charset=utf-8",
+        }
+        if if_none_match:
+            headers["If-None-Match"] = "*"
+        if etag:
+            headers["If-Match"] = etag
+        request = _MethodRequest(
+            resource_url,
+            data=vcard.encode("utf-8"),
+            method="PUT",
+            headers=headers,
+        )
+        try:
+            with self._opener(request) as response:
+                status = getattr(response, "status", None) or getattr(response, "code", 200)
+                response_headers = getattr(response, "headers", {}) or {}
+                response_etag = response_headers.get("ETag") if hasattr(response_headers, "get") else None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 412:
+                action = "creation conflict" if if_none_match else "update conflict (contact changed remotely)"
+                raise ContactError(f"Contacts {action}; nothing was overwritten.") from exc
+            raise ContactError(f"Contacts CardDAV write failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise ContactError(
+                f"Contacts CardDAV write failed: "
+                f"{redact_secret(str(exc.reason), secrets=[self.password])}"
+            ) from exc
+        except OSError as exc:
+            raise ContactError(
+                f"Contacts CardDAV write failed: {redact_secret(str(exc), secrets=[self.password])}"
+            ) from exc
+        return {"uid": uid, "url": resource_url, "status": status, "etag": response_etag}
 
     def _verify_collection_when_empty(self) -> None:
         """Distinguish an empty address book from a URL that is not one.
@@ -136,6 +196,97 @@ def find_contact(contacts: list[Mapping[str, Any]], contact_id: str) -> Mapping[
     return None
 
 
+def build_vcard(
+    *,
+    uid: str,
+    display_name: str,
+    given_name: str | None = None,
+    family_name: str | None = None,
+    emails: list[str] | None = None,
+    phones: list[str] | None = None,
+    organization: str | None = None,
+) -> str:
+    if not uid.strip():
+        raise ContactError("Contact UID is required.")
+    if not display_name.strip():
+        raise ContactError("Contact display name is required.")
+    lines = [
+        "BEGIN:VCARD",
+        "VERSION:3.0",
+        f"UID:{_escape_vcard_value(uid)}",
+        f"FN:{_escape_vcard_value(display_name)}",
+        "N:"
+        + ";".join(
+            [
+                _escape_vcard_value(family_name or ""),
+                _escape_vcard_value(given_name or ""),
+                "",
+                "",
+                "",
+            ]
+        ),
+    ]
+    lines.extend(f"EMAIL:{_escape_vcard_value(value)}" for value in (emails or []) if value)
+    lines.extend(f"TEL:{_escape_vcard_value(value)}" for value in (phones or []) if value)
+    if organization:
+        lines.append(f"ORG:{_escape_vcard_value(organization)}")
+    lines.append("END:VCARD")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def merge_vcard(
+    raw_vcard: str,
+    *,
+    uid: str,
+    display_name: str | None = None,
+    given_name: str | None = None,
+    family_name: str | None = None,
+    emails: list[str] | None = None,
+    phones: list[str] | None = None,
+    organization: str | None = None,
+) -> str:
+    """Replace selected supported fields while preserving all other properties."""
+    lines = _unfold_vcard_lines(raw_vcard)
+    if not lines or lines[0].upper() != "BEGIN:VCARD" or lines[-1].upper() != "END:VCARD":
+        raise ContactError("Resolved contact has no complete raw vCard; refusing an unsafe update.")
+
+    replaced = {"UID"}
+    replacement_lines = [f"UID:{_escape_vcard_value(uid)}"]
+    if display_name is not None:
+        replaced.add("FN")
+        replacement_lines.append(f"FN:{_escape_vcard_value(display_name)}")
+    if given_name is not None or family_name is not None:
+        replaced.add("N")
+        replacement_lines.append(
+            "N:"
+            + ";".join(
+                [
+                    _escape_vcard_value(family_name or ""),
+                    _escape_vcard_value(given_name or ""),
+                    "",
+                    "",
+                    "",
+                ]
+            )
+        )
+    if emails is not None:
+        replaced.add("EMAIL")
+        replacement_lines.extend(f"EMAIL:{_escape_vcard_value(value)}" for value in emails if value)
+    if phones is not None:
+        replaced.add("TEL")
+        replacement_lines.extend(f"TEL:{_escape_vcard_value(value)}" for value in phones if value)
+    if organization is not None:
+        replaced.add("ORG")
+        replacement_lines.append(f"ORG:{_escape_vcard_value(organization)}")
+
+    preserved: list[str] = []
+    for line in lines[:-1]:
+        name = line.split(":", 1)[0].split(";", 1)[0].upper()
+        if name not in replaced:
+            preserved.append(line)
+    return "\r\n".join([*preserved, *replacement_lines, "END:VCARD"]) + "\r\n"
+
+
 def parse_vcard(vcard: str, *, fallback_id: str | None = None) -> dict[str, Any]:
     data: dict[str, Any] = {
         "id": fallback_id,
@@ -175,7 +326,7 @@ def parse_vcard(vcard: str, *, fallback_id: str | None = None) -> dict[str, Any]
     return data
 
 
-def _parse_carddav_multistatus(payload: bytes) -> list[dict[str, Any]]:
+def _parse_carddav_multistatus(payload: bytes, *, default_url: str) -> list[dict[str, Any]]:
     try:
         root = ET.fromstring(payload)
     except ET.ParseError as exc:
@@ -184,10 +335,14 @@ def _parse_carddav_multistatus(payload: bytes) -> list[dict[str, Any]]:
     contacts: list[dict[str, Any]] = []
     for response in root.findall(".//{DAV:}response"):
         href = response.findtext("{DAV:}href")
+        etag = response.findtext(".//{DAV:}getetag")
         address_data = response.findtext(".//{urn:ietf:params:xml:ns:carddav}address-data")
         if not address_data:
             continue
-        contacts.append(parse_vcard(address_data, fallback_id=_id_from_href(href)))
+        contact = parse_vcard(address_data, fallback_id=_id_from_href(href))
+        contact["resource_url"] = urllib.parse.urljoin(default_url, href or "")
+        contact["etag"] = etag
+        contacts.append(contact)
     return contacts
 
 
@@ -224,6 +379,18 @@ def _unescape_vcard_value(value: str) -> str:
         .replace(r"\;", ";")
         .replace(r"\,", ",")
         .replace(r"\\", "\\")
+    )
+
+
+def _escape_vcard_value(value: str) -> str:
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("\r\n", "\\n")
+        .replace("\r", "\\n")
+        .replace("\n", "\\n")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
     )
 
 
