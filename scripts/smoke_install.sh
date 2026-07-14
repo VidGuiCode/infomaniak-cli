@@ -9,8 +9,9 @@
 #   bash scripts/smoke_install.sh
 #
 # Requires: uv (for the build) and python3 (for the throwaway venv). Network is
-# only used by `uv build`'s backend if not already cached; the install itself
-# uses the local wheel only (--no-index).
+# used by `uv build`'s backend if not already cached, and to fetch the runtime
+# dependencies declared by the wheel (e.g. keyring) from the package index. The
+# built wheel itself is installed from the local dist dir via --find-links.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,8 +37,11 @@ else
   venv_python="$work_dir/venv/Scripts/python.exe"
 fi
 
-echo "==> Installing the freshly built wheel (local wheel only, no index)"
-"$venv_python" -m pip install --quiet --no-index --find-links "$work_dir/dist" "$wheel"
+echo "==> Installing the freshly built wheel (local wheel + deps from the index)"
+# The wheel is taken from the local dist dir; its runtime dependencies (keyring)
+# are resolved from the package index. --no-index cannot be used now that the
+# package has real runtime dependencies that are not vendored into dist/.
+"$venv_python" -m pip install --quiet --find-links "$work_dir/dist" "$wheel"
 
 # Isolated config dir so the smoke run never reads or writes your real profiles.
 export IK_CONFIG_DIR="$work_dir/config"

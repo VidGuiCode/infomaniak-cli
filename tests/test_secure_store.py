@@ -40,7 +40,17 @@ def test_secure_dir_sets_owner_only_dir_mode(tmp_path):
 
 
 @posix_only
-def test_token_store_save_hardens_file_and_dir(tmp_path):
+def test_token_store_save_hardens_file_and_dir(tmp_path, monkeypatch):
+    # The hardened plain-text file is only written when the OS keyring is
+    # unavailable, so force keyring to fail and exercise that fallback path.
+    import keyring
+    from keyring.errors import KeyringError
+
+    def _raise(*_args, **_kwargs):
+        raise KeyringError("no keyring backend available")
+
+    monkeypatch.setattr(keyring, "set_password", _raise)
+
     TokenStore(config_dir=tmp_path).save_token("work", "secret-token-value")
 
     token_path = tmp_path / "tokens" / "work.token"
