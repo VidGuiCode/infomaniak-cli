@@ -162,7 +162,7 @@ def test_main_accepts_global_options_after_subcommand(capsys):
     assert capsys.readouterr().out.strip() == cli.__version__
 
 
-def test_public_docs_do_not_advertise_unimplemented_commands():
+def test_public_docs_advertise_only_implemented_mail_write_commands():
     docs = "\n".join(
         [
             open("README.md", encoding="utf-8").read(),
@@ -173,8 +173,8 @@ def test_public_docs_do_not_advertise_unimplemented_commands():
     assert "ik auth login" not in docs
     assert "ik auth refresh" not in docs
     assert "ik admin" not in docs
-    assert "ik mail send" not in docs
-    assert "ik mail draft" not in docs
+    assert "ik mail send" in docs
+    assert "ik mail draft" in docs
 
 
 class _ReconfigurableStream:

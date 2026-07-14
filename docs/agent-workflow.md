@@ -5,9 +5,8 @@ This is the stable contract for driving `infomaniak-cli` from an AI agent
 predictable automation: machine-readable output, no hidden prompts, and clear
 errors that say exactly which setup command to run next.
 
-Everything here is **read-only**. There are no service writes yet (no mail send,
-no kDrive upload, no kChat post); those will arrive later behind confirmation and
-`--dry-run`.
+Most commands here are read-only. Implemented service writes are explicitly protected with a
+context preview, confirmation by default, `--dry-run`, and explicit-profile-gated `--yes`.
 
 ## Golden rules
 
@@ -16,7 +15,17 @@ no kDrive upload, no kChat post); those will arrive later behind confirmation an
 2. **Always pass `--json` (or `--compact`)** on read commands so you parse
    structured output, never scraped human text.
 3. **Never rely on an interactive prompt.** Provide secrets via `--stdin` and
-   confirmations via `--yes`. See [Non-interactive mode](#non-interactive-mode).
+   confirmations via `--yes` only after validating a `--dry-run`. See [Non-interactive mode](#non-interactive-mode).
+
+Protected mail examples:
+
+```bash
+ik mail draft --to recipient@example.com --subject "Review" --body "Draft body" --dry-run --json --profile work
+ik mail send --to recipient@example.com --subject "Hello" --body "Message body" --dry-run --json --profile work
+```
+
+An agent must not remove `--dry-run` or add `--yes` until the user has authorized the exact
+profile, sender, recipients, subject, and body. Actual mail writes require a current-session target.
 
 ## Profile selection precedence
 

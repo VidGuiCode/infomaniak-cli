@@ -12,11 +12,13 @@ import pytest
 from infomaniak_cli.services.mail import (
     IMAPClient,
     MailError,
+    SMTPClient,
     _body_preview,
     _body_text,
     _decode_header_value,
     _extract_text_body,
     _html_to_text,
+    build_mail_message,
     slim_message,
 )
 
@@ -65,6 +67,10 @@ class FakeIMAP:
         self.calls.append(("uid", (command,) + args))
         key = f"uid {command} {' '.join(str(a) for a in args)}"
         return self.responses.get(key, ("OK", []))
+
+    def append(self, mailbox: str, flags: str, date_time: Any, message: bytes) -> tuple[str, list]:
+        self.calls.append(("append", (mailbox, flags, date_time, message)))
+        return self.responses.get("append", ("OK", [b"APPEND completed"]))
 
     def close(self) -> None:
         self.calls.append(("close", ()))
@@ -118,6 +124,119 @@ class TestIMAPClientConnect:
         assert "check app password" in str(exc_info.value)
         # Never leak the password in the error
         assert "app-password" not in str(exc_info.value)
+
+
+def test_build_mail_message_creates_plain_text_message_with_all_recipient_headers():
+    message = build_mail_message(
+        sender="sender@example.com",
+        to=["one@example.com", "two@example.com"],
+        cc=["copy@example.com"],
+        bcc=["blind@example.com"],
+        subject="A protected test",
+        body="Hello from the CLI.\n",
+    )
+
+    assert message["From"] == "sender@example.com"
+    assert message["To"] == "one@example.com, two@example.com"
+    assert message["Cc"] == "copy@example.com"
+    assert message["Bcc"] == "blind@example.com"
+    assert message["Subject"] == "A protected test"
+    assert message.get_content_type() == "text/plain"
+    assert message.get_content() == "Hello from the CLI.\n"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("sender", "sender@example.com\r\nBcc: victim@example.com"),
+    ("to", "recipient@example.com\nCc: victim@example.com"),
+    ("subject", "hello\r\nBcc: victim@example.com"),
+])
+def test_build_mail_message_rejects_header_injection(field, value):
+    kwargs = {
+        "sender": "sender@example.com",
+        "to": ["recipient@example.com"],
+        "subject": "hello",
+        "body": "body",
+    }
+    kwargs[field] = [value] if field == "to" else value
+
+    with pytest.raises(MailError, match="newline"):
+        build_mail_message(**kwargs)
+
+
+def test_imap_append_draft_uses_discovered_drafts_folder_and_draft_flag():
+    fake = FakeIMAP({
+        "list": ("OK", [b'(\\Drafts) "/" "Drafts.localized"']),
+    })
+    client = IMAPClient(
+        "mail.infomaniak.com", 993, "sender@example.com", "app-password",
+        imap_factory=lambda host, port: fake,
+    )
+    message = build_mail_message(
+        sender="sender@example.com", to=["recipient@example.com"], subject="Draft", body="Body",
+    )
+
+    result = client.append_draft(message)
+
+    append_call = next(call for call in fake.calls if call[0] == "append")
+    assert append_call[1][0] == "Drafts.localized"
+    assert append_call[1][1] == r"\Draft"
+    assert b"Subject: Draft" in append_call[1][3]
+    assert result == {"folder": "Drafts.localized", "status": "saved"}
+
+
+class FakeSMTP:
+    def __init__(self, *, fail_login=False, fail_send=False):
+        self.fail_login = fail_login
+        self.fail_send = fail_send
+        self.calls = []
+
+    def login(self, username, password):
+        self.calls.append(("login", username, password))
+        if self.fail_login:
+            raise RuntimeError(f"bad password {password}")
+
+    def send_message(self, message):
+        self.calls.append(("send_message", message))
+        if self.fail_send:
+            raise RuntimeError("send failed")
+
+    def quit(self):
+        self.calls.append(("quit",))
+
+
+def test_smtp_client_logs_in_and_sends_one_message():
+    fake = FakeSMTP()
+    client = SMTPClient(
+        "mail.infomaniak.com", 465, "sender@example.com", "app-password",
+        smtp_factory=lambda host, port: fake,
+    )
+    message = build_mail_message(
+        sender="sender@example.com", to=["recipient@example.com"], subject="Send", body="Body",
+    )
+
+    result = client.send_message(message)
+
+    assert fake.calls[0] == ("login", "sender@example.com", "app-password")
+    assert len([call for call in fake.calls if call[0] == "send_message"]) == 1
+    assert fake.calls[-1] == ("quit",)
+    assert result == {"status": "sent"}
+
+
+def test_smtp_client_redacts_password_from_transport_errors():
+    password = "top-secret-mail-password"
+    client = SMTPClient(
+        "mail.infomaniak.com", 465, "sender@example.com", password,
+        smtp_factory=lambda host, port: FakeSMTP(fail_login=True),
+    )
+    message = build_mail_message(
+        sender="sender@example.com", to=["recipient@example.com"], subject="Send", body="Body",
+    )
+
+    with pytest.raises(MailError) as excinfo:
+        client.send_message(message)
+
+    assert password not in str(excinfo.value)
+    assert "***" in str(excinfo.value)
 
 
 def _header_fetch_key(msg_id: str) -> str:

@@ -77,7 +77,7 @@ from .services.drive import (
     slim_folder_tree,
     trash_file,
 )
-from .services.mail import IMAPClient, MailError, slim_message
+from .services.mail import IMAPClient, MailError, SMTPClient, build_mail_message, slim_message
 from .services.mail_discovery import (
     list_mail_hostings,
     list_mailboxes,
@@ -1070,33 +1070,38 @@ def cmd_auth_chat(args: argparse.Namespace) -> int:
     return 2
 
 
-def _mail_profile_or_error(args: argparse.Namespace) -> tuple[Any, str, str, str]:
-    """Resolve profile and return (profile, host, port, username, password).
-
-    Raises ValueError if any required mail config is missing.
-    """
+def _mail_profile(args: argparse.Namespace) -> Any:
     manager = ProfileManager()
     name = _resolve_profile_name(manager, args.profile)
-
     profile = manager.get(name)
-    mailbox = profile.default_mailbox
-    if not mailbox:
+    if not profile.default_mailbox:
         raise ValueError(
             f"No default mailbox configured for profile: {profile.name}. "
             f"Run `ik --profile {profile.name} auth mail` to set the mailbox email and app password."
         )
+    return profile
 
+
+def _mail_password(profile: Any) -> str:
     mail_store = MailPasswordStore()
-    if not mail_store.has_password(name):
+    if not mail_store.has_password(profile.name):
         raise ValueError(
             f"No mail password configured for profile: {profile.name}. "
             f"Run `ik --profile {profile.name} auth mail` to set the mailbox app password."
         )
+    return mail_store.load_password(profile.name)
 
+
+def _mail_profile_or_error(args: argparse.Namespace) -> tuple[Any, str, str, str, str]:
+    """Resolve profile and return (profile, host, port, username, password).
+
+    Raises ValueError if any required mail config is missing.
+    """
+    profile = _mail_profile(args)
     host = profile.imap_host or "mail.infomaniak.com"
     port = profile.imap_port or 993
-    password = mail_store.load_password(name)
-    return profile, host, port, mailbox, password
+    password = _mail_password(profile)
+    return profile, host, port, profile.default_mailbox, password
 
 
 def _mail_client(args: argparse.Namespace) -> IMAPClient:
@@ -1550,6 +1555,117 @@ def cmd_mail_threads(args: argparse.Namespace) -> int:
             print(f"[{thread['message_count']}] {thread['subject']} (latest UID {thread['newest_uid']})")
             for item in thread["messages"]:
                 print(f"  {_render_message_line(item)}")
+    return 0
+
+
+def _mail_write_plan(args: argparse.Namespace, profile: Any, action: str) -> tuple[dict[str, Any], Any]:
+    message = build_mail_message(
+        sender=profile.default_mailbox,
+        to=list(args.to_addrs),
+        cc=list(args.cc_addrs or []),
+        bcc=list(args.bcc_addrs or []),
+        subject=args.subject,
+        body=args.body,
+    )
+    plan = {
+        "profile": profile.name,
+        "mailbox": profile.default_mailbox,
+        "action": action,
+        "from": profile.default_mailbox,
+        "to": list(args.to_addrs),
+        "cc": list(args.cc_addrs or []),
+        "bcc": list(args.bcc_addrs or []),
+        "subject": args.subject,
+        "body": args.body,
+    }
+    return plan, message
+
+
+def _print_mail_write_preview(plan: Mapping[str, Any]) -> None:
+    print(f"Profile: {plan['profile']}")
+    print(f"Mailbox: {plan['mailbox']}")
+    print(f"Action: {plan['action']} one message")
+    print(f"From: {plan['from']}")
+    print(f"To: {', '.join(plan['to'])}")
+    if plan["cc"]:
+        print(f"Cc: {', '.join(plan['cc'])}")
+    if plan["bcc"]:
+        print(f"Bcc: {', '.join(plan['bcc'])}")
+    print(f"Subject: {plan['subject']}")
+    body = str(plan["body"])
+    preview = body if len(body) <= 500 else f"{body[:500]}…"
+    print("Body preview:")
+    print(preview)
+
+
+def _validate_mail_write_yes(args: argparse.Namespace, action: str) -> None:
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            f"Refusing to {action} with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE)."
+        )
+
+
+def cmd_mail_draft(args: argparse.Namespace) -> int:
+    profile = _mail_profile(args)
+    plan, message = _mail_write_plan(args, profile, "save a draft")
+    plan["folder"] = args.folder
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "drafted": False}, args)
+        else:
+            _print_mail_write_preview(plan)
+            print("Dry run: no draft was saved.")
+        return 0
+
+    _validate_mail_write_yes(args, "save a mail draft")
+    if not _machine_output(args):
+        _print_mail_write_preview(plan)
+    if not _confirm(args, "Save this draft? [y/N] ", action="mail draft"):
+        print("Draft save cancelled.")
+        return 2
+
+    host = profile.imap_host or "mail.infomaniak.com"
+    port = profile.imap_port or 993
+    client = IMAPClient(host, port, profile.default_mailbox, _mail_password(profile))
+    try:
+        result = client.append_draft(message, folder=args.folder)
+    finally:
+        client.close()
+    if _machine_output(args):
+        print_machine({**plan, "drafted": True, "result": result}, args)
+    else:
+        print(f"Saved draft in {result['folder']}.")
+    return 0
+
+
+def cmd_mail_send(args: argparse.Namespace) -> int:
+    profile = _mail_profile(args)
+    plan, message = _mail_write_plan(args, profile, "send")
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "sent": False}, args)
+        else:
+            _print_mail_write_preview(plan)
+            print("Dry run: no message was sent.")
+        return 0
+
+    _validate_mail_write_yes(args, "send mail")
+    if not _machine_output(args):
+        _print_mail_write_preview(plan)
+    if not _confirm(args, "Send this message? [y/N] ", action="mail send"):
+        print("Mail send cancelled.")
+        return 2
+
+    smtp_host = profile.imap_host or "mail.infomaniak.com"
+    client = SMTPClient(smtp_host, 465, profile.default_mailbox, _mail_password(profile))
+    result = client.send_message(message)
+    if _machine_output(args):
+        print_machine({**plan, "sent": True, "result": result}, args)
+    else:
+        print(f"Sent message to {', '.join(plan['to'])}.")
     return 0
 
 
@@ -3356,7 +3472,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_chat.add_argument("--team-id", help="Default kChat team ID.")
     auth_chat.set_defaults(func=cmd_auth_chat)
 
-    mail = sub.add_parser("mail", help="Read-only IMAP mail commands")
+    mail = sub.add_parser("mail", help="IMAP mail reads and protected draft/send writes")
     mail_sub = mail.add_subparsers(dest="mail_command", required=True)
     mail_folders = mail_sub.add_parser("folders", help="List IMAP folders/labels")
     mail_folders.add_argument("--json", action="store_true")
@@ -3456,6 +3572,31 @@ def build_parser() -> argparse.ArgumentParser:
     mail_threads.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_threads.add_argument("--raw", action="store_true", help="With --json, emit the full raw message payload.")
     mail_threads.set_defaults(func=cmd_mail_threads)
+
+    mail_draft = mail_sub.add_parser("draft", help="Save one plain-text draft (protected write)")
+    mail_draft.add_argument("--to", dest="to_addrs", action="append", required=True, help="Recipient; repeatable.")
+    mail_draft.add_argument("--cc", dest="cc_addrs", action="append", help="Cc recipient; repeatable.")
+    mail_draft.add_argument("--bcc", dest="bcc_addrs", action="append", help="Bcc recipient; repeatable.")
+    mail_draft.add_argument("--subject", required=True, help="Message subject.")
+    mail_draft.add_argument("--body", required=True, help="Plain-text message body.")
+    mail_draft.add_argument("--folder", help="Drafts folder. Defaults to the IMAP special-use Drafts folder.")
+    mail_draft.add_argument("--dry-run", action="store_true", help="Preview without saving a draft.")
+    mail_draft.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    mail_draft.add_argument("--json", action="store_true")
+    mail_draft.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_draft.set_defaults(func=cmd_mail_draft)
+
+    mail_send = mail_sub.add_parser("send", help="Send one plain-text message (protected write)")
+    mail_send.add_argument("--to", dest="to_addrs", action="append", required=True, help="Recipient; repeatable.")
+    mail_send.add_argument("--cc", dest="cc_addrs", action="append", help="Cc recipient; repeatable.")
+    mail_send.add_argument("--bcc", dest="bcc_addrs", action="append", help="Bcc recipient; repeatable.")
+    mail_send.add_argument("--subject", required=True, help="Message subject.")
+    mail_send.add_argument("--body", required=True, help="Plain-text message body.")
+    mail_send.add_argument("--dry-run", action="store_true", help="Preview without sending.")
+    mail_send.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    mail_send.add_argument("--json", action="store_true")
+    mail_send.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_send.set_defaults(func=cmd_mail_send)
 
     contacts = sub.add_parser("contacts", help="CardDAV contacts commands")
     contacts_sub = contacts.add_subparsers(dest="contacts_command", required=True)

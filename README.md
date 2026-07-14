@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.2.8.post1-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.9-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -153,6 +153,17 @@ ik mail unread --json
 
 `ik mail mailboxes` discovers which mailbox addresses are visible from the profile/bootstrap/API context. Reading actual message content still uses IMAP, so `ik auth mail` is still required before `ik mail unread`, `ik mail list`, `ik mail read`, or `ik mail threads`.
 
+Protected plain-text drafts and sends use the same mailbox device password. Preview first; an
+actual write confirms interactively, while unattended `--yes` requires an explicit profile:
+
+```bash
+ik mail draft --to recipient@example.com --subject "Review" --body "Draft body" --dry-run --profile work
+ik mail send --to recipient@example.com --subject "Hello" --body "Message body" --dry-run --profile work
+```
+
+Drafts are appended over IMAP with the `\Draft` flag. Sends use authenticated SMTP-over-SSL on
+port 465. Attachments, HTML, bulk sends, delete, move, and mark-as-read remain excluded.
+
 Use the full email address as the mailbox username.
 
 Full walkthrough and troubleshooting: **[`docs/mail-setup.md`](docs/mail-setup.md)**.
@@ -217,7 +228,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
 | kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive mkdir`, `drive download`, `drive rm` |
-| Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads` |
+| Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads`, `mail draft`, `mail send` |
 | Contacts | `contacts list`, `contacts search`, `contacts show`, `contacts create`, `contacts update` |
 | Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`, `calendar create` |
 | kChat | `chat teams`, `chat channels`, `chat users`, `chat search`, `chat thread`, `chat post` |

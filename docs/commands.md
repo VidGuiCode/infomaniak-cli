@@ -159,7 +159,20 @@ Mailbox discovery is separate from IMAP content access: `ik mail list`, `ik mail
 
 `ik mail unread` accepts the same folder, limit, ordering, and date filters as `ik mail list`. `ik mail read` also accepts `--folder` so you can read messages from any folder by UID. Human output prints the full readable body text, and slim JSON includes full `body_text` without requiring `--raw`; `--raw` keeps fuller parsed message metadata such as `body_preview`. `ik mail threads` groups messages into conversation threads using `In-Reply-To` and `References` headers.
 
-Mail sending, drafts, mark-as-read, delete, move, and archive are not implemented.
+Protected plain-text writes:
+
+```bash
+ik mail draft --to recipient@example.com --subject "Review" --body "Draft body" --dry-run --profile work
+ik mail draft --to recipient@example.com --subject "Review" --body "Draft body" --profile work
+ik mail send --to recipient@example.com --subject "Hello" --body "Message body" --dry-run --profile work
+ik mail send --to recipient@example.com --subject "Hello" --body "Message body" --profile work
+```
+
+Both commands preview profile, mailbox/from, recipients, subject, and body; confirm by default;
+support `--json`/`--compact`; and permit `--yes` only with explicit `--profile` or `IK_PROFILE`.
+`--to`, `--cc`, and `--bcc` are repeatable. Drafts use IMAP APPEND with `\Draft`; sends use
+authenticated SMTP SSL on port 465. Attachments, HTML, bulk sends, mark-as-read, delete, move,
+and archive are not implemented.
 
 ## kDrive
 

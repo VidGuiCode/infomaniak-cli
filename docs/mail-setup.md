@@ -116,6 +116,10 @@ ik mail read 123 --json
 ik mail read 123 --folder Spam --json
 ik mail threads --days 7 --json
 ik mail threads --folder Sent --since 2026-06-01 --json
+
+# Protected writes: preview first
+ik mail draft --to recipient@example.com --subject "Review" --body "Draft body" --dry-run --profile work
+ik mail send --to recipient@example.com --subject "Hello" --body "Message body" --dry-run --profile work
 ```
 
 ## Troubleshooting
@@ -131,4 +135,8 @@ ik mail threads --folder Sent --since 2026-06-01 --json
 
 - The mailbox password is stored locally, separate from your REST token, and is redacted in output.
 - It is never committed to git.
-- `ik mail` is read-only. Sending (SMTP) is a future feature.
+- Mail reads use IMAP without changing read state. `mail draft` is the only IMAP write and appends
+  one message with `\Draft`; `mail send` sends one message over authenticated SMTP SSL port 465.
+- Draft/send preview profile, mailbox/from, recipients, subject, and body. They confirm by default;
+  `--yes` requires an explicit profile, and `--dry-run` needs no stored password or network call.
+- Attachments, HTML, bulk sends, mark-as-read, delete, move, and archive are not implemented.

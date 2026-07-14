@@ -1,6 +1,6 @@
-"""Read-only IMAP mail service for Infomaniak mailboxes.
+"""IMAP and protected SMTP mail helpers for Infomaniak mailboxes.
 
-Uses Python standard library imaplib + email.
+Uses Python standard library imaplib + smtplib + email.
 No third-party dependencies.
 """
 
@@ -11,8 +11,11 @@ import datetime
 import email
 import email.header
 import email.message
+import email.policy
+import email.utils
 import imaplib
 import re
+import smtplib
 from typing import Any
 
 
@@ -32,8 +35,56 @@ class MailError(ValueError):
     pass
 
 
+def _reject_header_newlines(value: str, field: str) -> str:
+    text = str(value).strip()
+    if "\r" in text or "\n" in text:
+        raise MailError(f"{field} must not contain a newline")
+    return text
+
+
+def _mail_address(value: str, field: str) -> str:
+    text = _reject_header_newlines(value, field)
+    _, address = email.utils.parseaddr(text)
+    if not address or "@" not in address:
+        raise MailError(f"invalid {field} email address: {text!r}")
+    return text
+
+
+def build_mail_message(
+    *,
+    sender: str,
+    to: list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+) -> email.message.EmailMessage:
+    """Build one plain-text RFC message after rejecting header injection."""
+    recipients = list(to or [])
+    copies = list(cc or [])
+    blind_copies = list(bcc or [])
+    if not recipients:
+        raise MailError("at least one --to recipient is required")
+
+    message = email.message.EmailMessage(policy=email.policy.SMTP)
+    message["From"] = _mail_address(sender, "sender")
+    message["To"] = ", ".join(_mail_address(value, "recipient") for value in recipients)
+    if copies:
+        message["Cc"] = ", ".join(_mail_address(value, "cc") for value in copies)
+    if blind_copies:
+        message["Bcc"] = ", ".join(_mail_address(value, "bcc") for value in blind_copies)
+    message["Subject"] = _reject_header_newlines(subject, "subject")
+    message["Date"] = email.utils.formatdate(localtime=True)
+    message["Message-ID"] = email.utils.make_msgid()
+    message.set_content(str(body))
+    return message
+
+
 class IMAPClient:
-    """Injectable IMAP client for read-only mailbox access.
+    """Injectable IMAP client for mailbox access.
+
+    Read commands use EXAMINE/BODY.PEEK. The sole write method is the explicit
+    protected-draft APPEND operation.
 
     Parameters
     ----------
@@ -298,6 +349,31 @@ class IMAPClient:
         result["body_html"] = _body_html(msg)
         return result
 
+    def append_draft(
+        self,
+        message: email.message.EmailMessage,
+        folder: str | None = None,
+    ) -> dict[str, str]:
+        """Append exactly one message with the IMAP ``\\Draft`` flag."""
+        self._connect()
+        target = folder
+        if not target:
+            drafts = next((item for item in self.list_folders() if item.get("role") == "drafts"), None)
+            target = str(drafts.get("name")) if drafts else "Drafts"
+        try:
+            typ, data = self._conn.append(
+                target,
+                r"\Draft",
+                None,
+                message.as_bytes(policy=email.policy.SMTP),
+            )
+        except Exception as exc:
+            detail = str(exc).replace(self.password, "***")
+            raise MailError(f"IMAP draft save failed: {detail}") from exc
+        if typ != "OK":
+            raise MailError(f"IMAP draft save failed for {target}: {_format_imap_response(data)}")
+        return {"folder": target, "status": "saved"}
+
     def close(self) -> None:
         if self._conn is not None:
             try:
@@ -315,6 +391,46 @@ class IMAPClient:
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
+
+
+class SMTPClient:
+    """Injectable authenticated SMTP-over-SSL client for one-message sends."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        *,
+        smtp_factory: Any = None,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self._smtp_factory = smtp_factory or smtplib.SMTP_SSL
+
+    def send_message(self, message: email.message.EmailMessage) -> dict[str, str]:
+        connection = None
+        try:
+            connection = self._smtp_factory(self.host, self.port)
+            connection.login(self.username, self.password)
+            refused = connection.send_message(message)
+            if refused:
+                raise MailError(f"SMTP refused {len(refused)} recipient(s)")
+        except Exception as exc:
+            if isinstance(exc, MailError):
+                raise
+            detail = str(exc).replace(self.password, "***")
+            raise MailError(f"SMTP send failed: {detail}") from exc
+        finally:
+            if connection is not None:
+                try:
+                    connection.quit()
+                except Exception:
+                    pass
+        return {"status": "sent"}
 
 
 def _decode_header_value(value: str | None) -> str | None:

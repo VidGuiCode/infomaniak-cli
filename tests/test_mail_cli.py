@@ -1455,3 +1455,155 @@ class TestMailThreads:
         captured = capsys.readouterr()
         assert "use either --days or --since" in captured.err
 
+
+@pytest.mark.parametrize("command,state_key", [("draft", "drafted"), ("send", "sent")])
+def test_mail_write_dry_run_needs_no_password_or_transport(
+    command, state_key, tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work", default_mailbox="sender@example.com", make_default=True,
+    )
+
+    def fail_transport(*args, **kwargs):
+        raise AssertionError("dry-run must not construct a mail transport")
+
+    monkeypatch.setattr(cli, "IMAPClient", fail_transport)
+    monkeypatch.setattr(cli, "SMTPClient", fail_transport)
+
+    assert cli.main([
+        "mail", command,
+        "--to", "recipient@example.com",
+        "--subject", "Offline preview",
+        "--body", "No message should leave this machine.",
+        "--dry-run", "--json", "--profile", "work",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["profile"] == "work"
+    assert output["mailbox"] == "sender@example.com"
+    assert output["from"] == "sender@example.com"
+    assert output["to"] == ["recipient@example.com"]
+    assert output["subject"] == "Offline preview"
+    assert output["body"] == "No message should leave this machine."
+    assert output["dry_run"] is True
+    assert output[state_key] is False
+
+
+@pytest.mark.parametrize("command", ["draft", "send"])
+def test_mail_write_yes_requires_explicit_profile(command, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work", default_mailbox="sender@example.com", make_default=True,
+    )
+
+    assert cli.main([
+        "mail", command,
+        "--to", "recipient@example.com", "--subject", "Protected",
+        "--body", "Body", "--yes",
+    ]) == 1
+
+    assert "unless the profile is explicit" in capsys.readouterr().err
+
+
+def test_mail_draft_explicit_yes_appends_once(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work", default_mailbox="sender@example.com", make_default=True,
+    )
+    MailPasswordStore().save_password("work", "mail-password")
+    calls = []
+
+    class DraftClient:
+        def __init__(self, host, port, username, password):
+            calls.append(("init", host, port, username, password))
+
+        def append_draft(self, message, folder=None):
+            calls.append(("append_draft", message, folder))
+            return {"folder": folder or "Drafts", "status": "saved"}
+
+        def close(self):
+            calls.append(("close",))
+
+    monkeypatch.setattr(cli, "IMAPClient", DraftClient)
+
+    assert cli.main([
+        "mail", "draft", "--to", "recipient@example.com", "--cc", "copy@example.com",
+        "--subject", "Saved draft", "--body", "Draft body", "--folder", "Drafts",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["drafted"] is True
+    assert output["result"]["folder"] == "Drafts"
+    append_calls = [call for call in calls if call[0] == "append_draft"]
+    assert len(append_calls) == 1
+    assert append_calls[0][1]["To"] == "recipient@example.com"
+    assert append_calls[0][1]["Cc"] == "copy@example.com"
+
+
+def test_mail_send_explicit_yes_sends_once(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work", default_mailbox="sender@example.com", make_default=True,
+    )
+    MailPasswordStore().save_password("work", "mail-password")
+    calls = []
+
+    class SendClient:
+        def __init__(self, host, port, username, password):
+            calls.append(("init", host, port, username, password))
+
+        def send_message(self, message):
+            calls.append(("send_message", message))
+            return {"status": "sent"}
+
+    monkeypatch.setattr(cli, "SMTPClient", SendClient)
+
+    assert cli.main([
+        "mail", "send", "--to", "recipient@example.com", "--bcc", "blind@example.com",
+        "--subject", "Protected send", "--body", "Send body",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["sent"] is True
+    assert output["result"]["status"] == "sent"
+    send_calls = [call for call in calls if call[0] == "send_message"]
+    assert len(send_calls) == 1
+    assert send_calls[0][1]["Bcc"] == "blind@example.com"
+
+
+@pytest.mark.parametrize("command", ["draft", "send"])
+def test_mail_write_default_preview_can_be_cancelled_without_password_or_transport(
+    command, tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work", default_mailbox="sender@example.com", make_default=True,
+    )
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "no")
+
+    def fail_transport(*args, **kwargs):
+        raise AssertionError("cancelled write must not construct a mail transport")
+
+    monkeypatch.setattr(cli, "IMAPClient", fail_transport)
+    monkeypatch.setattr(cli, "SMTPClient", fail_transport)
+
+    assert cli.main([
+        "mail", command,
+        "--to", "recipient@example.com", "--subject", "Review me",
+        "--body", "This body must be visible before confirmation.",
+    ]) == 2
+
+    output = capsys.readouterr().out
+    assert "Profile: work" in output
+    assert "Mailbox: sender@example.com" in output
+    assert "From: sender@example.com" in output
+    assert "To: recipient@example.com" in output
+    assert "Subject: Review me" in output
+    assert "Body preview:" in output
+    assert "This body must be visible before confirmation." in output
+    assert "cancelled" in output.lower()
+

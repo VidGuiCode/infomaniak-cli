@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.9] - 2026-07-14
+### Added
+- **Protected mail drafts:** `ik mail draft` builds one plain-text RFC message and appends it to
+  the discovered/configured Drafts folder with the IMAP `\Draft` flag.
+- **Protected mail send:** `ik mail send` sends one plain-text message from the profile's fixed
+  default mailbox through authenticated SMTP-over-SSL on port 465.
+- Both commands preview profile, mailbox/from, repeatable To/Cc/Bcc recipients, subject, and body;
+  confirm by default; support credential-free/network-free `--dry-run`; and permit `--yes` only
+  with an explicit profile. Header-newline injection is rejected and transport errors redact the
+  stored mail password. Attachments, HTML, bulk sends, delete, move, and mark-read remain excluded.
+
 ## [0.2.8.post1] - 2026-07-14
 ### Fixed
 - `ik contacts create --dry-run` is now a genuinely offline preview: it requires configured
