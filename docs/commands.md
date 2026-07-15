@@ -374,7 +374,8 @@ sets are never flattened. `calendar cancel` is a soft cancellation (`STATUS:CANC
 All three preview before/after or deletion implications, confirm by default, support structured
 dry-runs, gate `--yes` on an explicit profile, and perform readback after a write. Events with
 attendees are refused because RSVP/invite notification effects have not been verified. RSVP,
-attendee/invite changes, bulk changes, and calendar sync remain excluded.
+attendee/invite changes, multi-component recurring-resource edits, bulk changes, and calendar sync
+remain excluded.
 
 ## Output modes
 

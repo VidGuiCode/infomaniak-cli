@@ -39,7 +39,8 @@ write behavior is added.
 - **`0.2.11` — Calendar lifecycle:** exact-target event update uses CalDAV ETags and preserves
   unmodeled ICS/alarm content; soft cancellation and explicitly acknowledged hard deletion share
   the protected-write/readback contract. Attendee-bearing events and RSVP/invite behavior remain
-  disabled until notification effects are verified.
+  disabled until notification effects are verified. Patch `0.2.11.post1` also refuses
+  multi-VEVENT recurrence resources until one instance can be targeted safely.
 
 - **`0.2.10` — products/services discovery cleanup:** `account services` is now the primary,
   normalized workflow inventory with actionability and next-command hints; `account products`

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.11.post1] - 2026-07-15
+### Fixed
+- Calendar update/cancel now refuse a CalDAV resource containing multiple VEVENT components.
+  This prevents a single-instance request from rewriting every override in a recurring series;
+  recurrence-instance targeting remains deferred until it can be resolved conditionally and exactly.
+
 ## [0.2.11] - 2026-07-15
 ### Added
 - **Conditional Calendar update:** `ik calendar update <event_id>` resolves one exact CalDAV

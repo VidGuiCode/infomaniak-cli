@@ -774,6 +774,22 @@ def test_patch_event_ics_changes_one_simple_reminder_without_dropping_alarm():
     assert "DESCRIPTION:Reminder" in changed
 
 
+def test_patch_event_ics_refuses_multi_component_recurring_resource():
+    import pytest
+
+    original = "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0",
+        "BEGIN:VEVENT", "UID:series-1", "RECURRENCE-ID:20260720T090000Z", "SUMMARY:One", "END:VEVENT",
+        "BEGIN:VEVENT", "UID:series-1", "RECURRENCE-ID:20260727T090000Z", "SUMMARY:Two", "END:VEVENT",
+        "END:VCALENDAR", "",
+    ])
+
+    with pytest.raises(CalendarError) as excinfo:
+        patch_event_ics(original, summary="Unsafe broad change")
+
+    assert "multiple VEVENT" in str(excinfo.value)
+
+
 # --- calendar create CLI (protected write) --------------------------------
 
 

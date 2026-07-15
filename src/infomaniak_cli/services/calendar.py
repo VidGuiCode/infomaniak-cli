@@ -371,8 +371,14 @@ def patch_event_ics(
     flattened or lost.
     """
     lines = _unfold_ics_lines(ics)
-    if not any(line.upper() == "BEGIN:VEVENT" for line in lines):
+    event_count = sum(line.upper() == "BEGIN:VEVENT" for line in lines)
+    if event_count == 0:
         raise CalendarError("Calendar event is missing a VEVENT body.")
+    if event_count != 1:
+        raise CalendarError(
+            "Refusing to change a calendar resource with multiple VEVENT components; "
+            "recurrence-instance targeting is not implemented safely yet."
+        )
 
     replacements: dict[str, str | None] = {}
     if summary is not None:
