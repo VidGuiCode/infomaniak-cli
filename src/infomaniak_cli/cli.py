@@ -34,6 +34,8 @@ from .services.calendar import (
     CalendarError,
     build_event_ics,
     find_event,
+    parse_ics_events,
+    patch_event_ics,
     parse_event_input,
     search_events,
     slim_calendar,
@@ -2993,6 +2995,215 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolved_calendar_write_event(args: argparse.Namespace, client: CalendarClient) -> Mapping[str, Any]:
+    event = find_event(client.list_events(calendar=args.calendar), args.event_id)
+    if event is None:
+        raise ValueError(f"Calendar event not found: {args.event_id}")
+    missing = [name for name in ("url", "etag", "raw_ics") if not event.get(name)]
+    if missing:
+        raise ValueError(
+            "Calendar event cannot be changed safely because its CalDAV "
+            f"{', '.join(missing)} metadata is missing. Re-run against the exact calendar collection."
+        )
+    if event.get("attendees"):
+        raise ValueError(
+            "Refusing to change an event with attendees: Infomaniak RSVP/invite notification "
+            "effects have not been verified. Attendee and invite mutations remain disabled."
+        )
+    return event
+
+
+def _calendar_lifecycle_plan(
+    profile: Any,
+    args: argparse.Namespace,
+    event: Mapping[str, Any],
+    *,
+    action: str,
+    mode: str,
+    after: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "action": action,
+        "mode": mode,
+        "profile": profile.name,
+        "calendar": args.calendar or profile.calendar_url,
+        "event_id": args.event_id,
+        "resource_url": event.get("url"),
+        "etag": event.get("etag"),
+        "before": slim_event(event),
+        "after": slim_event(after) if after is not None else None,
+        "attendees": list(event.get("attendees") or []),
+        "notification_effects": (
+            "No attendee notifications are expected: attendee-bearing events are refused until "
+            "the Infomaniak scheduling contract is verified."
+        ),
+    }
+
+
+def _print_calendar_lifecycle_preview(plan: Mapping[str, Any]) -> None:
+    before = plan["before"]
+    after = plan.get("after")
+    print(f"Profile: {plan['profile']}")
+    print(f"Calendar: {plan['calendar']}")
+    print(f"Event: {before.get('summary') or '(no summary)'} ({plan['event_id']})")
+    print(f"Mode: {plan['mode']}")
+    if after is not None:
+        print(f"Before: {before.get('starts_at')} -> {before.get('ends_at')} [{before.get('status') or 'no status'}]")
+        print(f"After:  {after.get('starts_at')} -> {after.get('ends_at')} [{after.get('status') or 'no status'}]")
+    else:
+        print("After: resource absent (hard deletion is not recoverable through this command).")
+    print(plan["notification_effects"])
+
+
+def _calendar_write_gate(args: argparse.Namespace, *, verb: str) -> None:
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            f"Refusing to {verb} with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
+        )
+
+
+def _existing_event_boundary(event: Mapping[str, Any], name: str) -> datetime.date:
+    value = event.get(name)
+    if not value:
+        raise ValueError(f"Calendar event has no {name} value and cannot be updated safely.")
+    return parse_event_input(str(value), all_day=bool(event.get("all_day")))
+
+
+def cmd_calendar_update(args: argparse.Namespace) -> int:
+    profile, client = _calendar_profile_and_client(args)
+    event = _resolved_calendar_write_event(args, client)
+    if not any(
+        value is not None
+        for value in (args.summary, args.start, args.end, args.location, args.description, args.reminder_minutes)
+    ) and not (args.clear_location or args.clear_description):
+        raise ValueError("Calendar update requires at least one field change.")
+    if args.summary is not None and not args.summary.strip():
+        raise ValueError("Refusing to update an event with an empty --summary.")
+    if args.location is not None and args.clear_location:
+        raise ValueError("--location cannot be combined with --clear-location.")
+    if args.description is not None and args.clear_description:
+        raise ValueError("--description cannot be combined with --clear-description.")
+
+    all_day = bool(event.get("all_day"))
+    start = parse_event_input(args.start, all_day=all_day) if args.start else None
+    end = parse_event_input(args.end, all_day=all_day) if args.end else None
+    effective_start = start or _existing_event_boundary(event, "starts_at")
+    effective_end = end or _existing_event_boundary(event, "ends_at")
+    if effective_end <= effective_start:
+        raise ValueError("Updated event end must be after its start.")
+
+    ics = patch_event_ics(
+        str(event["raw_ics"]),
+        summary=args.summary,
+        start=start,
+        end=end,
+        all_day=all_day,
+        location=args.location,
+        description=args.description,
+        clear_location=args.clear_location,
+        clear_description=args.clear_description,
+        reminder_minutes=args.reminder_minutes,
+        dtstamp=_now_utc(),
+    )
+    after = parse_ics_events(ics, calendar_id=event.get("calendar_id"), fallback_id=str(event.get("id")))[0]
+    plan = _calendar_lifecycle_plan(
+        profile, args, event, action="calendar.update", mode="conditional-update", after=after
+    )
+    if args.dry_run:
+        if _machine_output(args):
+            print_machine({**plan, "ics": ics, "dry_run": True, "updated": False}, args)
+        else:
+            _print_calendar_lifecycle_preview(plan)
+            print("Dry run: no event was updated.")
+        return 0
+
+    _calendar_write_gate(args, verb="update")
+    if not _machine_output(args):
+        _print_calendar_lifecycle_preview(plan)
+    if not _confirm(args, "Update this exact event? [y/N] ", action="calendar update"):
+        print("Event update cancelled.")
+        return 2
+    result = client.update_event(str(event["url"]), ics, str(event["etag"]))
+    readback = find_event(client.list_events(calendar=args.calendar), str(event.get("uid") or args.event_id))
+    if readback is None:
+        raise ValueError("Calendar update completed but readback could not find the event.")
+    if _machine_output(args):
+        print_machine({**plan, "updated": True, "result": result, "readback": slim_event(readback)}, args)
+    else:
+        print(f"Updated event '{after.get('summary') or '(no summary)'}'.")
+    return 0
+
+
+def cmd_calendar_cancel(args: argparse.Namespace) -> int:
+    profile, client = _calendar_profile_and_client(args)
+    event = _resolved_calendar_write_event(args, client)
+    ics = patch_event_ics(str(event["raw_ics"]), status="CANCELLED", dtstamp=_now_utc())
+    after = parse_ics_events(ics, calendar_id=event.get("calendar_id"), fallback_id=str(event.get("id")))[0]
+    plan = _calendar_lifecycle_plan(
+        profile, args, event, action="calendar.cancel", mode="soft-cancel", after=after
+    )
+    if args.dry_run:
+        if _machine_output(args):
+            print_machine({**plan, "ics": ics, "dry_run": True, "cancelled": False}, args)
+        else:
+            _print_calendar_lifecycle_preview(plan)
+            print("Dry run: the event remains active.")
+        return 0
+    _calendar_write_gate(args, verb="cancel")
+    if not _machine_output(args):
+        _print_calendar_lifecycle_preview(plan)
+    if not _confirm(args, "Soft-cancel this exact event? [y/N] ", action="calendar cancel"):
+        print("Event cancellation cancelled.")
+        return 2
+    result = client.update_event(str(event["url"]), ics, str(event["etag"]))
+    readback = find_event(client.list_events(calendar=args.calendar), str(event.get("uid") or args.event_id))
+    if readback is None:
+        raise ValueError("Calendar cancellation completed but readback could not find the event.")
+    if _machine_output(args):
+        print_machine({**plan, "cancelled": True, "result": result, "readback": slim_event(readback)}, args)
+    else:
+        print(f"Soft-cancelled event '{event.get('summary') or '(no summary)'}'.")
+    return 0
+
+
+def cmd_calendar_delete(args: argparse.Namespace) -> int:
+    if not args.hard:
+        raise ValueError(
+            "Calendar delete is a hard resource deletion. Pass --hard to acknowledge it, "
+            "or use `ik calendar cancel` for a reversible soft cancellation."
+        )
+    profile, client = _calendar_profile_and_client(args)
+    event = _resolved_calendar_write_event(args, client)
+    plan = _calendar_lifecycle_plan(
+        profile, args, event, action="calendar.delete", mode="hard-delete", after=None
+    )
+    if args.dry_run:
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "deleted": False}, args)
+        else:
+            _print_calendar_lifecycle_preview(plan)
+            print("Dry run: the event resource was not deleted.")
+        return 0
+    _calendar_write_gate(args, verb="hard-delete")
+    if not _machine_output(args):
+        _print_calendar_lifecycle_preview(plan)
+    if not _confirm(args, "Hard-delete this exact event? [y/N] ", action="calendar delete"):
+        print("Event deletion cancelled.")
+        return 2
+    result = client.delete_event(str(event["url"]), str(event["etag"]))
+    readback_deleted = find_event(
+        client.list_events(calendar=args.calendar), str(event.get("uid") or args.event_id)
+    ) is None
+    if not readback_deleted:
+        raise ValueError("Calendar delete returned success but readback still found the event.")
+    if _machine_output(args):
+        print_machine({**plan, "deleted": True, "result": result, "readback_deleted": True}, args)
+    else:
+        print(f"Hard-deleted event '{event.get('summary') or '(no summary)'}'.")
+    return 0
+
+
 def cmd_chat_teams(args: argparse.Namespace) -> int:
     profile, client = _chat_profile_and_client(args)
     teams = client.list_teams()
@@ -3753,6 +3964,63 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_create.add_argument("--json", action="store_true")
     calendar_create.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     calendar_create.set_defaults(func=cmd_calendar_create)
+
+    calendar_update = calendar_sub.add_parser(
+        "update", help="Conditionally update one exact event (protected write)"
+    )
+    calendar_update.add_argument("event_id", help="Exact event ID or UID to resolve.")
+    calendar_update.add_argument("--summary", help="Replace the event summary.")
+    calendar_update.add_argument("--start", help="Replace the start using the event's existing timed/all-day form.")
+    calendar_update.add_argument("--end", help="Replace the end using the event's existing timed/all-day form.")
+    calendar_update.add_argument("--location", help="Replace the event location.")
+    calendar_update.add_argument("--clear-location", action="store_true", help="Remove the event location.")
+    calendar_update.add_argument("--description", help="Replace the event description.")
+    calendar_update.add_argument("--clear-description", action="store_true", help="Remove the event description.")
+    calendar_update.add_argument(
+        "--reminder-minutes", type=int,
+        help="Change one existing simple alarm while preserving the full VALARM component.",
+    )
+    calendar_update.add_argument("--calendar", help="Calendar ID or collection URL to query.")
+    calendar_update.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    calendar_update.add_argument("--dry-run", action="store_true", help="Resolve and preview without writing.")
+    calendar_update.add_argument("--json", action="store_true")
+    calendar_update.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    calendar_update.set_defaults(func=cmd_calendar_update)
+
+    calendar_cancel = calendar_sub.add_parser(
+        "cancel", help="Soft-cancel one exact event with STATUS:CANCELLED (protected write)"
+    )
+    calendar_cancel.add_argument("event_id", help="Exact event ID or UID to resolve.")
+    calendar_cancel.add_argument("--calendar", help="Calendar ID or collection URL to query.")
+    calendar_cancel.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    calendar_cancel.add_argument("--dry-run", action="store_true", help="Resolve and preview without writing.")
+    calendar_cancel.add_argument("--json", action="store_true")
+    calendar_cancel.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    calendar_cancel.set_defaults(func=cmd_calendar_cancel)
+
+    calendar_delete = calendar_sub.add_parser(
+        "delete", help="Hard-delete one exact event resource (protected write)"
+    )
+    calendar_delete.add_argument("event_id", help="Exact event ID or UID to resolve.")
+    calendar_delete.add_argument(
+        "--hard", action="store_true",
+        help="Required acknowledgement that this removes the CalDAV resource; prefer cancel when possible.",
+    )
+    calendar_delete.add_argument("--calendar", help="Calendar ID or collection URL to query.")
+    calendar_delete.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    calendar_delete.add_argument("--dry-run", action="store_true", help="Resolve and preview without writing.")
+    calendar_delete.add_argument("--json", action="store_true")
+    calendar_delete.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    calendar_delete.set_defaults(func=cmd_calendar_delete)
 
     chat = sub.add_parser("chat", help="Read-only kChat discovery commands")
     chat_sub = chat.add_subparsers(dest="chat_command", required=True)

@@ -75,7 +75,11 @@ class CalendarClient:
             "</C:calendar-query>"
         ).encode("utf-8")
         payload = self._request(calendar_url, method="REPORT", body=body, depth="1")
-        events = _parse_event_multistatus(payload, calendar_id=_calendar_id(calendar_url))
+        events = _parse_event_multistatus(
+            payload,
+            calendar_id=_calendar_id(calendar_url),
+            default_url=calendar_url,
+        )
         if not events:
             self._verify_collection_when_empty(calendar_url)
         if limit is not None:
@@ -142,6 +146,58 @@ class CalendarClient:
         except OSError as exc:
             raise CalendarError(f"Calendar event creation failed: {redact_secret(str(exc))}") from exc
         return {"uid": uid, "url": event_url, "status": status}
+
+    def update_event(self, event_url: str, ics: str, etag: str) -> dict[str, Any]:
+        """Replace one exact CalDAV resource only if its ETag still matches."""
+        if not event_url or not etag:
+            raise CalendarError("Calendar update requires an exact event URL and ETag.")
+        request = _MethodRequest(
+            event_url,
+            data=ics.encode("utf-8"),
+            method="PUT",
+            headers={
+                "Authorization": _basic_auth(self.username, self.password),
+                "Content-Type": "text/calendar; charset=utf-8",
+                "If-Match": etag,
+            },
+        )
+        return self._event_write(request, action="update")
+
+    def delete_event(self, event_url: str, etag: str) -> dict[str, Any]:
+        """Hard-delete one exact CalDAV resource only if its ETag still matches."""
+        if not event_url or not etag:
+            raise CalendarError("Calendar delete requires an exact event URL and ETag.")
+        request = _MethodRequest(
+            event_url,
+            method="DELETE",
+            headers={
+                "Authorization": _basic_auth(self.username, self.password),
+                "If-Match": etag,
+            },
+        )
+        return self._event_write(request, action="delete")
+
+    def _event_write(self, request: urllib.request.Request, *, action: str) -> dict[str, Any]:
+        try:
+            with self._opener(request) as response:
+                status = getattr(response, "status", None) or getattr(response, "code", 204)
+                headers = getattr(response, "headers", None)
+                etag = headers.get("ETag") if headers is not None else None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 412:
+                raise CalendarError(
+                    f"Calendar event changed since it was resolved; {action} was not applied (ETag mismatch)."
+                ) from exc
+            raise CalendarError(f"Calendar event {action} failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise CalendarError(
+                f"Calendar event {action} failed: {redact_secret(str(exc.reason))}"
+            ) from exc
+        except OSError as exc:
+            raise CalendarError(
+                f"Calendar event {action} failed: {redact_secret(str(exc))}"
+            ) from exc
+        return {"url": request.full_url, "etag": etag, "status": status}
 
     def _calendar_url(self, calendar: str | None) -> str:
         if not calendar:
@@ -292,6 +348,102 @@ def build_event_ics(
     return "\r\n".join(lines) + "\r\n"
 
 
+def patch_event_ics(
+    ics: str,
+    *,
+    summary: str | None = None,
+    start: datetime.date | None = None,
+    end: datetime.date | None = None,
+    all_day: bool = False,
+    location: str | None = None,
+    description: str | None = None,
+    clear_location: bool = False,
+    clear_description: bool = False,
+    status: str | None = None,
+    reminder_minutes: int | None = None,
+    dtstamp: datetime.datetime | None = None,
+) -> str:
+    """Patch modeled VEVENT properties while preserving every unmodeled line.
+
+    Nested components such as VALARM are retained byte-for-byte except for the
+    narrowly supported reminder edit: exactly one existing alarm with exactly
+    one relative TRIGGER. Multiple/complex alarms are rejected rather than
+    flattened or lost.
+    """
+    lines = _unfold_ics_lines(ics)
+    if not any(line.upper() == "BEGIN:VEVENT" for line in lines):
+        raise CalendarError("Calendar event is missing a VEVENT body.")
+
+    replacements: dict[str, str | None] = {}
+    if summary is not None:
+        replacements["SUMMARY"] = f"SUMMARY:{_escape_ics_text(summary)}"
+    if start is not None:
+        suffix = ";VALUE=DATE" if all_day else ""
+        replacements["DTSTART"] = f"DTSTART{suffix}:{format_ics_datetime(start, all_day=all_day)}"
+    if end is not None:
+        suffix = ";VALUE=DATE" if all_day else ""
+        replacements["DTEND"] = f"DTEND{suffix}:{format_ics_datetime(end, all_day=all_day)}"
+    if location is not None or clear_location:
+        replacements["LOCATION"] = None if clear_location else f"LOCATION:{_escape_ics_text(location or '')}"
+    if description is not None or clear_description:
+        replacements["DESCRIPTION"] = None if clear_description else f"DESCRIPTION:{_escape_ics_text(description or '')}"
+    if status is not None:
+        replacements["STATUS"] = f"STATUS:{status.upper()}"
+    if dtstamp is not None:
+        replacements["DTSTAMP"] = f"DTSTAMP:{format_ics_datetime(dtstamp, all_day=False)}"
+
+    output: list[str] = []
+    seen: set[str] = set()
+    in_event = False
+    nested_depth = 0
+    trigger_indexes: list[int] = []
+    alarm_count = 0
+    for line in lines:
+        upper = line.upper()
+        if upper == "BEGIN:VEVENT":
+            in_event = True
+            output.append(line)
+            continue
+        if in_event and upper.startswith("BEGIN:"):
+            nested_depth += 1
+            if upper == "BEGIN:VALARM":
+                alarm_count += 1
+            output.append(line)
+            continue
+        if in_event and upper.startswith("END:") and upper != "END:VEVENT":
+            output.append(line)
+            nested_depth = max(0, nested_depth - 1)
+            continue
+        if in_event and upper == "END:VEVENT":
+            for name, replacement in replacements.items():
+                if name not in seen and replacement is not None:
+                    output.append(replacement)
+            output.append(line)
+            in_event = False
+            continue
+
+        name = line.split(":", 1)[0].split(";", 1)[0].upper() if ":" in line else ""
+        if in_event and nested_depth == 0 and name in replacements:
+            if name not in seen and replacements[name] is not None:
+                output.append(replacements[name] or "")
+            seen.add(name)
+            continue
+        if in_event and nested_depth > 0 and name == "TRIGGER":
+            trigger_indexes.append(len(output))
+        output.append(line)
+
+    if reminder_minutes is not None:
+        if reminder_minutes < 0:
+            raise CalendarError("--reminder-minutes must be zero or greater.")
+        if alarm_count != 1 or len(trigger_indexes) != 1:
+            raise CalendarError(
+                "Reminder changes require exactly one existing simple alarm so other alarms are preserved safely."
+            )
+        output[trigger_indexes[0]] = f"TRIGGER:-PT{reminder_minutes}M"
+
+    return "\r\n".join(output) + "\r\n"
+
+
 def _escape_ics_text(value: str) -> str:
     return (
         str(value)
@@ -345,15 +497,26 @@ def _parse_calendar_multistatus(payload: bytes, *, default_url: str) -> list[dic
     return calendars
 
 
-def _parse_event_multistatus(payload: bytes, *, calendar_id: str | None) -> list[dict[str, Any]]:
+def _parse_event_multistatus(
+    payload: bytes,
+    *,
+    calendar_id: str | None,
+    default_url: str,
+) -> list[dict[str, Any]]:
     root = _xml_root(payload)
     events: list[dict[str, Any]] = []
     for response in root.findall(".//{DAV:}response"):
         href = response.findtext("{DAV:}href")
+        etag = response.findtext(".//{DAV:}getetag")
         calendar_data = response.findtext(".//{urn:ietf:params:xml:ns:caldav}calendar-data")
         if not calendar_data:
             continue
-        events.extend(parse_ics_events(calendar_data, calendar_id=calendar_id, fallback_id=_id_from_href(href)))
+        parsed = parse_ics_events(calendar_data, calendar_id=calendar_id, fallback_id=_id_from_href(href))
+        for event in parsed:
+            event["url"] = urllib.parse.urljoin(default_url, href or "")
+            event["etag"] = etag
+            event["raw_ics"] = calendar_data
+        events.extend(parsed)
     return events
 
 

@@ -345,13 +345,17 @@ ik calendar show <event_id> --json
 ik calendar show <event_id> --json --raw
 ```
 
-Protected write (creates an event on your own calendar — off by default, confirmation required):
+Protected writes (off by default, confirmation required):
 
 ```bash
 ik calendar create --summary "Deploy review" --start 2026-08-01T15:00 --end 2026-08-01T16:00 --dry-run
 ik calendar create --summary "Deploy review" --start 2026-08-01T15:00                       # prompts to confirm
 ik calendar create --summary "Vacation" --start 2026-08-10 --end 2026-08-15 --all-day
 ik --profile work calendar create --summary "Standup" --start 2026-08-01T09:00 --yes
+ik calendar update <event_id> --summary "New title" --reminder-minutes 30 --dry-run --json
+ik --profile work calendar update <event_id> --start 2026-08-01T10:00 --yes
+ik calendar cancel <event_id> --dry-run --json                       # soft cancellation
+ik calendar delete <event_id> --hard --dry-run --json               # hard resource deletion
 ```
 
 `ik calendar list`, `ik calendar upcoming`, `ik calendar today`, `ik calendar search`, and `ik calendar show` use the configured CalDAV collection URL. `ik auth calendar` auto-discovers that collection from the default DAV base `https://sync.infomaniak.com/`; pass `--url` to override or `--no-discover` to save a URL verbatim. JSON output defaults to stable slim calendar/event schemas. Add `--raw` with `--json` to include full parsed calendar/event payloads, including raw ICS text for events when available.
@@ -360,7 +364,17 @@ Search is client-side and matches available summary, description, location, orga
 
 `ik calendar search` accepts `--from` and `--to` together for explicit historical or future ranges. Bounds accept ISO dates or datetimes; a missing offset is interpreted as UTC. `--days` defaults to 30 only when no explicit range is supplied and cannot be combined with `--from`/`--to`.
 
-`ik calendar create` creates an event by PUTting a minimal iCalendar VEVENT to the collection (`PUT {collection}/{uid}.ics` with `If-None-Match: *`, so it never overwrites an existing uid). It follows the protected-write contract: prints a profile/calendar/summary/start/end preview and requires confirmation. `--dry-run` shows the event and the full iCalendar body without writing. `--start`/`--end` take ISO 8601 datetimes (naive = floating local, offset/`Z` = normalized to UTC); with `--all-day` they take `YYYY-MM-DD` dates. `--end` defaults to +1h (timed) or +1 day (all-day). `--yes` skips the prompt only with an explicit profile (`--profile`/`IK_PROFILE`). `--location`/`--description` are optional. No attendees are invited. Still excluded: update, delete, RSVP, invites, reminder writes, sync.
+`ik calendar create` creates an event by PUTting a minimal iCalendar VEVENT to the collection (`PUT {collection}/{uid}.ics` with `If-None-Match: *`, so it never overwrites an existing uid). It follows the protected-write contract: prints a profile/calendar/summary/start/end preview and requires confirmation. `--dry-run` shows the event and the full iCalendar body without writing. `--start`/`--end` take ISO 8601 datetimes (naive = floating local, offset/`Z` = normalized to UTC); with `--all-day` they take `YYYY-MM-DD` dates. `--end` defaults to +1h (timed) or +1 day (all-day). `--yes` skips the prompt only with an explicit profile (`--profile`/`IK_PROFILE`). `--location`/`--description` are optional. No attendees are invited.
+
+`ik calendar update` resolves the exact resource URL and ETag, preserves all unmodeled ICS content,
+and uses `If-Match` to prevent lost updates. It supports summary, start/end, location, description,
+and `--reminder-minutes`; reminder edits require exactly one existing simple alarm so complex alarm
+sets are never flattened. `calendar cancel` is a soft cancellation (`STATUS:CANCELLED`), while
+`calendar delete --hard` removes the CalDAV resource and is clearly irreversible through `ik`.
+All three preview before/after or deletion implications, confirm by default, support structured
+dry-runs, gate `--yes` on an explicit profile, and perform readback after a write. Events with
+attendees are refused because RSVP/invite notification effects have not been verified. RSVP,
+attendee/invite changes, bulk changes, and calendar sync remain excluded.
 
 ## Output modes
 

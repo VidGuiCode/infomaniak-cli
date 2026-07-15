@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.11] - 2026-07-15
+### Added
+- **Conditional Calendar update:** `ik calendar update <event_id>` resolves one exact CalDAV
+  resource, previews before/after state, preserves unmodeled iCalendar properties, and writes with
+  `If-Match: <etag>` so concurrent edits are never silently overwritten.
+- **Soft cancellation:** `ik calendar cancel <event_id>` retains the resource and writes
+  `STATUS:CANCELLED` conditionally. **Hard deletion:** `ik calendar delete <event_id> --hard`
+  removes the exact resource conditionally and requires an additional explicit acknowledgement.
+- Lifecycle writes follow the protected-write contract: confirmation by default, structured
+  `--json`/`--compact`, `--dry-run`, explicit-profile-gated `--yes`, and safe readback.
+- Update can change summary, start/end, location, description, and one existing simple reminder.
+  Full ICS and VALARM content is preserved; complex/multiple alarms are refused rather than lost.
+- Events with attendees are refused for update/cancel/delete because Infomaniak RSVP/invite
+  notification effects are not yet verified. RSVP, attendee edits, and invite sending remain disabled.
+
 ## [0.2.10] - 2026-07-15
 ### Changed
 - `ik account services` is now the primary workflow-facing inventory. Default JSON/compact output

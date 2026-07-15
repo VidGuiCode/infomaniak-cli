@@ -10,6 +10,7 @@ from infomaniak_cli.services.calendar import (
     build_event_ics,
     find_event,
     format_ics_datetime,
+    patch_event_ics,
     parse_event_input,
     parse_ics_events,
     search_events,
@@ -43,7 +44,13 @@ EVENTS = [
         "status": "CONFIRMED",
         "organizer": "boss@example.com",
         "attendees": ["alice@example.com"],
-        "raw_ics": "BEGIN:VEVENT",
+        "url": "https://sync.example.test/calendars/user/work/uid-1.ics",
+        "etag": '"etag-1"',
+        "raw_ics": "\r\n".join([
+            "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:uid-1",
+            "DTSTART:20260624T090000Z", "DTEND:20260624T100000Z", "SUMMARY:Team Sync",
+            "ATTENDEE:mailto:alice@example.com", "END:VEVENT", "END:VCALENDAR", "",
+        ]),
     },
     {
         "id": "event-2",
@@ -58,6 +65,15 @@ EVENTS = [
         "status": "CONFIRMED",
         "organizer": None,
         "attendees": [],
+        "url": "https://sync.example.test/calendars/user/work/uid-2.ics",
+        "etag": '"etag-2"',
+        "raw_ics": "\r\n".join([
+            "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:uid-2",
+            "DTSTART;VALUE=DATE:20260623", "DTEND;VALUE=DATE:20260624",
+            "SUMMARY:Invoice review", "DESCRIPTION:Review supplier invoice", "LOCATION:Home",
+            "STATUS:CONFIRMED", "BEGIN:VALARM", "ACTION:DISPLAY", "TRIGGER:-PT15M",
+            "DESCRIPTION:Reminder", "END:VALARM", "END:VEVENT", "END:VCALENDAR", "",
+        ]),
     },
 ]
 
@@ -68,6 +84,8 @@ class FakeCalendarClient:
         self.username = username
         self.password = password
         self.calls = []
+        self.updated = {}
+        self.deleted_urls = set()
 
     def list_calendars(self):
         self.calls.append(("list_calendars",))
@@ -75,7 +93,11 @@ class FakeCalendarClient:
 
     def list_events(self, *, calendar=None, start=None, end=None, limit=None):
         self.calls.append(("list_events", calendar, start, end, limit))
-        events = EVENTS
+        events = []
+        for event in EVENTS:
+            if event.get("url") in self.deleted_urls:
+                continue
+            events.append(self.updated.get(event.get("uid"), event))
         if limit is not None:
             return events[:limit]
         return events
@@ -83,6 +105,18 @@ class FakeCalendarClient:
     def create_event(self, ics, uid, *, calendar=None):
         self.calls.append(("create_event", ics, uid, calendar))
         return {"uid": uid, "url": f"{self.url}{uid}.ics", "status": 201}
+
+    def update_event(self, event_url, ics, etag):
+        self.calls.append(("update_event", event_url, ics, etag))
+        event = parse_ics_events(ics, calendar_id="work")[0]
+        event.update({"url": event_url, "etag": '"new-etag"'})
+        self.updated[event["uid"]] = event
+        return {"url": event_url, "etag": '"new-etag"', "status": 204}
+
+    def delete_event(self, event_url, etag):
+        self.calls.append(("delete_event", event_url, etag))
+        self.deleted_urls.add(event_url)
+        return {"url": event_url, "status": 204}
 
 
 class FakeResponse:
@@ -537,14 +571,15 @@ def test_cli_calendar_requires_configuration(tmp_path, monkeypatch, capsys):
     assert "auth calendar" in captured.err
 
 
-def test_calendar_parser_exposes_only_create_as_write_command():
+def test_calendar_parser_exposes_lifecycle_writes_but_not_rsvp_or_invites():
     parser = cli.build_parser()
     calendar_parser = parser._subparsers._group_actions[0].choices["calendar"]
     choices = calendar_parser._subparsers._group_actions[0].choices
 
-    # `create` is the single protected write added in 0.2.5; nothing destructive.
-    assert set(choices) == {"list", "upcoming", "today", "search", "show", "create"}
-    assert not {"update", "delete", "rsvp", "invite", "sync"} & set(choices)
+    assert set(choices) == {
+        "list", "upcoming", "today", "search", "show", "create", "update", "cancel", "delete"
+    }
+    assert not {"rsvp", "invite", "sync"} & set(choices)
 
 
 # --- event ICS building / parsing -----------------------------------------
@@ -633,6 +668,110 @@ def test_create_event_conflict_raises():
     with pytest.raises(CalendarError) as excinfo:
         client.create_event("ics", "uid-dup")
     assert "already exists" in str(excinfo.value)
+
+
+EVENTS_XML = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response><D:href>/calendars/user/work/uid-1.ics</D:href><D:propstat><D:prop>
+    <D:getetag>"abc123"</D:getetag>
+    <C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:uid-1
+SUMMARY:Team Sync
+DTSTART:20260624T090000Z
+DTEND:20260624T100000Z
+END:VEVENT
+END:VCALENDAR</C:calendar-data>
+  </D:prop></D:propstat></D:response>
+</D:multistatus>"""
+
+
+def test_event_report_keeps_resource_url_etag_and_full_ics():
+    client = CalendarClient(
+        "https://sync.example.test/calendars/user/work/",
+        "user@example.com",
+        "pw",
+        opener=lambda request: FakeResponse(EVENTS_XML),
+    )
+
+    event = client.list_events()[0]
+
+    assert event["url"] == "https://sync.example.test/calendars/user/work/uid-1.ics"
+    assert event["etag"] == '"abc123"'
+    assert event["raw_ics"].startswith("BEGIN:VCALENDAR")
+
+
+def test_update_and_delete_use_if_match_on_exact_resource():
+    seen = []
+
+    def opener(request):
+        seen.append(request)
+        return FakeResponse(b"")
+
+    client = CalendarClient("https://sync.example.test/calendars/user/work/", "user@example.com", "pw", opener=opener)
+    updated = client.update_event(
+        "https://sync.example.test/calendars/user/work/uid-1.ics",
+        "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n",
+        '"abc123"',
+    )
+    deleted = client.delete_event(
+        "https://sync.example.test/calendars/user/work/uid-1.ics",
+        '"new-etag"',
+    )
+
+    assert updated["status"] == 204
+    assert deleted["status"] == 204
+    assert seen[0].get_method() == "PUT"
+    assert seen[0].headers["If-match"] == '"abc123"'
+    assert seen[1].get_method() == "DELETE"
+    assert seen[1].headers["If-match"] == '"new-etag"'
+
+
+def test_update_event_etag_conflict_is_actionable():
+    import pytest
+    import urllib.error
+
+    def opener(request):
+        raise urllib.error.HTTPError(request.full_url, 412, "Precondition Failed", {}, None)
+
+    client = CalendarClient("https://sync.example.test/calendars/user/work/", "user@example.com", "pw", opener=opener)
+    with pytest.raises(CalendarError) as excinfo:
+        client.update_event("https://sync.example.test/calendars/user/work/uid-1.ics", "ics", '"old"')
+    assert "changed since it was resolved" in str(excinfo.value)
+
+
+def test_patch_event_ics_preserves_attendees_and_alarm_while_updating_fields():
+    original = "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:uid-1",
+        "DTSTART:20260624T090000Z", "DTEND:20260624T100000Z", "SUMMARY:Old",
+        "ATTENDEE;CN=Alice:mailto:alice@example.com", "X-CUSTOM:keep-me",
+        "BEGIN:VALARM", "ACTION:DISPLAY", "TRIGGER:-PT15M", "DESCRIPTION:Reminder", "END:VALARM",
+        "END:VEVENT", "END:VCALENDAR", "",
+    ])
+
+    changed = patch_event_ics(original, summary="New", location="Office")
+
+    assert "SUMMARY:New" in changed
+    assert "LOCATION:Office" in changed
+    assert "ATTENDEE;CN=Alice:mailto:alice@example.com" in changed
+    assert "X-CUSTOM:keep-me" in changed
+    assert "TRIGGER:-PT15M" in changed
+
+
+def test_patch_event_ics_changes_one_simple_reminder_without_dropping_alarm():
+    original = "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:uid-1",
+        "DTSTART:20260624T090000Z", "DTEND:20260624T100000Z", "SUMMARY:Old",
+        "BEGIN:VALARM", "ACTION:DISPLAY", "TRIGGER:-PT15M", "DESCRIPTION:Reminder", "END:VALARM",
+        "END:VEVENT", "END:VCALENDAR", "",
+    ])
+
+    changed = patch_event_ics(original, reminder_minutes=30)
+
+    assert "TRIGGER:-PT30M" in changed
+    assert "ACTION:DISPLAY" in changed
+    assert "DESCRIPTION:Reminder" in changed
 
 
 # --- calendar create CLI (protected write) --------------------------------
@@ -751,3 +890,127 @@ def test_cli_calendar_create_interactive_decline_does_not_create(tmp_path, monke
     assert rc == 2
     assert "cancelled" in capsys.readouterr().out.lower()
     assert not any(call[0] == "create_event" for c in created for call in c.calls)
+
+
+# --- calendar lifecycle CLI (protected writes) ----------------------------
+
+
+def test_cli_calendar_update_dry_run_shows_before_after_and_preserves_alarm(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+
+    rc = cli.main([
+        "calendar", "update", "uid-2", "--summary", "Invoice approved",
+        "--reminder-minutes", "30", "--dry-run", "--json",
+    ])
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["action"] == "calendar.update"
+    assert out["dry_run"] is True
+    assert out["updated"] is False
+    assert out["before"]["summary"] == "Invoice review"
+    assert out["after"]["summary"] == "Invoice approved"
+    assert "TRIGGER:-PT30M" in out["ics"]
+    assert not any(call[0] == "update_event" for call in created[0].calls)
+
+
+def test_cli_calendar_update_refuses_attendee_notification_risk(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+
+    rc = cli.main([
+        "--profile", "work", "calendar", "update", "uid-1", "--summary", "Changed", "--yes"
+    ])
+
+    assert rc == 1
+    assert "attendee" in capsys.readouterr().err.lower()
+    assert not any(call[0] == "update_event" for call in created[0].calls)
+
+
+def test_cli_calendar_cancel_dry_run_is_soft_and_notification_safe(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    _make_recording_client(monkeypatch)
+
+    assert cli.main(["calendar", "cancel", "uid-2", "--dry-run", "--json"]) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["action"] == "calendar.cancel"
+    assert out["mode"] == "soft-cancel"
+    assert out["after"]["status"] == "CANCELLED"
+    assert out["cancelled"] is False
+
+
+def test_cli_calendar_delete_requires_hard_acknowledgement(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    _make_recording_client(monkeypatch)
+
+    assert cli.main(["calendar", "delete", "uid-2", "--dry-run", "--json"]) == 1
+    assert "--hard" in capsys.readouterr().err
+
+
+def test_cli_calendar_delete_dry_run_is_explicit_hard_delete(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+
+    assert cli.main(["calendar", "delete", "uid-2", "--hard", "--dry-run", "--json"]) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["action"] == "calendar.delete"
+    assert out["mode"] == "hard-delete"
+    assert out["deleted"] is False
+    assert out["before"]["uid"] == "uid-2"
+    assert not any(call[0] == "delete_event" for call in created[0].calls)
+
+
+def test_cli_calendar_update_yes_requires_explicit_profile(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+
+    assert cli.main(["calendar", "update", "uid-2", "--summary", "Changed", "--yes"]) == 1
+
+    assert "explicit" in capsys.readouterr().err.lower()
+    assert not any(call[0] == "update_event" for call in created[0].calls)
+
+
+def test_cli_calendar_update_yes_writes_and_reads_back(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    created = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "--profile", "work", "calendar", "update", "uid-2", "--summary", "Changed", "--yes", "--json"
+    ]) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["updated"] is True
+    assert out["readback"]["summary"] == "Changed"
+    call = next(call for call in created[0].calls if call[0] == "update_event")
+    assert call[1].endswith("/uid-2.ics")
+    assert call[3] == '"etag-2"'
+
+
+def test_cli_calendar_cancel_yes_writes_status_and_reads_back(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "--profile", "work", "calendar", "cancel", "uid-2", "--yes", "--json"
+    ]) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["cancelled"] is True
+    assert out["readback"]["status"] == "CANCELLED"
+
+
+def test_cli_calendar_hard_delete_yes_writes_and_confirms_absence(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "--profile", "work", "calendar", "delete", "uid-2", "--hard", "--yes", "--json"
+    ]) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["deleted"] is True
+    assert out["readback_deleted"] is True

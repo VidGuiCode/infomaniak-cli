@@ -36,6 +36,19 @@ write behavior is added.
 
 ## Shipped recently
 
+- **`0.2.11` — Calendar lifecycle:** exact-target event update uses CalDAV ETags and preserves
+  unmodeled ICS/alarm content; soft cancellation and explicitly acknowledged hard deletion share
+  the protected-write/readback contract. Attendee-bearing events and RSVP/invite behavior remain
+  disabled until notification effects are verified.
+
+- **`0.2.10` — products/services discovery cleanup:** `account services` is now the primary,
+  normalized workflow inventory with actionability and next-command hints; `account products`
+  remains available as lower-level catalog/debug data.
+
+- **`0.2.9` — protected Mail draft/send:** plain-text IMAP drafts and SMTP-over-SSL sends use the
+  fixed profile mailbox, preview all recipients and content, confirm by default, support offline
+  `--dry-run`, and gate unattended `--yes` on an explicit profile.
+
 - **`0.2.8` — protected Contacts writes:** create uses collision-safe CardDAV PUT; update resolves
   one contact, preserves unmodeled vCard properties, and uses ETag `If-Match` protection. Both
   require preview/confirmation and support `--dry-run` plus explicit-profile-gated `--yes`.
@@ -59,18 +72,27 @@ write behavior is added.
   contacts/calendar reads now distinguish a real-but-empty collection from a
   misconfigured or unprovisioned CardDAV/CalDAV URL with an actionable error.
 
-## In progress / next
+## Next (`0.2.x`)
 
-- **`0.1.24` — CLI polish**: shell completion (`ik completion
-  bash|zsh|fish|powershell`) and `--compact` output-mode parity across the
-  remaining read commands.
+- **`0.2.12` — kDrive reversible workflows:** upload, move/rename, trash listing, restore, and
+  carefully scoped sharing after live endpoint verification. No permanent, recursive, or bulk delete.
+- **`0.2.13` — Mail attachments and lifecycle:** attachment save/send, UID-based reply/forward,
+  mark/flag, move/archive, and draft management with normalized local paths.
+- **`0.2.14` — kChat conversation lifecycle:** thread replies, reactions, own-post editing,
+  attachments, and exact-target own-post deletion. Workspace administration stays out.
+- **`0.2.15` — Contacts transfer/lifecycle:** full-fidelity export, richer fields, duplicate/merge
+  previews, collision-safe import, and exact-target single-contact deletion.
+- **`0.2.16` — Shared write safety/readiness:** stable JSON action/result schemas, result readback,
+  explicit partial-failure reporting, common path normalization, and write-capability checks in doctor.
+- **`0.2.17` — Bootstrap multi-service selection:** deterministic interactive and non-interactive
+  selection when discovery finds multiple drives or other same-family services.
 
 ## Later
 
-- **`0.2.x`** introduces protected writes behind a confirmation + `--dry-run`
-  contract: kDrive download, kChat posting, calendar/contact creation, and mail
-  drafts/send — each showing profile/account/target/action before acting.
-- A true admin/Manager layer and an optional MCP wrapper follow once the CLI is
-  solid.
+- **`0.3.x`** adds a true admin/Manager layer, read-only first, for operations that genuinely
+  require company-admin rights.
+- **`0.4.x`** may add an optional MCP wrapper around stable CLI functions.
+- Irreversible, recursive, bulk, and admin-scoped operations remain excluded until individually
+  designed and explicitly approved; planned single-resource cleanup commands retain full guardrails.
 
 This roadmap describes direction, not commitments or dates.
