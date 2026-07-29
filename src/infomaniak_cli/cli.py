@@ -3445,6 +3445,19 @@ def _validated_event_uid(value: str) -> str:
     return clean
 
 
+def _report_partial_series(
+    results: list[Mapping[str, Any]], failed_uid: str, args: argparse.Namespace
+) -> None:
+    """Tell the caller exactly what a half-finished series already wrote."""
+    done = [item["uid"] for item in results if item.get("created")]
+    print(
+        f"error: series stopped at uid {failed_uid}. "
+        f"Already created ({len(done)}): {', '.join(done) if done else 'none'}. "
+        "Re-run with --if-missing to finish the remaining events without duplicating these.",
+        file=sys.stderr,
+    )
+
+
 def cmd_calendar_create_series(args: argparse.Namespace) -> int:
     """Create one event per explicit date, with deterministic per-date UIDs.
 
@@ -3472,6 +3485,8 @@ def cmd_calendar_create_series(args: argparse.Namespace) -> int:
     minutes = getattr(args, "duration_minutes", None)
     if minutes is not None and minutes <= 0:
         raise ValueError("--duration-minutes must be greater than zero.")
+    if minutes is not None and all_day:
+        raise ValueError("--duration-minutes cannot be combined with --all-day.")
 
     planned = []
     for start in starts:
@@ -3552,9 +3567,15 @@ def cmd_calendar_create_series(args: argparse.Namespace) -> int:
             created = client.create_event(ics, item["uid"], calendar=args.calendar)
         except CalendarConflictError:
             if not if_missing:
+                _report_partial_series(results, item["uid"], args)
                 raise
             results.append({"uid": item["uid"], "created": False, "existed": True})
             continue
+        except CalendarError:
+            # A series is a batch of independent writes: never fail silently on
+            # event N without telling the caller which events already exist.
+            _report_partial_series(results, item["uid"], args)
+            raise
         results.append(
             {"uid": item["uid"], "created": True, "existed": False, "url": created.get("url")}
         )

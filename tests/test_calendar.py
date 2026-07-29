@@ -993,6 +993,50 @@ def test_cli_calendar_create_series_is_idempotent_with_if_missing(tmp_path, monk
     assert payload["existed"] == 2
 
 
+def test_cli_calendar_create_series_reports_what_it_already_created_on_failure(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+
+    class FailsOnSecond(FakeCalendarClient):
+        def create_event(self, ics, uid, *, calendar=None):
+            self.calls.append(("create_event", ics, uid, calendar))
+            if len([c for c in self.calls if c[0] == "create_event"]) == 2:
+                raise CalendarError("Calendar event creation failed: HTTP 507")
+            return {"uid": uid, "url": f"{self.url}{uid}.ics", "status": 201}
+
+    monkeypatch.setattr(cli, "CalendarClient", FailsOnSecond)
+
+    assert cli.main([
+        "calendar", "create-series", "--summary", "Quarterly deadline",
+        "--date", "2026-03-31T09:00", "--date", "2026-06-30T09:00",
+        "--date", "2026-09-30T09:00",
+        "--uid-prefix", "quarterly-2026", "--yes", "--profile", "work",
+    ]) == 1
+
+    err = capsys.readouterr().err
+    # the caller must learn exactly which events now exist
+    assert "series stopped at uid quarterly-2026-20260630T0900" in err
+    assert "quarterly-2026-20260331T0900" in err
+    assert "--if-missing" in err
+
+
+def test_cli_calendar_create_series_refuses_duration_minutes_with_all_day(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create-series", "--summary", "Quarterly deadline",
+        "--date", "2026-03-31", "--all-day", "--duration-minutes", "60",
+        "--uid-prefix", "quarterly-2026", "--yes", "--profile", "work",
+    ]) == 1
+
+    assert "cannot be combined with --all-day" in capsys.readouterr().err
+    assert not any(call[0] == "create_event" for c in clients for call in c.calls)
+
+
 def test_cli_calendar_create_series_rejects_duplicate_dates(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch)
     clients = _make_recording_client(monkeypatch)
