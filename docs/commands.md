@@ -545,6 +545,35 @@ attendees are refused because RSVP/invite notification effects have not been ver
 attendee/invite changes, multi-component recurring-resource edits, bulk changes, and calendar sync
 remain excluded.
 
+## Write safety contract
+
+Every command that can change a service follows the same contract, and the test suite enforces it
+rather than relying on convention:
+
+- the exact resolved target and action appear in the preview and in `--dry-run`;
+- confirmation is required by default;
+- `--yes` skips confirmation **only** with an explicit `--profile` (or `IK_PROFILE`), so automation
+  can never write to whichever profile happens to be current;
+- structured `--json`/`--compact` output is always available;
+- errors are redacted, and successful writes read the result back where the service supports it.
+
+`tests/test_write_contract.py` introspects the parser and fails if a new mutating command misses any
+of these. The few commands that take `--yes` without the full contract — `profile delete`,
+`auth logout`, `doctor --fix-path`, `update` — are local-only and are listed there with a reason.
+
+Write results include a **`notified`** field stating the real external effect: `true` for
+`mail send`, `mail reply`, `mail forward`, `chat post` and `chat reply`, which genuinely reach other
+people, and `false` for local or single-user writes such as `mail draft`, `calendar create` and
+`drive mkdir`. A `--dry-run` always reports `notified: false`.
+
+Where a command reports before/after state it also reports **`changed`**, listing only the fields
+that actually differ, so you do not have to diff two full objects by eye.
+
+`ik doctor --json` includes a **`capabilities`** section reporting whether `mail.send`,
+`mail.attachments`, `drive.write`, `calendar.write`, `contacts.write` and `chat.post` are possible
+for the selected profile, and naming the exact command that fixes anything missing. It inspects
+local configuration only and never performs a network call or a write.
+
 ## Output modes
 
 Human-readable by default:

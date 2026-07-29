@@ -4,6 +4,7 @@ import os
 
 from infomaniak_cli import cli
 from infomaniak_cli.doctor import run_doctor
+from infomaniak_cli.auth import MailPasswordStore
 from infomaniak_cli.profiles import ProfileManager
 
 
@@ -155,3 +156,52 @@ def test_cmd_doctor_fix_path_noop_when_already_on_path(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "already on PATH" in out
     assert "Preview:" not in out
+
+
+# --- v0.2.18 write-capability readiness -----------------------------------
+
+
+def test_doctor_reports_no_write_capability_for_a_bare_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+
+    caps = run_doctor("work")["capabilities"]
+
+    assert set(caps) == {
+        "mail.send", "mail.attachments", "drive.write",
+        "calendar.write", "contacts.write", "chat.post",
+    }
+    assert all(entry["ready"] is False for entry in caps.values())
+    # every unready capability must name the command that fixes it
+    for name, entry in caps.items():
+        assert entry["missing"], f"{name} is not ready but suggests nothing"
+        assert all(hint.startswith("ik ") for hint in entry["missing"])
+
+
+def test_doctor_reports_mail_write_capability_once_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work", default_mailbox="user@example.com", make_default=True
+    )
+    MailPasswordStore().save_password("work", "pw")
+
+    caps = run_doctor("work")["capabilities"]
+
+    assert caps["mail.send"]["ready"] is True
+    assert caps["mail.send"]["missing"] == []
+    assert caps["mail.attachments"]["ready"] is True
+    # unrelated services stay unready
+    assert caps["calendar.write"]["ready"] is False
+
+
+def test_doctor_capabilities_never_perform_a_network_call(tmp_path, monkeypatch):
+    """Capability reporting is local inspection only."""
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", make_default=True)
+
+    def explode(*args, **kwargs):
+        raise AssertionError("doctor capabilities must not open a connection")
+
+    monkeypatch.setattr("urllib.request.urlopen", explode)
+
+    assert run_doctor("work")["capabilities"]["drive.write"]["ready"] is False

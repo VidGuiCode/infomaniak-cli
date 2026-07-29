@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.2.18] - 2026-07-29
+### Fixed
+- **`ik drive mkdir` did not follow the protected-write contract.** Shipped since `0.2.0`, it
+  accepted `--yes` with **no `--dry-run` and no explicit-profile gate**, so unattended automation
+  could create a folder in whichever profile happened to be current. It now previews the exact
+  target, supports `--dry-run`, and gates `--yes` on an explicit profile like every other write.
+  This was found by the new contract test, not by inspection.
+
+### Added
+- **Shared write-contract tests** (`tests/test_write_contract.py`) that introspect the real parser
+  instead of a hand-maintained list. Every command accepting `--yes` must also offer `--dry-run`,
+  `--json`/`--compact` and `-y`, and must reach the explicit-profile gate; every command offering
+  `--dry-run` must be gated. Deliberate exceptions (`profile delete`, `auth logout`,
+  `doctor --fix-path`, `update`) are listed with a written reason, so an exception is a decision
+  rather than an oversight. A new mutating command that forgets a guarantee now fails the suite.
+- **Redaction contract tests:** every credential-holding service module must wire a redactor into
+  its error paths, and the shared output redactor is asserted against known secret shapes
+  (`Bearer …`, `token=…`, `password=…`).
+- **`ik doctor` write-capability readiness.** A new `capabilities` section reports whether
+  `mail.send`, `mail.attachments`, `drive.write`, `calendar.write`, `contacts.write` and
+  `chat.post` are actually possible for the selected profile, and names the exact command that
+  fixes each missing prerequisite. Purely local inspection — no network call, no write.
+- **`notified` on write results**, stating the real external effect rather than leaving the caller
+  to infer it: `true` for `mail send`/`reply`/`forward` and `chat post`/`reply`, `false` for local
+  or single-user writes such as `mail draft`, `calendar create` and `drive mkdir`. A dry run always
+  reports `notified: false`. Tests assert the values are accurate, because a blanket `false` would
+  be worse than no field at all.
+- **`changed` diffs** via a shared `_diff_fields` helper, so a preview can report what actually
+  differs instead of leaving the caller to compare two full states. `before`/`after` are unchanged.
+
+### Changed
+- The explicit-profile gate is now **one implementation**. It previously existed as five
+  near-identical helpers plus ten inline copies, each an opportunity for the rule to drift; the
+  per-service helpers are now thin delegates and every inline copy is gone. Behavior is unchanged —
+  all pre-existing gate tests pass untouched.
+
 ## [0.2.17] - 2026-07-29
 ### Added
 - **Read-only export first:** `ik contacts export` writes the address book as `vcf` (default) or

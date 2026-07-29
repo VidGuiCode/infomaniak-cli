@@ -674,13 +674,36 @@ def test_cli_drive_mkdir_success(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url=None: api)
 
-    # with --yes
-    assert cli.main(["drive", "mkdir", "new_folder", "--parent", "123", "--yes"]) == 0
+    # 0.2.18: unattended --yes requires an explicit profile, like every other write
+    assert cli.main([
+        "--profile", "work", "drive", "mkdir", "new_folder", "--parent", "123", "--yes",
+    ]) == 0
     out = capsys.readouterr().out
     assert "Successfully created folder: new_folder" in out
 
     assert len(api.calls) == 1
     assert api.calls[0] == ("POST", "/2/drive/drive-1/files/123/directory", {"name": "new_folder"})
+
+
+def test_cli_drive_mkdir_now_follows_the_protected_write_contract(tmp_path, monkeypatch, capsys):
+    """0.2.18: mkdir shipped since 0.2.0 without a dry-run or a profile gate."""
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+    ProfileManager().create_or_update("work", default_drive_id="drive-1", make_default=True)
+    TokenStore().save_token("work", "secret-token")
+    api = FakeAPI({})
+    monkeypatch.setattr(cli, "InformaniakAPIClient", lambda token, *, base_url=None: api)
+
+    assert cli.main(["drive", "mkdir", "new_folder", "--dry-run", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["created"] is False
+    assert payload["dry_run"] is True
+    assert payload["notified"] is False
+    assert not api.calls
+
+    assert cli.main(["drive", "mkdir", "new_folder", "--yes"]) == 1
+    assert "profile is explicit" in capsys.readouterr().err
+    assert not api.calls
 
 
 # --- drive download -------------------------------------------------------

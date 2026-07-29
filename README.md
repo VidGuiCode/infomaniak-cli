@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.2.17-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.18-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -105,6 +105,7 @@ ik drive recent --limit 10 --json
 ik drive shared --json
 ik drive search "invoice" --json
 ik drive info <file_id> --json
+ik doctor --json          # includes write-capability readiness
 ik drive download <file_id> --output ./downloads/
 ik --profile work drive rm <file_id> --dry-run
 ik --profile work drive upload ./report.pdf --parent <folder_id> --dry-run

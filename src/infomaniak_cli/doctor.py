@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from . import pathcheck
 from .auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, MailPasswordStore, TokenStore
@@ -104,9 +104,71 @@ def run_doctor(
         "profile": selected,
         "profiles": names,
         "checks": checks,
+        "capabilities": build_write_capabilities(checks, profile=selected),
         "install_method": resolved_install_method,
         "path": path_section,
         "profile_data": profile_data,
         "readiness": readiness,
         "missing_setup_actions": readiness["missing_setup_actions"] if readiness else [],
+    }
+
+
+def build_write_capabilities(
+    checks: Mapping[str, Any], *, profile: str | None
+) -> dict[str, dict[str, Any]]:
+    """Report whether each service is configured well enough to *write*.
+
+    Read readiness answers "can I list things"; this answers "can I send this
+    mail / create this event", which is what a caller needs before attempting a
+    protected write. Purely local inspection: no network call, no write.
+    """
+    label = profile or "<profile>"
+
+    def entry(ready: bool, missing: list[str]) -> dict[str, Any]:
+        return {"ready": bool(ready), "missing": [] if ready else missing}
+
+    mail_missing: list[str] = []
+    if not checks.get("default_mailbox_selected"):
+        mail_missing.append(f"ik --profile {label} auth mail --mailbox <address>")
+    if not checks.get("mail_password_configured"):
+        mail_missing.append(f"ik --profile {label} auth mail --stdin")
+
+    drive_missing: list[str] = []
+    if not checks.get("token_configured"):
+        drive_missing.append(f"ik --profile {label} auth token")
+    if not checks.get("default_drive_selected"):
+        drive_missing.append(f"ik --profile {label} bootstrap")
+
+    calendar_missing: list[str] = []
+    if not checks.get("calendar_configured"):
+        calendar_missing.append(f"ik --profile {label} auth calendar --username <sync-username>")
+    if not checks.get("calendar_password_configured"):
+        calendar_missing.append(f"ik --profile {label} auth calendar --stdin")
+
+    contacts_missing: list[str] = []
+    if not checks.get("contacts_configured"):
+        contacts_missing.append(f"ik --profile {label} auth contacts --username <sync-username>")
+    if not checks.get("contacts_password_configured"):
+        contacts_missing.append(f"ik --profile {label} auth contacts --stdin")
+
+    chat_missing: list[str] = []
+    if not checks.get("chat_configured"):
+        chat_missing.append(f"ik --profile {label} auth chat --url <kchat-url>")
+    if not (
+        checks.get("chat_explicit_token_configured")
+        or checks.get("chat_main_token_fallback_possible")
+    ):
+        chat_missing.append(f"ik --profile {label} auth chat --stdin")
+
+    mail_ready = bool(checks.get("mail_imap_ready"))
+    return {
+        "mail.send": entry(mail_ready, mail_missing),
+        "mail.attachments": entry(mail_ready, mail_missing),
+        "drive.write": entry(
+            bool(checks.get("token_configured") and checks.get("default_drive_selected")),
+            drive_missing,
+        ),
+        "calendar.write": entry(bool(checks.get("calendar_ready")), calendar_missing),
+        "contacts.write": entry(bool(checks.get("contacts_ready")), contacts_missing),
+        "chat.post": entry(bool(checks.get("chat_ready")), chat_missing),
     }

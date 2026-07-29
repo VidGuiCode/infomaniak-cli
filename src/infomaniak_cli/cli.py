@@ -137,6 +137,26 @@ def print_machine(data: Any, args: argparse.Namespace) -> None:
         print_json(data)
 
 
+def _diff_fields(
+    before: Mapping[str, Any] | None, after: Mapping[str, Any] | None
+) -> dict[str, dict[str, Any]]:
+    """Return only the fields that actually differ, as before/after pairs.
+
+    A write preview that prints two full states makes the caller diff them by
+    eye. This reports the change itself, so `changed` answers "what is different"
+    directly while `before`/`after` remain available for context.
+    """
+    left = dict(before or {})
+    right = dict(after or {})
+    changed: dict[str, dict[str, Any]] = {}
+    for key in sorted(set(left) | set(right)):
+        old = left.get(key)
+        new = right.get(key)
+        if old != new:
+            changed[key] = {"before": old, "after": new}
+    return changed
+
+
 def _machine_output(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "json", False) or getattr(args, "compact", False))
 
@@ -1787,11 +1807,8 @@ def _print_mail_write_preview(plan: Mapping[str, Any]) -> None:
 
 
 def _validate_mail_write_yes(args: argparse.Namespace, action: str) -> None:
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            f"Refusing to {action} with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE)."
-        )
+    """Delegates to the shared gate; kept for call-site readability."""
+    _require_explicit_profile_for_yes(args, action)
 
 
 def cmd_mail_draft(args: argparse.Namespace) -> int:
@@ -1822,7 +1839,7 @@ def cmd_mail_draft(args: argparse.Namespace) -> int:
     finally:
         client.close()
     if _machine_output(args):
-        print_machine({**plan, "drafted": True, "result": result}, args)
+        print_machine({**plan, "drafted": True, "notified": False, "result": result}, args)
     else:
         print(f"Saved draft in {result['folder']}.")
     return 0
@@ -1834,10 +1851,10 @@ def cmd_mail_send(args: argparse.Namespace) -> int:
 
     if getattr(args, "dry_run", False):
         if _machine_output(args):
-            print_machine({**plan, "dry_run": True, "sent": False}, args)
+            print_machine({**plan, "dry_run": True, "sent": False, "notified": False}, args)
         else:
             _print_mail_write_preview(plan)
-            print("Dry run: no message was sent.")
+            print("Dry run: no message was sent, so nobody was notified.")
         return 0
 
     _validate_mail_write_yes(args, "send mail")
@@ -1851,9 +1868,9 @@ def cmd_mail_send(args: argparse.Namespace) -> int:
     client = SMTPClient(smtp_host, 465, profile.default_mailbox, _mail_password(profile))
     result = client.send_message(message)
     if _machine_output(args):
-        print_machine({**plan, "sent": True, "result": result}, args)
+        print_machine({**plan, "sent": True, "notified": True, "result": result}, args)
     else:
-        print(f"Sent message to {', '.join(plan['to'])}.")
+        print(f"Sent message to {', '.join(plan['to'])}. They have been emailed.")
     return 0
 
 
@@ -2000,7 +2017,7 @@ def _mail_reply_forward(args: argparse.Namespace, *, forward: bool) -> int:
 
     if getattr(args, "dry_run", False):
         if _machine_output(args):
-            print_machine({**plan, "dry_run": True, "sent": False}, args)
+            print_machine({**plan, "dry_run": True, "sent": False, "notified": False}, args)
         else:
             _print_mail_write_preview(plan)
             print(f"Threading: In-Reply-To {plan['in_reply_to']}")
@@ -2018,9 +2035,9 @@ def _mail_reply_forward(args: argparse.Namespace, *, forward: bool) -> int:
     smtp = SMTPClient(smtp_host, 465, profile.default_mailbox, _mail_password(profile))
     result = smtp.send_message(message)
     if _machine_output(args):
-        print_machine({**plan, "sent": True, "result": result}, args)
+        print_machine({**plan, "sent": True, "notified": True, "result": result}, args)
     else:
-        print(f"Sent {'forward' if forward else 'reply'} to {', '.join(plan['to'])}.")
+        print(f"Sent {'forward' if forward else 'reply'} to {', '.join(plan['to'])}. They have been emailed.")
     return 0
 
 
@@ -2738,12 +2755,36 @@ def cmd_drive_shared(args: argparse.Namespace) -> int:
 def cmd_drive_mkdir(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     drive_id = _drive_id_or_error(args, profile)
-    name = args.name
+    name = _validated_remote_name(args.name)
     parent_id = getattr(args, "parent_id", None)
-    
-    if not _confirm(args, f"Create folder '{name}' in drive {drive_id} (parent: {parent_id or 'root'})?", action="mkdir"):
+
+    plan = {
+        "profile": profile.name,
+        "drive_id": drive_id,
+        "parent_id": parent_id,
+        "name": name,
+        "notified": False,
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "created": False}, args)
+        else:
+            print(f"Profile: {profile.name}")
+            print(f"Drive ID: {drive_id}")
+            print(f"Action: create folder '{name}' in {parent_id or 'root'}")
+            print("Dry run: no folder was created.")
+        return 0
+
+    _require_explicit_profile_for_yes(args, "create a folder")
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(f"Action: create folder '{name}' in {parent_id or 'root'}")
+
+    if not _confirm(args, f"Create folder '{name}' in drive {drive_id} (parent: {parent_id or 'root'})? ", action="mkdir"):
         return 2
-        
+
     try:
         from .services.drive import create_folder
         folder = create_folder(client, drive_id, name, parent_id=parent_id)
@@ -3039,11 +3080,7 @@ def cmd_drive_rm(args: argparse.Namespace) -> int:
             print("Dry run: nothing was moved to trash.")
         return 0
 
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            "Refusing to trash with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
-        )
+    _require_explicit_profile_for_yes(args, "trash")
 
     if not _machine_output(args):
         _print_drive_rm_preview(profile, drive_id, target)
@@ -3063,6 +3100,13 @@ def cmd_drive_rm(args: argparse.Namespace) -> int:
 
 
 def _require_explicit_profile_for_yes(args: argparse.Namespace, action: str) -> None:
+    """The single explicit-profile gate for every unattended service write.
+
+    Unattended automation must name the account it writes to. This is the one
+    implementation; the per-service helpers below delegate here so the rule
+    cannot drift between services. `tests/test_write_contract.py` asserts every
+    protected write reaches it.
+    """
     if getattr(args, "yes", False) and not _profile_is_explicit(args):
         raise ValueError(
             f"Refusing to {action} with --yes unless the profile is explicit. "
@@ -3504,11 +3548,7 @@ def cmd_contacts_create(args: argparse.Namespace) -> int:
         return 0
 
     client = _contacts_client(profile)
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            "Refusing to create a contact with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE)."
-        )
+    _require_explicit_profile_for_yes(args, "create a contact")
     if not _machine_output(args):
         _print_contact_write_preview(profile, "create", contact)
     if not _confirm(args, "Create this contact? [y/N] ", action="contacts create"):
@@ -3524,11 +3564,8 @@ def cmd_contacts_create(args: argparse.Namespace) -> int:
 
 
 def _contacts_write_gate(args: argparse.Namespace, action: str) -> None:
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            f"Refusing to {action} with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE)."
-        )
+    """Delegates to the shared gate; kept for call-site readability."""
+    _require_explicit_profile_for_yes(args, action)
 
 
 def cmd_contacts_export(args: argparse.Namespace) -> int:
@@ -3907,11 +3944,7 @@ def cmd_contacts_update(args: argparse.Namespace) -> int:
             print("Dry run: no contact was updated.")
         return 0
 
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            "Refusing to update a contact with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE)."
-        )
+    _require_explicit_profile_for_yes(args, "update a contact")
     if not _machine_output(args):
         _print_contact_write_preview(profile, "update", after, before=before)
     if not _confirm(args, "Update this contact? [y/N] ", action="contacts update"):
@@ -4421,12 +4454,7 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
             print(ics.rstrip())
         return 0
 
-    # Automation must target an explicit profile before writing unattended.
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            "Refusing to create with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
-        )
+    _require_explicit_profile_for_yes(args, "create")
 
     if not _machine_output(args):
         _print_calendar_create_preview(profile, target, plan)
@@ -4449,7 +4477,7 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
         return 0
 
     if _machine_output(args):
-        print_machine({**plan, "created": True, "existed": False, "event": result}, args)
+        print_machine({**plan, "created": True, "existed": False, "notified": False, "event": result}, args)
     else:
         print(f"Created event '{summary}' (uid {uid}).")
         print(f"Location: {result.get('url')}")
@@ -4517,11 +4545,8 @@ def _print_calendar_lifecycle_preview(plan: Mapping[str, Any]) -> None:
 
 
 def _calendar_write_gate(args: argparse.Namespace, *, verb: str) -> None:
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            f"Refusing to {verb} with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
-        )
+    """Delegates to the shared gate; kept for call-site readability."""
+    _require_explicit_profile_for_yes(args, verb)
 
 
 def _existing_event_boundary(event: Mapping[str, Any], name: str) -> datetime.date:
@@ -4863,18 +4888,13 @@ def cmd_chat_post(args: argparse.Namespace) -> int:
 
     if getattr(args, "dry_run", False):
         if _machine_output(args):
-            print_machine({**plan, "dry_run": True, "posted": False}, args)
+            print_machine({**plan, "dry_run": True, "posted": False, "notified": False}, args)
         else:
             _print_chat_post_preview(profile, team_id, channel, message)
-            print("Dry run: no message was posted.")
+            print("Dry run: no message was posted, so nobody was notified.")
         return 0
 
-    # Automation must target an explicit profile before it can post unattended.
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            "Refusing to post with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE) so automation cannot post to the wrong account."
-        )
+    _require_explicit_profile_for_yes(args, "post")
 
     if not _machine_output(args):
         _print_chat_post_preview(profile, team_id, channel, message)
@@ -4887,7 +4907,7 @@ def cmd_chat_post(args: argparse.Namespace) -> int:
 
     if _machine_output(args):
         output_post = post if _raw_output(args) else slim_post(post)
-        print_machine({**plan, "posted": True, "post": output_post}, args)
+        print_machine({**plan, "posted": True, "notified": True, "post": output_post}, args)
     else:
         channel_label = channel.get("display_name") or channel.get("name") or channel_id
         print(f"Posted to {channel_label} (message id {post.get('id')}).")
@@ -4899,11 +4919,8 @@ def _chat_attachments(args: argparse.Namespace) -> list[Path]:
 
 
 def _chat_write_gate(args: argparse.Namespace, action: str) -> None:
-    if getattr(args, "yes", False) and not _profile_is_explicit(args):
-        raise ValueError(
-            f"Refusing to {action} with --yes unless the profile is explicit. "
-            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
-        )
+    """Delegates to the shared gate; kept for call-site readability."""
+    _require_explicit_profile_for_yes(args, action)
 
 
 def _upload_chat_attachments(client: Any, channel_id: str, paths: list[Path]) -> list[str]:
@@ -4958,7 +4975,7 @@ def cmd_chat_reply(args: argparse.Namespace) -> int:
 
     if getattr(args, "dry_run", False):
         if _machine_output(args):
-            print_machine({**plan, "dry_run": True, "posted": False}, args)
+            print_machine({**plan, "dry_run": True, "posted": False, "notified": False}, args)
         else:
             _print_chat_lifecycle_preview(plan, "reply in this thread")
             print("Dry run: no reply was posted and no file was uploaded.")
@@ -4974,7 +4991,7 @@ def cmd_chat_reply(args: argparse.Namespace) -> int:
     file_ids = _upload_chat_attachments(client, channel_id, attachments)
     post = client.create_post(channel_id, message, root_id=root_id, file_ids=file_ids or None)
     if _machine_output(args):
-        print_machine({**plan, "posted": True, "post": slim_post(post)}, args)
+        print_machine({**plan, "posted": True, "notified": True, "post": slim_post(post)}, args)
     else:
         print(f"Replied in thread {root_id} (message id {post.get('id')}).")
     return 0
@@ -5259,7 +5276,11 @@ def build_parser() -> argparse.ArgumentParser:
     drive_mkdir.add_argument("name", help="Name of the new folder")
     drive_mkdir.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
     drive_mkdir.add_argument("--parent", "--path", dest="parent_id", help="Parent ID where the folder will be created. Defaults to root.")
-    drive_mkdir.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    drive_mkdir.add_argument("--dry-run", action="store_true", help="Preview without creating the folder.")
+    drive_mkdir.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
     drive_mkdir.add_argument("--json", action="store_true")
     drive_mkdir.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     drive_mkdir.add_argument("--raw", action="store_true", help="With --json, emit the full raw folder payload.")
