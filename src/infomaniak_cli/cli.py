@@ -53,6 +53,7 @@ from .services.chat import (
     ChatError,
     derive_kchat_api_base_candidates,
     is_trusted_infomaniak_kchat_url,
+    normalize_emoji_name,
     parse_ksuite_kchat_url,
     slim_channels,
     slim_post,
@@ -4546,6 +4547,251 @@ def cmd_chat_post(args: argparse.Namespace) -> int:
     return 0
 
 
+def _chat_attachments(args: argparse.Namespace) -> list[Path]:
+    return [Path(normalize_local_path(raw)) for raw in (getattr(args, "attachments", None) or [])]
+
+
+def _chat_write_gate(args: argparse.Namespace, action: str) -> None:
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            f"Refusing to {action} with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
+        )
+
+
+def _upload_chat_attachments(client: Any, channel_id: str, paths: list[Path]) -> list[str]:
+    """Upload every attachment before posting, reporting any partial upload.
+
+    Uploads are independent requests, so a failure on file N leaves the earlier
+    ones stored server-side but unreferenced by any post. Say so explicitly
+    rather than failing with no indication that anything was uploaded.
+    """
+    file_ids: list[str] = []
+    for path in paths:
+        try:
+            info = client.upload_file(channel_id, path)
+        except ChatError:
+            if file_ids:
+                print(
+                    f"error: upload failed at {path.name}; {len(file_ids)} earlier file(s) were "
+                    "uploaded but no post was created, so they are unreferenced.",
+                    file=sys.stderr,
+                )
+            raise
+        file_id = info.get("id")
+        if not file_id:
+            raise ValueError(f"kChat upload returned no file id for {path}; refusing to post.")
+        file_ids.append(str(file_id))
+    return file_ids
+
+
+def cmd_chat_reply(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    message = args.message
+    if not message.strip():
+        raise ValueError("Refusing to post an empty reply.")
+
+    root = client.get_post(str(args.post_id))
+    channel_id = str(root.get("channel_id") or "")
+    if not channel_id:
+        raise ValueError(f"Resolved kChat post has no channel_id: {args.post_id}")
+    # Reply to the thread root, not to a reply, so threads stay one level deep.
+    root_id = str(root.get("root_id") or root.get("id") or args.post_id)
+
+    attachments = _chat_attachments(args)
+    plan = {
+        "profile": profile.name,
+        "post_id": str(args.post_id),
+        "root_id": root_id,
+        "channel_id": channel_id,
+        "replying_to": slim_post(root),
+        "message": message,
+        "attachments": _attachment_summary(attachments),
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "posted": False}, args)
+        else:
+            _print_chat_lifecycle_preview(plan, "reply in this thread")
+            print("Dry run: no reply was posted and no file was uploaded.")
+        return 0
+
+    _chat_write_gate(args, "reply")
+    if not _machine_output(args):
+        _print_chat_lifecycle_preview(plan, "reply in this thread")
+    if not _confirm(args, "Post this reply? [y/N] ", action="chat reply"):
+        print("Reply cancelled.")
+        return 2
+
+    file_ids = _upload_chat_attachments(client, channel_id, attachments)
+    post = client.create_post(channel_id, message, root_id=root_id, file_ids=file_ids or None)
+    if _machine_output(args):
+        print_machine({**plan, "posted": True, "post": slim_post(post)}, args)
+    else:
+        print(f"Replied in thread {root_id} (message id {post.get('id')}).")
+    return 0
+
+
+def _print_chat_lifecycle_preview(plan: Mapping[str, Any], action: str) -> None:
+    print(f"Profile: {plan['profile']}")
+    print(f"Action: {action}")
+    if plan.get("channel_id"):
+        print(f"Channel ID: {plan['channel_id']}")
+    if plan.get("post_id"):
+        print(f"Post ID: {plan['post_id']}")
+    target = plan.get("replying_to") or plan.get("post")
+    if target:
+        snippet = str(target.get("message") or "")
+        snippet = snippet if len(snippet) <= 300 else f"{snippet[:300]}…"
+        print(f"Target post by {target.get('user_id') or '-'}: {snippet}")
+    if plan.get("message") is not None:
+        print(f"Message: {plan['message']}")
+    if plan.get("before") is not None:
+        print(f"Before: {plan['before']}")
+        print(f"After: {plan['after']}")
+    if plan.get("emoji"):
+        print(f"Emoji: :{plan['emoji']}:")
+    if plan.get("attachments"):
+        total = sum(item["bytes"] or 0 for item in plan["attachments"])
+        print(f"Attachments ({len(plan['attachments'])}, {total} bytes total):")
+        for item in plan["attachments"]:
+            print(f"  {item['name']}  ({item['bytes']} bytes)")
+
+
+def cmd_chat_react(args: argparse.Namespace) -> int:
+    return _chat_reaction(args, add=True)
+
+
+def cmd_chat_unreact(args: argparse.Namespace) -> int:
+    return _chat_reaction(args, add=False)
+
+
+def _chat_reaction(args: argparse.Namespace, *, add: bool) -> int:
+    profile, client = _chat_profile_and_client(args)
+    emoji = normalize_emoji_name(args.emoji)
+    post = client.get_post(str(args.post_id))
+    verb = "add a reaction to" if add else "remove your reaction from"
+    plan = {
+        "profile": profile.name,
+        "post_id": str(args.post_id),
+        "channel_id": str(post.get("channel_id") or ""),
+        "post": slim_post(post),
+        "emoji": emoji,
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "changed": False}, args)
+        else:
+            _print_chat_lifecycle_preview(plan, verb)
+            print("Dry run: no reaction was changed.")
+        return 0
+
+    _chat_write_gate(args, "change a reaction")
+    if not _machine_output(args):
+        _print_chat_lifecycle_preview(plan, verb)
+    if not _confirm(args, f"{'Add' if add else 'Remove'} this reaction? [y/N] ", action="chat react"):
+        print("Cancelled.")
+        return 2
+
+    result = (client.add_reaction if add else client.remove_reaction)(str(args.post_id), emoji)
+    if _machine_output(args):
+        print_machine({**plan, "changed": True, "result": dict(result)}, args)
+    else:
+        print(f"{'Added' if add else 'Removed'} :{emoji}: on post {args.post_id}.")
+    return 0
+
+
+def cmd_chat_edit(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    message = args.message
+    if not message.strip():
+        raise ValueError("Refusing to replace a post with an empty message.")
+
+    post = client.require_own_post(str(args.post_id))
+    plan = {
+        "profile": profile.name,
+        "post_id": str(args.post_id),
+        "channel_id": str(post.get("channel_id") or ""),
+        "before": post.get("message"),
+        "after": message,
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "edited": False}, args)
+        else:
+            _print_chat_lifecycle_preview(plan, "edit your own post")
+            print("Dry run: nothing was edited.")
+        return 0
+
+    _chat_write_gate(args, "edit a post")
+    if not _machine_output(args):
+        _print_chat_lifecycle_preview(plan, "edit your own post")
+    if not _confirm(args, "Replace this post's message? [y/N] ", action="chat edit"):
+        print("Edit cancelled.")
+        return 2
+
+    client.update_post(str(args.post_id), message)
+    readback = slim_post(client.get_post(str(args.post_id)))
+    if _machine_output(args):
+        print_machine({**plan, "edited": True, "post": readback}, args)
+    else:
+        print(f"Edited post {args.post_id}.")
+    return 0
+
+
+def cmd_chat_delete(args: argparse.Namespace) -> int:
+    profile, client = _chat_profile_and_client(args)
+    post = client.require_own_post(str(args.post_id))
+    thread = []
+    try:
+        thread = client.get_thread(str(post.get("root_id") or post.get("id") or args.post_id))
+    except ChatError:
+        # Thread context is informational; never block the preview on it.
+        thread = []
+
+    plan = {
+        "profile": profile.name,
+        "post_id": str(args.post_id),
+        "channel_id": str(post.get("channel_id") or ""),
+        "post": slim_post(post),
+        "thread_size": len(thread),
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "deleted": False}, args)
+        else:
+            _print_chat_lifecycle_preview(plan, "delete your own post (irreversible)")
+            print(f"Thread context: {len(thread)} post(s).")
+            print("Dry run: nothing was deleted.")
+        return 0
+
+    _chat_write_gate(args, "delete a post")
+    if not _machine_output(args):
+        _print_chat_lifecycle_preview(plan, "delete your own post (irreversible)")
+        print(f"Thread context: {len(thread)} post(s).")
+        print("This permanently removes the message for everyone and cannot be undone.")
+    if not _confirm(args, "Delete this post? [y/N] ", action="chat delete"):
+        print("Deletion cancelled.")
+        return 2
+
+    result = client.delete_post(str(args.post_id))
+    # Readback: report what the server shows rather than assuming success.
+    try:
+        after = client.get_post(str(args.post_id))
+        gone = bool(after.get("delete_at"))
+    except ChatError:
+        gone = True
+    if _machine_output(args):
+        print_machine({**plan, "deleted": True, "confirmed_gone": gone, "result": dict(result)}, args)
+    else:
+        print(f"Deleted post {args.post_id} (confirmed removed: {gone}).")
+    return 0
+
+
 def cmd_debug_probe(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     result = probe_profile(profile.name, profile.account_id, client)
@@ -5452,7 +5698,51 @@ def build_parser() -> argparse.ArgumentParser:
     chat_post.add_argument("--json", action="store_true")
     chat_post.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     chat_post.add_argument("--raw", action="store_true", help="With --json, emit the full raw post payload.")
+    chat_post.add_argument(
+        "--attach", dest="attachments", action="append", metavar="PATH",
+        help="Attach a local file; repeatable.",
+    )
     chat_post.set_defaults(func=cmd_chat_post)
+
+    chat_reply = chat_sub.add_parser("reply", help="Reply in a kChat thread (protected write)")
+    chat_reply.add_argument("post_id", help="Post id to reply to.")
+    chat_reply.add_argument("--message", required=True, help="Reply text.")
+    chat_reply.add_argument("--attach", dest="attachments", action="append", metavar="PATH", help="Attach a local file; repeatable.")
+    chat_reply.add_argument("--dry-run", action="store_true", help="Preview without posting or uploading.")
+    chat_reply.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    chat_reply.add_argument("--json", action="store_true")
+    chat_reply.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    chat_reply.set_defaults(func=cmd_chat_reply)
+
+    for _name, _help, _handler in (
+        ("react", "Add a reaction to one post (protected write)", cmd_chat_react),
+        ("unreact", "Remove your reaction from one post (protected write)", cmd_chat_unreact),
+    ):
+        _p = chat_sub.add_parser(_name, help=_help)
+        _p.add_argument("post_id", help="Post id.")
+        _p.add_argument("emoji", help="Emoji shortname, e.g. thumbsup or :thumbsup:.")
+        _p.add_argument("--dry-run", action="store_true", help="Preview without changing the reaction.")
+        _p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+        _p.add_argument("--json", action="store_true")
+        _p.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+        _p.set_defaults(func=_handler)
+
+    chat_edit = chat_sub.add_parser("edit", help="Edit one of your own posts (protected write)")
+    chat_edit.add_argument("post_id", help="Post id owned by you.")
+    chat_edit.add_argument("--message", required=True, help="Replacement message text.")
+    chat_edit.add_argument("--dry-run", action="store_true", help="Preview before/after without editing.")
+    chat_edit.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    chat_edit.add_argument("--json", action="store_true")
+    chat_edit.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    chat_edit.set_defaults(func=cmd_chat_edit)
+
+    chat_delete = chat_sub.add_parser("delete", help="Delete one of your own posts (irreversible)")
+    chat_delete.add_argument("post_id", help="Post id owned by you.")
+    chat_delete.add_argument("--dry-run", action="store_true", help="Preview without deleting.")
+    chat_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    chat_delete.add_argument("--json", action="store_true")
+    chat_delete.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    chat_delete.set_defaults(func=cmd_chat_delete)
 
     return parser
 

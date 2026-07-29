@@ -331,6 +331,13 @@ Protected write (posts a message — off by default, confirmation required):
 ik chat post "Deploy finished" --channel <channel_slug> --dry-run
 ik chat post "Deploy finished" --channel <channel_slug>              # prompts to confirm
 ik --profile work chat post "Deploy finished" --channel <channel_slug> --yes
+ik chat post "Report attached" --channel <channel_slug> --attach ./report.pdf --dry-run
+ik chat reply <post_id> --message "Acknowledged." --dry-run
+ik --profile work chat reply <post_id> --message "Acknowledged." --yes
+ik chat react <post_id> thumbsup --dry-run
+ik chat unreact <post_id> :thumbsup: --dry-run
+ik chat edit <post_id> --message "Corrected text" --dry-run     # your own posts only
+ik chat delete <post_id> --dry-run                              # your own posts only, irreversible
 ```
 
 `ik chat teams` uses the configured kChat API base URL and calls the Mattermost-compatible `GET /api/v4/users/me/teams` endpoint. Authentication order is explicit saved kChat token first, then the saved main Informaniak API token only for trusted `*.kchat.infomaniak.com` hosts.
@@ -343,13 +350,36 @@ ik --profile work chat post "Deploy finished" --channel <channel_slug> --yes
 
 `ik chat thread <post_id>` reads a thread read-only via `GET /api/v4/posts/{post_id}/thread`, preserving the server's post order.
 
-`ik chat post "<message>" --channel <slug|id>` posts a message via `POST /api/v4/posts` (confirmed live for channel resolution). It is the first kChat write and follows the protected-write contract: it resolves the channel, prints a profile/team/channel/message preview, and requires confirmation before posting. `--dry-run` resolves the target and shows the plan without posting. `--yes` skips the prompt but only when the profile is explicit (`--profile <name>` or `IK_PROFILE`), so automation cannot post to the wrong account. Empty messages are refused. Still excluded: reactions, edits, deletes, channel creation, membership changes, and webhooks.
+`ik chat post "<message>" --channel <slug|id>` posts a message via `POST /api/v4/posts` (confirmed live for channel resolution). It is the first kChat write and follows the protected-write contract: it resolves the channel, prints a profile/team/channel/message preview, and requires confirmation before posting. `--dry-run` resolves the target and shows the plan without posting. `--yes` skips the prompt but only when the profile is explicit (`--profile <name>` or `IK_PROFILE`), so automation cannot post to the wrong account. Empty messages are refused.
+
+`ik chat reply <post_id> --message "..."` replies in a thread. The channel is derived from the
+resolved post rather than restated by the caller, so it cannot mismatch, and replying to a reply
+threads to the existing root instead of nesting deeper.
+
+`ik chat react <post_id> <emoji>` and `ik chat unreact <post_id> <emoji>` add and remove your own
+reaction. Shortnames are accepted with or without surrounding colons (`thumbsup` or `:thumbsup:`)
+and are validated locally, because the name becomes a URL path segment.
+
+`ik chat edit <post_id> --message "..."` and `ik chat delete <post_id>` act **only on your own
+posts**. Both resolve the post and compare its author to the authenticated user before issuing any
+write, so another user's message is refused outright rather than relying on the server to reject
+it. Edit previews before/after text and reads the post back; delete shows the author, channel, full
+message text and thread size, states plainly that it is irreversible, and reports whether the
+removal was confirmed rather than assuming it.
+
+`--attach <path>` is repeatable on `chat post` and `chat reply`. Files upload via
+`POST /api/v4/files` with a standard-library multipart body and are capped at 50 MB each. Uploads
+happen only **after** confirmation, never during `--dry-run`. If an upload fails partway through a
+multi-file post, the CLI reports how many files were already uploaded and left unreferenced.
+
+Still excluded: channel creation, membership changes, moderation, and webhooks — these need
+workspace-admin rights and are reserved for the `0.3.x` admin line.
 
 If the trusted-host fallback is rejected, save a dedicated token with `ik auth chat --url <url> --stdin`.
 
 Note: `search`, `thread`, and the `--channel` resolver target the documented standard Mattermost v4 endpoints; live confirmation against Infomaniak kChat is pending.
 
-Not implemented in v0.1.x: posting, reactions, edits, deletes, channel creation, membership changes, or webhooks.
+Not implemented: channel creation, membership changes, moderation, and webhooks.
 
 ## kMeet
 

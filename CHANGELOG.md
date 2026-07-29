@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.16] - 2026-07-29
+### Added
+- **`ik chat reply <post_id>`:** replies in a thread. The channel is derived from the resolved
+  post rather than restated by the caller, so it cannot mismatch, and replying to a reply threads
+  to the existing root instead of nesting deeper.
+- **Reactions:** `ik chat react <post_id> <emoji>` and `ik chat unreact <post_id> <emoji>`. Emoji
+  shortnames are accepted with or without surrounding colons and validated locally, since the name
+  becomes a URL path segment.
+- **`ik chat edit <post_id> --message`:** edits **your own** post, previewing before/after text and
+  reading the post back afterwards.
+- **`ik chat delete <post_id>`:** deletes **your own** post. The preview shows the author, channel,
+  full message text and thread size, states plainly that it is irreversible, and the result reports
+  whether the removal was confirmed rather than assuming it.
+- **Attachments:** repeatable `--attach <path>` on `ik chat post` and `ik chat reply`. Files upload
+  through `POST /api/v4/files` with a standard-library multipart body, are capped at 50 MB each,
+  and upload only **after** confirmation — never during `--dry-run`.
+
+### Changed
+- Ownership is enforced client-side: `edit` and `delete` resolve the post and compare its `user_id`
+  to the authenticated user before any write request is issued. Another user's post is refused
+  outright rather than relying on the server to reject it.
+- The kChat client gained `PUT`, `DELETE` and multipart transports, all routed through the existing
+  send path so token redaction and 401/403 classification are unchanged.
+
+### Notes
+- If an attachment upload fails partway through a multi-file post, the CLI reports how many files
+  were already uploaded and left unreferenced, instead of failing silently.
+- Channel creation, membership changes, moderation and webhooks remain out of the `0.2.x` line;
+  they require workspace-admin rights and are reserved for `0.3.x`.
+
 ## [0.2.15] - 2026-07-29
 ### Added
 - **Attachments, read side:** `ik mail attachments <uid>` lists a message's attachment parts with a

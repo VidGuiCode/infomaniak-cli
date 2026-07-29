@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
+import uuid
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..api import redact_secret
@@ -84,19 +87,130 @@ class ChatClient:
             raise ChatError("Unexpected kChat channel response: expected a JSON object")
         return payload
 
-    def create_post(self, channel_id: str, message: str) -> Mapping[str, Any]:
+    def create_post(
+        self,
+        channel_id: str,
+        message: str,
+        *,
+        root_id: str | None = None,
+        file_ids: list[str] | None = None,
+    ) -> Mapping[str, Any]:
         """Post a message to a channel via Mattermost ``POST /api/v4/posts``.
 
-        Returns the created post object. This is the only write in the kChat
-        client; callers must handle confirmation/preview before invoking it.
+        ``root_id`` makes the post a threaded reply. Callers must handle
+        confirmation/preview before invoking any write.
         """
-        payload = self._post(
-            "/api/v4/posts",
-            {"channel_id": str(channel_id), "message": message},
+        body: dict[str, Any] = {"channel_id": str(channel_id), "message": message}
+        if root_id:
+            body["root_id"] = str(root_id)
+        if file_ids:
+            body["file_ids"] = [str(item) for item in file_ids]
+        payload = self._post("/api/v4/posts", body)
+        if not isinstance(payload, Mapping):
+            raise ChatError("Unexpected kChat post response: expected a JSON object")
+        return payload
+
+    def me(self) -> Mapping[str, Any]:
+        """Return the authenticated kChat user, used for ownership checks."""
+        payload = self._get("/api/v4/users/me")
+        if not isinstance(payload, Mapping):
+            raise ChatError("Unexpected kChat user response: expected a JSON object")
+        return payload
+
+    def get_post(self, post_id: str) -> Mapping[str, Any]:
+        payload = self._get(
+            f"/api/v4/posts/{urllib.parse.quote(str(post_id), safe='')}",
+            not_found=f"kChat post not found: {post_id}",
         )
         if not isinstance(payload, Mapping):
             raise ChatError("Unexpected kChat post response: expected a JSON object")
         return payload
+
+    def require_own_post(self, post_id: str) -> Mapping[str, Any]:
+        """Resolve a post and refuse it unless the authenticated user owns it.
+
+        Editing or deleting someone else's message is never in scope, so this is
+        checked before any write request is issued rather than relying on the
+        server to reject it.
+        """
+        post = self.get_post(post_id)
+        owner = str(post.get("user_id") or "")
+        current = str(self.me().get("id") or "")
+        if not owner or not current or owner != current:
+            raise ChatError(
+                f"Refusing to change kChat post {post_id}: it belongs to another user. "
+                "Only your own posts can be edited or deleted through this CLI."
+            )
+        return post
+
+    def update_post(self, post_id: str, message: str) -> Mapping[str, Any]:
+        payload = self._put(
+            f"/api/v4/posts/{urllib.parse.quote(str(post_id), safe='')}",
+            {"id": str(post_id), "message": message},
+        )
+        if not isinstance(payload, Mapping):
+            raise ChatError("Unexpected kChat post update response: expected a JSON object")
+        return payload
+
+    def delete_post(self, post_id: str) -> Mapping[str, Any]:
+        payload = self._delete(
+            f"/api/v4/posts/{urllib.parse.quote(str(post_id), safe='')}",
+            not_found=f"kChat post not found: {post_id}",
+        )
+        return payload if isinstance(payload, Mapping) else {"status": "ok"}
+
+    def add_reaction(self, post_id: str, emoji: str, *, user_id: str | None = None) -> Mapping[str, Any]:
+        uid = user_id or str(self.me().get("id") or "")
+        payload = self._post(
+            "/api/v4/reactions",
+            {"user_id": uid, "post_id": str(post_id), "emoji_name": normalize_emoji_name(emoji)},
+        )
+        if not isinstance(payload, Mapping):
+            raise ChatError("Unexpected kChat reaction response: expected a JSON object")
+        return payload
+
+    def remove_reaction(self, post_id: str, emoji: str, *, user_id: str | None = None) -> Mapping[str, Any]:
+        uid = user_id or str(self.me().get("id") or "")
+        name = normalize_emoji_name(emoji)
+        payload = self._delete(
+            f"/api/v4/users/{urllib.parse.quote(uid, safe='')}"
+            f"/posts/{urllib.parse.quote(str(post_id), safe='')}"
+            f"/reactions/{urllib.parse.quote(name, safe='')}",
+            not_found=f"No '{name}' reaction from you on kChat post {post_id}",
+        )
+        return payload if isinstance(payload, Mapping) else {"status": "ok"}
+
+    def upload_file(
+        self, channel_id: str, path: Any, *, max_bytes: int = 50 * 1024 * 1024
+    ) -> Mapping[str, Any]:
+        """Upload one file to a channel and return its file info.
+
+        The size is checked before reading so an oversized file fails locally
+        rather than after buffering the whole body and being rejected upstream.
+        """
+        file_path = Path(path)
+        if not file_path.exists():
+            raise ChatError(f"Attachment does not exist: {file_path}")
+        if not file_path.is_file():
+            raise ChatError(f"Attachment is not a single file: {file_path}")
+        size = file_path.stat().st_size
+        if size > max_bytes:
+            raise ChatError(
+                f"Refusing to upload {file_path.name}: {size} bytes exceeds the "
+                f"{max_bytes} byte limit."
+            )
+        guessed, _ = mimetypes.guess_type(file_path.name)
+        payload = self._post_multipart(
+            "/api/v4/files",
+            fields={"channel_id": str(channel_id)},
+            filename=file_path.name,
+            content=file_path.read_bytes(),
+            content_type=guessed or "application/octet-stream",
+        )
+        infos = payload.get("file_infos") if isinstance(payload, Mapping) else None
+        if not isinstance(infos, list) or not infos or not isinstance(infos[0], Mapping):
+            raise ChatError("Unexpected kChat upload response: expected file_infos")
+        return infos[0]
 
     def get_channel(self, channel_id: str) -> Mapping[str, Any]:
         payload = self._get(
@@ -150,6 +264,62 @@ class ChatClient:
         )
         return self._send(request)
 
+    def _put(self, path: str, body: Mapping[str, Any]) -> Any:
+        headers = self._headers()
+        headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="PUT",
+        )
+        return self._send(request)
+
+    def _delete(self, path: str, *, not_found: str | None = None) -> Any:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}", headers=self._headers(), method="DELETE"
+        )
+        return self._send(request, not_found=not_found)
+
+    def _post_multipart(
+        self,
+        path: str,
+        *,
+        fields: Mapping[str, str],
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> Any:
+        """POST multipart/form-data assembled with the standard library only."""
+        boundary = f"----infomaniak-cli-{uuid.uuid4().hex}"
+        crlf = b"\r\n"
+        parts: list[bytes] = []
+        for name, value in fields.items():
+            parts += [
+                f"--{boundary}".encode(),
+                f'Content-Disposition: form-data; name="{name}"'.encode(),
+                b"",
+                str(value).encode("utf-8"),
+            ]
+        safe_name = filename.replace('"', "").replace("\r", "").replace("\n", "")
+        parts += [
+            f"--{boundary}".encode(),
+            f'Content-Disposition: form-data; name="files"; filename="{safe_name}"'.encode(),
+            f"Content-Type: {content_type}".encode(),
+            b"",
+            content,
+            f"--{boundary}--".encode(),
+            b"",
+        ]
+        body = crlf.join(parts)
+
+        headers = self._headers()
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        request = urllib.request.Request(
+            f"{self.base_url}{path}", data=body, headers=headers, method="POST"
+        )
+        return self._send(request)
+
     def _send(self, request: urllib.request.Request, *, not_found: str | None = None) -> Any:
         try:
             with self._opener(request, timeout=30) as response:
@@ -179,6 +349,22 @@ class ChatClient:
             return json.loads(text)
         except json.JSONDecodeError as exc:
             raise ChatError("Unexpected kChat response: invalid JSON") from exc
+
+
+def normalize_emoji_name(emoji: str) -> str:
+    """Normalize an emoji shortname; it becomes a URL path segment.
+
+    Accepts either ``thumbsup`` or ``:thumbsup:`` and rejects anything that
+    could not be a Mattermost emoji name.
+    """
+    name = str(emoji).strip().strip(":").strip()
+    if not name:
+        raise ChatError("Emoji name must not be empty, e.g. thumbsup or :thumbsup:.")
+    if any(char.isspace() for char in name):
+        raise ChatError(f"Emoji name must not contain whitespace: {emoji!r}")
+    if "/" in name or "\\" in name:
+        raise ChatError(f"Emoji name must not contain a path separator: {emoji!r}")
+    return name
 
 
 def is_trusted_infomaniak_kchat_url(url: str) -> bool:

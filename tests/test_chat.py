@@ -1,3 +1,4 @@
+import io
 import json
 import urllib.error
 
@@ -7,6 +8,7 @@ from infomaniak_cli.profiles import ProfileManager
 from infomaniak_cli.services.chat import (
     ChatClient,
     ChatError,
+    normalize_emoji_name,
     derive_kchat_api_base_candidates,
     is_trusted_infomaniak_kchat_url,
     parse_ksuite_kchat_url,
@@ -927,14 +929,22 @@ def test_cli_chat_thread_does_not_leak_token(tmp_path, monkeypatch, capsys):
     assert "kChat rejected the main Informaniak API token" in captured.err
 
 
-def test_chat_parser_exposes_only_post_as_write_command():
+def test_chat_parser_exposes_the_protected_write_surface():
     parser = cli.build_parser()
     chat_parser = parser._subparsers._group_actions[0].choices["chat"]
     choices = chat_parser._subparsers._group_actions[0].choices
 
-    # `post` is the single protected write added in 0.2.4; nothing destructive.
-    assert set(choices) == {"teams", "channels", "users", "search", "thread", "post"}
-    assert not {"create", "delete", "edit", "react", "webhook"} & set(choices)
+    # 0.2.4 added `post`; 0.2.16 added the conversation lifecycle. Every write
+    # here acts on exactly one resolved target, and edit/delete are restricted
+    # to the authenticated user's own posts.
+    assert set(choices) == {
+        "teams", "channels", "users", "search", "thread",
+        "post", "reply", "react", "unreact", "edit", "delete",
+    }
+    # workspace administration stays out of the 0.2.x line entirely
+    assert not {
+        "create-channel", "join", "leave", "invite", "kick", "webhook", "moderate", "archive",
+    } & set(choices)
 
 
 # --- chat post (protected write) ------------------------------------------
@@ -1082,3 +1092,512 @@ def test_cli_chat_post_interactive_decline_does_not_post(tmp_path, monkeypatch, 
     assert cli.main(["--profile", "work", "chat", "post", "hi", "--channel", "dev"]) == 2
     assert "cancelled" in capsys.readouterr().out.lower()
     assert not any(call[0] == "create_post" for call in created[0].calls)
+
+
+# --- v0.2.16 conversation lifecycle ---------------------------------------
+
+
+ME = {"id": "user-me", "username": "me"}
+OWN_POST = {"id": "post-own", "user_id": "user-me", "channel_id": "channel-1", "message": "mine"}
+OTHER_POST = {"id": "post-other", "user_id": "user-someone-else", "channel_id": "channel-1", "message": "theirs"}
+
+
+def _routing_opener(routes, seen=None):
+    """Route by (method, path-suffix) so ordering assumptions stay explicit."""
+
+    def opener(request, timeout=30):
+        if seen is not None:
+            seen.append(request)
+        method = request.get_method()
+        for (want_method, suffix), payload in routes.items():
+            if method == want_method and request.full_url.endswith(suffix):
+                if isinstance(payload, Exception):
+                    raise payload
+                return FakeResponse(json.dumps(payload).encode("utf-8"))
+        raise AssertionError(f"unrouted {method} {request.full_url}")
+
+    return opener
+
+
+def test_me_returns_the_authenticated_user():
+    client = ChatClient(
+        "https://chat.example.test", "secret-chat-token",
+        opener=_routing_opener({("GET", "/api/v4/users/me"): ME}),
+    )
+
+    assert client.me()["id"] == "user-me"
+
+
+def test_require_own_post_accepts_a_post_owned_by_the_caller():
+    client = ChatClient(
+        "https://chat.example.test", "secret-chat-token",
+        opener=_routing_opener({
+            ("GET", "/api/v4/posts/post-own"): OWN_POST,
+            ("GET", "/api/v4/users/me"): ME,
+        }),
+    )
+
+    assert client.require_own_post("post-own")["id"] == "post-own"
+
+
+def test_require_own_post_refuses_another_users_post_before_any_write():
+    seen = []
+    client = ChatClient(
+        "https://chat.example.test", "secret-chat-token",
+        opener=_routing_opener({
+            ("GET", "/api/v4/posts/post-other"): OTHER_POST,
+            ("GET", "/api/v4/users/me"): ME,
+        }, seen),
+    )
+
+    try:
+        client.require_own_post("post-other")
+    except ChatError as exc:
+        assert "belongs to another user" in str(exc)
+    else:
+        raise AssertionError("expected ChatError")
+
+    # only reads happened; nothing mutating was issued
+    assert {r.get_method() for r in seen} == {"GET"}
+
+
+def test_create_post_sends_root_id_for_a_threaded_reply():
+    captured = {}
+
+    def opener(request, timeout=30):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(json.dumps({"id": "post-new"}).encode("utf-8"))
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    client.create_post("channel-1", "reply text", root_id="post-root")
+
+    assert captured["body"]["root_id"] == "post-root"
+    assert captured["body"]["channel_id"] == "channel-1"
+
+
+def test_create_post_omits_root_id_and_file_ids_when_absent():
+    captured = {}
+
+    def opener(request, timeout=30):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(json.dumps({"id": "post-new"}).encode("utf-8"))
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    client.create_post("channel-1", "plain")
+
+    assert "root_id" not in captured["body"]
+    assert "file_ids" not in captured["body"]
+
+
+def test_update_post_uses_put_with_the_post_id():
+    seen = []
+    client = ChatClient(
+        "https://chat.example.test", "secret-chat-token",
+        opener=_routing_opener({("PUT", "/api/v4/posts/post-own"): {"id": "post-own", "message": "edited"}}, seen),
+    )
+
+    result = client.update_post("post-own", "edited")
+
+    assert result["message"] == "edited"
+    assert seen[0].get_method() == "PUT"
+    assert json.loads(seen[0].data.decode("utf-8")) == {"id": "post-own", "message": "edited"}
+
+
+def test_delete_post_uses_delete():
+    seen = []
+    client = ChatClient(
+        "https://chat.example.test", "secret-chat-token",
+        opener=_routing_opener({("DELETE", "/api/v4/posts/post-own"): {"status": "OK"}}, seen),
+    )
+
+    client.delete_post("post-own")
+
+    assert seen[0].get_method() == "DELETE"
+
+
+def test_add_reaction_posts_user_post_and_emoji():
+    seen = []
+    client = ChatClient(
+        "https://chat.example.test", "secret-chat-token",
+        opener=_routing_opener({
+            ("GET", "/api/v4/users/me"): ME,
+            ("POST", "/api/v4/reactions"): {"user_id": "user-me", "emoji_name": "thumbsup"},
+        }, seen),
+    )
+
+    client.add_reaction("post-own", ":thumbsup:")
+
+    body = json.loads([r for r in seen if r.get_method() == "POST"][0].data.decode("utf-8"))
+    assert body == {"user_id": "user-me", "post_id": "post-own", "emoji_name": "thumbsup"}
+
+
+def test_remove_reaction_deletes_the_scoped_reaction_path():
+    seen = []
+    client = ChatClient(
+        "https://chat.example.test", "secret-chat-token",
+        opener=_routing_opener({
+            ("GET", "/api/v4/users/me"): ME,
+            ("DELETE", "/api/v4/users/user-me/posts/post-own/reactions/thumbsup"): {"status": "OK"},
+        }, seen),
+    )
+
+    client.remove_reaction("post-own", "thumbsup")
+
+    assert [r.get_method() for r in seen if r.get_method() == "DELETE"] == ["DELETE"]
+
+
+def test_normalize_emoji_name_strips_colons_and_rejects_bad_names():
+    assert normalize_emoji_name(":thumbsup:") == "thumbsup"
+    assert normalize_emoji_name("  tada ") == "tada"
+    for bad in ["", "  ", "::", "two words", "a/b", "a\\b"]:
+        try:
+            normalize_emoji_name(bad)
+        except ChatError:
+            continue
+        raise AssertionError(f"expected ChatError for {bad!r}")
+
+
+def test_upload_file_builds_a_multipart_body_with_the_file_bytes(tmp_path):
+    path = tmp_path / "report.pdf"
+    path.write_bytes(b"PDFDATA")
+    seen = []
+    client = ChatClient(
+        "https://chat.example.test", "secret-chat-token",
+        opener=_routing_opener({("POST", "/api/v4/files"): {"file_infos": [{"id": "file-1", "name": "report.pdf"}]}}, seen),
+    )
+
+    info = client.upload_file("channel-1", path)
+
+    assert info["id"] == "file-1"
+    request = seen[0]
+    assert request.headers["Content-type"].startswith("multipart/form-data; boundary=")
+    body = request.data
+    assert b'name="channel_id"' in body
+    assert b"channel-1" in body
+    assert b'filename="report.pdf"' in body
+    assert b"PDFDATA" in body
+
+
+def test_upload_file_refuses_a_missing_path_and_a_directory(tmp_path):
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=lambda *a, **k: None)
+
+    try:
+        client.upload_file("channel-1", tmp_path / "absent.pdf")
+    except ChatError as exc:
+        assert "does not exist" in str(exc)
+    else:
+        raise AssertionError("expected ChatError")
+
+    folder = tmp_path / "dir"
+    folder.mkdir()
+    try:
+        client.upload_file("channel-1", folder)
+    except ChatError as exc:
+        assert "not a single file" in str(exc)
+    else:
+        raise AssertionError("expected ChatError")
+
+
+def test_lifecycle_errors_still_redact_the_token():
+    def opener(request, timeout=30):
+        raise urllib.error.HTTPError(
+            request.full_url, 500, "boom", {},
+            io.BytesIO(b'{"detail":"failed for secret-chat-token"}'),
+        )
+
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=opener)
+
+    try:
+        client.update_post("post-own", "edited")
+    except ChatError as exc:
+        assert "secret-chat-token" not in str(exc)
+    else:
+        raise AssertionError("expected ChatError")
+
+
+# --- v0.2.16 CLI conversation lifecycle -----------------------------------
+
+
+class _LifecycleChatClient:
+    """Chat double covering the v0.2.16 CLI paths."""
+
+    posts = {
+        "post-own": {
+            "id": "post-own", "user_id": "user-me", "channel_id": "channel-1",
+            "message": "my original message", "root_id": "",
+        },
+        "post-other": {
+            "id": "post-other", "user_id": "user-else", "channel_id": "channel-1",
+            "message": "someone else's message", "root_id": "",
+        },
+        "post-reply": {
+            "id": "post-reply", "user_id": "user-me", "channel_id": "channel-1",
+            "message": "a reply", "root_id": "post-own",
+        },
+    }
+
+    def __init__(self, *args, **kwargs):
+        self.calls = []
+        self.edited = {}
+
+    def get_post(self, post_id):
+        self.calls.append(("get_post", post_id))
+        if post_id not in self.posts:
+            raise ChatError(f"kChat post not found: {post_id}")
+        return dict(self.edited.get(post_id, self.posts[post_id]))
+
+    def me(self):
+        self.calls.append(("me",))
+        return {"id": "user-me"}
+
+    def require_own_post(self, post_id):
+        self.calls.append(("require_own_post", post_id))
+        post = self.get_post(post_id)
+        if post.get("user_id") != "user-me":
+            raise ChatError(
+                f"Refusing to change kChat post {post_id}: it belongs to another user."
+            )
+        return post
+
+    def create_post(self, channel_id, message, *, root_id=None, file_ids=None):
+        self.calls.append(("create_post", channel_id, message, root_id, tuple(file_ids or ())))
+        return {"id": "post-new", "channel_id": channel_id, "message": message, "root_id": root_id}
+
+    def update_post(self, post_id, message):
+        self.calls.append(("update_post", post_id, message))
+        updated = dict(self.posts[post_id])
+        updated["message"] = message
+        self.edited[post_id] = updated
+        return updated
+
+    def delete_post(self, post_id):
+        self.calls.append(("delete_post", post_id))
+        return {"status": "OK"}
+
+    def add_reaction(self, post_id, emoji, **kw):
+        self.calls.append(("add_reaction", post_id, emoji))
+        return {"post_id": post_id, "emoji_name": emoji}
+
+    def remove_reaction(self, post_id, emoji, **kw):
+        self.calls.append(("remove_reaction", post_id, emoji))
+        return {"status": "OK"}
+
+    def get_thread(self, post_id):
+        self.calls.append(("get_thread", post_id))
+        return [self.posts["post-own"], self.posts["post-reply"]]
+
+    def upload_file(self, channel_id, path):
+        self.calls.append(("upload_file", channel_id, str(path)))
+        return {"id": "file-1", "name": "report.pdf"}
+
+
+def _lifecycle_chat(tmp_path, monkeypatch):
+    _configured_profile(tmp_path, monkeypatch)
+    created = []
+
+    def factory(*args, **kwargs):
+        client = _LifecycleChatClient()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "ChatClient", factory)
+    return created
+
+
+def test_cli_chat_reply_threads_to_the_root_and_derives_the_channel(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+
+    assert cli.main([
+        "--profile", "work", "chat", "reply", "post-own", "--message", "Thanks.", "--yes", "--json",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["posted"] is True
+    assert payload["root_id"] == "post-own"
+    assert payload["channel_id"] == "channel-1"
+    create = [c for c in clients[0].calls if c[0] == "create_post"][0]
+    assert create[1] == "channel-1"
+    assert create[3] == "post-own"
+
+
+def test_cli_chat_reply_to_a_reply_threads_to_its_root(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+
+    assert cli.main([
+        "--profile", "work", "chat", "reply", "post-reply", "--message", "More.", "--yes", "--json",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    # threads stay one level deep: reply to the root, not to the reply
+    assert payload["root_id"] == "post-own"
+
+
+def test_cli_chat_reply_dry_run_uploads_nothing_and_posts_nothing(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+    attachment = tmp_path / "report.pdf"
+    attachment.write_bytes(b"PDFDATA")
+
+    assert cli.main([
+        "chat", "reply", "post-own", "--message", "See attached.",
+        "--attach", str(attachment), "--dry-run", "--json",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["posted"] is False
+    assert payload["dry_run"] is True
+    assert payload["attachments"][0]["name"] == "report.pdf"
+    kinds = {c[0] for c in clients[0].calls}
+    assert "upload_file" not in kinds
+    assert "create_post" not in kinds
+
+
+def test_cli_chat_reply_uploads_then_posts_with_file_ids(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+    attachment = tmp_path / "report.pdf"
+    attachment.write_bytes(b"PDFDATA")
+
+    assert cli.main([
+        "--profile", "work", "chat", "reply", "post-own", "--message", "See attached.",
+        "--attach", str(attachment), "--yes", "--json",
+    ]) == 0
+
+    calls = [c[0] for c in clients[0].calls]
+    assert calls.index("upload_file") < calls.index("create_post")
+    create = [c for c in clients[0].calls if c[0] == "create_post"][0]
+    assert create[4] == ("file-1",)
+
+
+def test_cli_chat_edit_refuses_another_users_post(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+
+    assert cli.main([
+        "--profile", "work", "chat", "edit", "post-other", "--message", "hijack", "--yes",
+    ]) == 1
+
+    assert "belongs to another user" in capsys.readouterr().err
+    assert not any(c[0] == "update_post" for c in clients[0].calls)
+
+
+def test_cli_chat_delete_refuses_another_users_post(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+
+    assert cli.main(["--profile", "work", "chat", "delete", "post-other", "--yes"]) == 1
+
+    assert "belongs to another user" in capsys.readouterr().err
+    assert not any(c[0] == "delete_post" for c in clients[0].calls)
+
+
+def test_cli_chat_edit_previews_before_and_after_then_reads_back(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+
+    assert cli.main(["chat", "edit", "post-own", "--message", "corrected", "--dry-run", "--json"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["edited"] is False
+    assert preview["before"] == "my original message"
+    assert preview["after"] == "corrected"
+    assert not any(c[0] == "update_post" for c in clients[0].calls)
+
+    assert cli.main([
+        "--profile", "work", "chat", "edit", "post-own", "--message", "corrected", "--yes", "--json",
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["edited"] is True
+    assert payload["post"]["message"] == "corrected"
+
+
+def test_cli_chat_delete_dry_run_shows_thread_context_and_deletes_nothing(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+
+    assert cli.main(["chat", "delete", "post-own", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["deleted"] is False
+    assert payload["thread_size"] == 2
+    assert payload["post"]["message"] == "my original message"
+    assert not any(c[0] == "delete_post" for c in clients[0].calls)
+
+
+def test_cli_chat_react_and_unreact_normalize_the_emoji(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+
+    assert cli.main(["--profile", "work", "chat", "react", "post-own", ":thumbsup:", "--yes", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["emoji"] == "thumbsup"
+
+    assert cli.main(["--profile", "work", "chat", "unreact", "post-own", "thumbsup", "--yes", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["changed"] is True
+
+    kinds = [c[0] for c in clients[0].calls if c[0] in {"add_reaction", "remove_reaction"}]
+    assert kinds == ["add_reaction"] or kinds == []
+
+
+def test_cli_chat_react_rejects_a_malformed_emoji(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+
+    assert cli.main(["--profile", "work", "chat", "react", "post-own", "two words", "--yes"]) == 1
+
+    assert "whitespace" in capsys.readouterr().err
+    assert not any(c[0] == "add_reaction" for c in clients[0].calls)
+
+
+def test_cli_chat_lifecycle_writes_require_an_explicit_profile_for_yes(tmp_path, monkeypatch, capsys):
+    _lifecycle_chat(tmp_path, monkeypatch)
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+
+    for argv in (
+        ["chat", "reply", "post-own", "--message", "x", "--yes"],
+        ["chat", "edit", "post-own", "--message", "x", "--yes"],
+        ["chat", "delete", "post-own", "--yes"],
+        ["chat", "react", "post-own", "thumbsup", "--yes"],
+    ):
+        assert cli.main(argv) == 1
+        assert "profile is explicit" in capsys.readouterr().err
+
+
+def test_chat_parser_exposes_lifecycle_but_no_admin_surface():
+    parser = cli.build_parser()
+    chat_parser = parser._subparsers._group_actions[0].choices["chat"]
+    choices = set(chat_parser._subparsers._group_actions[0].choices)
+
+    assert {"reply", "react", "unreact", "edit", "delete"} <= choices
+    # channel creation, membership, moderation and webhooks stay out of 0.2.x
+    assert not {"create-channel", "join", "leave", "invite", "kick", "webhook", "moderate"} & choices
+
+
+def test_upload_file_refuses_a_file_over_the_size_cap(tmp_path):
+    path = tmp_path / "big.bin"
+    path.write_bytes(b"x" * 2048)
+    client = ChatClient("https://chat.example.test", "secret-chat-token", opener=lambda *a, **k: None)
+
+    try:
+        client.upload_file("channel-1", path, max_bytes=1024)
+    except ChatError as exc:
+        assert "exceeds the" in str(exc)
+    else:
+        raise AssertionError("expected ChatError")
+
+
+def test_cli_chat_reply_reports_a_partial_upload_before_failing(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_chat(tmp_path, monkeypatch)
+    first = tmp_path / "one.pdf"
+    first.write_bytes(b"A")
+    second = tmp_path / "two.pdf"
+    second.write_bytes(b"B")
+
+    def failing_upload(self, channel_id, path):
+        self.calls.append(("upload_file", channel_id, str(path)))
+        if str(path).endswith("two.pdf"):
+            raise ChatError("kChat request failed: HTTP 507")
+        return {"id": "file-1"}
+
+    monkeypatch.setattr(_LifecycleChatClient, "upload_file", failing_upload)
+
+    assert cli.main([
+        "--profile", "work", "chat", "reply", "post-own", "--message", "See attached.",
+        "--attach", str(first), "--attach", str(second), "--yes",
+    ]) == 1
+
+    err = capsys.readouterr().err
+    assert "1 earlier file(s) were uploaded" in err
+    assert not any(c[0] == "create_post" for c in clients[0].calls)
