@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.14] - 2026-07-29
+### Added
+- **Recurrence on create:** `ik calendar create --rrule "FREQ=MONTHLY;INTERVAL=3;COUNT=4"` adds a
+  single recurrence rule. The rule is validated and normalized locally — `KEY=VALUE` parts only,
+  known RFC 5545 part names, a known `FREQ`, no repeated parts, and no embedded line breaks — so a
+  malformed rule is refused before any request instead of failing the whole `PUT`, and a rule can
+  never inject an extra iCalendar property.
+- **`ik calendar create-series`:** creates one event per explicit `--date`, for a fixed list of
+  deadlines. Each UID is `<--uid-prefix>-<date>`, so the series is deterministic and re-running
+  with `--if-missing` is a no-op rather than a second set of events. Duplicate `--date` values and
+  colliding derived UIDs are refused before any request, and `--duration-minutes` cannot be
+  combined with `--all-day`. The preview lists every event with its resolved start, end and UID,
+  and one confirmation covers the batch.
+- Because a series is a batch of independent writes, a failure partway through reports the failing
+  UID and the UIDs already created, and points at `--if-missing` to finish the remainder without
+  duplicating them.
+
+### Notes
+- **Attendees, invitations, RSVP, contact-name resolution and `calendar import` are deliberately
+  not included in this release.** A read-only capability probe confirmed that Infomaniak's CalDAV
+  server advertises `schedule-outbox-URL` and `schedule-inbox-URL`, so writing an `ATTENDEE` would
+  very likely email a real person. Until that notification behavior is verified live, those
+  surfaces stay disabled and attendee-bearing events remain refused by `calendar update`,
+  `calendar cancel`, and `calendar delete`. The findings are recorded in the project's private
+  live-API notes; the deferred work is tracked as its own future milestone.
+
 ## [0.2.13] - 2026-07-29
 ### Added
 - **Create-time reminders:** `ik calendar create --reminder-minutes N` is repeatable and emits one
