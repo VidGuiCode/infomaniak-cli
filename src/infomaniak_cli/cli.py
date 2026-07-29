@@ -2356,8 +2356,23 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         client,
         manager=manager,
         account_id=args.account_id,
+        drive_id=getattr(args, "drive_id", None),
+        mailbox=getattr(args, "mailbox", None),
         non_interactive=args.non_interactive,
+        dry_run=getattr(args, "dry_run", False),
     )
+    if result.get("dry_run"):
+        selection = result["selection"]
+        if _machine_output(args):
+            print_machine(result, args)
+        else:
+            print(f"Profile: {name}")
+            print(f"Account: {selection['account']['name'] or '-'} ({selection['account']['id'] or '-'})")
+            print(f"Default drive: {selection['drive']['name'] or '-'} ({selection['drive']['id'] or '-'})")
+            print(f"Default mailbox: {selection['mailbox'] or '-'}")
+            print(f"Candidates seen: {selection['candidates']}")
+            print("Dry run: the profile was not changed (local profile config only).")
+        return 0
     profile = manager.get(name)
     readiness = build_readiness(profile, main_token_configured=True)
     output = _bootstrap_readiness_output(result, readiness)
@@ -5222,6 +5237,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     bootstrap = sub.add_parser("bootstrap", help="Discover account/service IDs for a profile")
     bootstrap.add_argument("--account-id", help="Account ID to select when multiple accounts are available")
+    bootstrap.add_argument("--drive-id", help="kDrive ID to select when multiple drives are available")
+    bootstrap.add_argument("--mailbox", help="Mailbox address to select when the choice is ambiguous")
+    bootstrap.add_argument("--dry-run", action="store_true", help="Show the defaults that would be saved, without saving")
     bootstrap.add_argument("--non-interactive", action="store_true", help="Fail instead of prompting")
     bootstrap.add_argument("--json", action="store_true")
     bootstrap.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")

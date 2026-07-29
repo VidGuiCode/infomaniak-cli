@@ -88,12 +88,24 @@ def test_every_protected_write_offers_structured_output():
     assert missing == [], f"these protected writes lack --json/--compact: {missing}"
 
 
+# Commands that preview with --dry-run but need no --yes gate, because they
+# change local configuration rather than a service. Same rule as above: an
+# exception must carry a reason.
+LOCAL_ONLY_DRY_RUN = {
+    "bootstrap": "rewrites local profile defaults only; performs no service write",
+}
+
+
 def test_every_dry_run_command_is_also_gated_by_yes():
-    """If an action is worth previewing, it is worth gating."""
+    """If an action is worth previewing, it is worth gating.
+
+    Local-config commands are exempt: `--yes` exists to stop automation writing
+    to the wrong *account*, which cannot happen when nothing leaves the machine.
+    """
     missing = [
         path
         for path, sub in _commands_with("--dry-run")
-        if "--yes" not in _option_strings(sub)
+        if "--yes" not in _option_strings(sub) and path not in LOCAL_ONLY_DRY_RUN
     ]
 
     assert missing == [], f"these commands offer --dry-run but no --yes gate: {missing}"

@@ -27,6 +27,8 @@ ik whoami
 ik doctor
 ik bootstrap
 ik bootstrap --compact
+ik bootstrap --dry-run --json          # show the defaults that would be saved
+ik bootstrap --drive-id <id> --mailbox <address> --non-interactive
 ik update
 ik completion bash
 ```
@@ -37,6 +39,20 @@ Expected behavior:
 - `whoami`: show active profile/account/user/default services and readiness.
 - `doctor`: verify auth and configured service setup state.
 - `bootstrap`: rerun autodiscovery, safely update defaults, and show missing setup actions.
+
+`ik bootstrap` never silently resolves an ambiguous choice. When discovery returns several accounts,
+drives or mailboxes and none is explicitly selected, it fails under `--non-interactive` naming the
+flag that resolves it (`--account-id`, `--drive-id`, `--mailbox`) and listing every candidate id and
+name; interactively it offers a numbered prompt. A single candidate is auto-selected as before, and
+mailboxes keep their preference chain — your own address, then the already-configured one — because
+those are justified matches rather than guesses.
+
+This matters because the chosen defaults are what every later service command targets: a silently
+wrong drive would redirect both reads and protected writes.
+
+`ik bootstrap --dry-run` resolves everything and reports the account, drive and mailbox that would
+become the profile defaults, plus how many candidates were seen, without touching the profile.
+Bootstrap only ever changes **local profile configuration** — it performs no service write.
 - `update`: check GitHub releases and update supported installs.
 - `completion`: generate static shell completion scripts for bash, zsh, fish, and powershell.
 

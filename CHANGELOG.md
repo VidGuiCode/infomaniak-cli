@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.19] - 2026-07-29
+### Fixed
+- **`ik bootstrap` silently picked the first drive** when discovery returned several, carrying a
+  literal `TODO` since the command was written. Whichever drive the API happened to return first
+  became the profile default, and every later `ik drive …` read *and protected write* then targeted
+  it. Bootstrap now refuses to guess: with several drives and `--non-interactive` it fails naming
+  `--drive-id` and listing every id and name, and otherwise offers a deterministic numbered prompt.
+- The same rule now applies to mailboxes. The existing preference chain is unchanged and still wins
+  first — the profile user's own address, then the already-configured mailbox — because those are
+  justified matches rather than guesses. Only when neither matches **and** several mailboxes exist
+  does the ambiguity rule apply, resolved with `--mailbox`.
+
+### Added
+- `ik bootstrap --drive-id <id>` and `ik bootstrap --mailbox <address>` for explicit,
+  automation-friendly selection.
+- `ik bootstrap --dry-run` resolves everything and reports the account, drive and mailbox that
+  *would* become the profile defaults, along with how many candidates were seen, then exits without
+  touching the profile. The JSON envelope reports `saved: false` and a `selection` block; the normal
+  path reports the same block before saving, so the change is visible rather than inferred
+  afterwards.
+- Every bootstrap result states `writes: "local profile config only"`, and a test asserts bootstrap
+  issues no service write — it changes local configuration and nothing else.
+
+### Changed
+- Account, drive and mailbox selection now share one implementation, so the rule cannot drift
+  between them. Account behavior is unchanged and its existing tests pass untouched. A profile with
+  exactly one drive, or whose mailbox preference matches, bootstraps exactly as before.
+
 ## [0.2.18] - 2026-07-29
 ### Fixed
 - **`ik drive mkdir` did not follow the protected-write contract.** Shipped since `0.2.0`, it

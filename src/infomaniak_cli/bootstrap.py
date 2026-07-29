@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .api import InformaniakAPIError
 from .profiles import ProfileManager
-from .services.mail_discovery import mailbox_address, select_default_mailbox
+from .services.mail_discovery import mailbox_address
 
 
 class BootstrapError(RuntimeError):
@@ -33,7 +33,10 @@ def bootstrap_profile(
     *,
     manager: ProfileManager | None = None,
     account_id: str | None = None,
+    drive_id: str | None = None,
+    mailbox: str | None = None,
     non_interactive: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     manager = manager or ProfileManager()
     if not manager.exists(profile_name):
@@ -54,13 +57,33 @@ def bootstrap_profile(
     mailboxes = _discover_mailboxes(api, mail_hosting)
     drives = _discover_drives(api, selected_account_id)
 
-    # TODO: prompt/select among multiple drives once drive UX exists.
-    drive = _first_item(drives)
-    default_mailbox = select_default_mailbox(
-        mailboxes,
-        _profile_user(profile_data),
-        existing_profile.default_mailbox,
+    drive = _select_one(
+        drives,
+        kind="drives",
+        flag="--drive-id",
+        explicit=drive_id,
+        non_interactive=non_interactive,
+        identify=_drive_id,
+        required=False,
     )
+
+    # The preference chain is a justified match, not a guess: the user's own
+    # address, then whatever is already configured. Only when neither matches
+    # does ambiguity apply.
+    default_mailbox = _preferred_mailbox(
+        mailboxes, _profile_user(profile_data), existing_profile.default_mailbox
+    )
+    if default_mailbox is None and mailboxes:
+        chosen = _select_one(
+            mailboxes,
+            kind="mailboxes",
+            flag="--mailbox",
+            explicit=mailbox,
+            non_interactive=non_interactive,
+            identify=_mailbox_address,
+            required=False,
+        )
+        default_mailbox = _mailbox_address(chosen) if chosen else None
     if default_mailbox is None and not mailboxes:
         default_mailbox = existing_profile.default_mailbox
     default_drive_id = _drive_id(drive) if drive else existing_profile.default_drive_id
@@ -77,9 +100,51 @@ def bootstrap_profile(
         "default_drive_name": default_drive_name,
         "kchat_team_id": existing_profile.kchat_team_id,
     }
+
+    # What the profile defaults would become, shown before anything is saved.
+    selection = {
+        "account": {"id": selected_account_id, "name": _item_name(account)},
+        "drive": {"id": default_drive_id, "name": default_drive_name},
+        "mailbox": default_mailbox,
+        "candidates": {
+            "accounts": len(accounts),
+            "drives": len(drives),
+            "mailboxes": len(mailboxes),
+        },
+        "writes": "local profile config only",
+    }
+
+    if dry_run:
+        return {
+            "profile": profile_name,
+            "dry_run": True,
+            "saved": False,
+            "selection": selection,
+            "informaniak_user": _profile_user(profile_data),
+            "account": selection["account"],
+            "default_mailbox": default_mailbox,
+            "default_drive": selection["drive"],
+            "counts": {
+                "accounts": len(accounts),
+                "products": len(products),
+                "services": len(services),
+                "mailboxes": len(mailboxes),
+                "drives": len(drives),
+                "kchat_teams": 0,
+            },
+            "discovered": {
+                "products": products,
+                "services": services,
+                "mailboxes": mailboxes,
+                "drives": drives,
+            },
+        }
+
     profile = manager.replace_metadata(profile_name, make_default=True, **metadata)
 
     return {
+        "saved": True,
+        "selection": selection,
         "profile": profile.name,
         "informaniak_user": profile.informaniak_user,
         "account": {"id": profile.account_id, "name": profile.account_name},
@@ -143,8 +208,26 @@ def _as_items(data: Any) -> list[Mapping[str, Any]]:
     return []
 
 
-def _first_item(items: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    return items[0] if items else None
+def _preferred_mailbox(
+    mailboxes: list[Mapping[str, Any]],
+    preferred_email: str | None,
+    existing_email: str | None,
+) -> str | None:
+    """Match the user's own address, then the configured one. Never guess.
+
+    `mail_discovery.select_default_mailbox` falls back to the first mailbox when
+    neither matches; bootstrap deliberately does not, so an ambiguous choice
+    surfaces instead of silently redirecting every later mail command.
+    """
+    for candidate in (preferred_email, existing_email):
+        wanted = (candidate or "").strip().casefold()
+        if not wanted:
+            continue
+        for mailbox in mailboxes:
+            address = (_mailbox_address(mailbox) or "").strip()
+            if address.casefold() == wanted:
+                return address
+    return None
 
 
 def _drive_resources(data: Any) -> list[Mapping[str, Any]]:
@@ -159,6 +242,57 @@ def _looks_like_catalog_item(item: Mapping[str, Any]) -> bool:
     return bool(_CATALOG_KEYS.intersection(item.keys()))
 
 
+def _select_one(
+    items: list[Mapping[str, Any]],
+    *,
+    kind: str,
+    flag: str,
+    explicit: str | None,
+    non_interactive: bool,
+    identify: Callable[[Mapping[str, Any]], str | None] = None,
+    required: bool = True,
+) -> Mapping[str, Any] | None:
+    """Choose exactly one candidate, never silently picking the first of many.
+
+    A wrong default here silently redirects every later read *and protected
+    write* at the wrong drive or mailbox, so ambiguity is reported with the flag
+    that resolves it rather than guessed.
+    """
+    identify = identify or _item_id
+    if not items:
+        if required:
+            raise BootstrapError(f"No accessible {kind} found")
+        return None
+
+    if explicit:
+        for item in items:
+            if str(identify(item) or "") == str(explicit):
+                return item
+        raise BootstrapError(
+            f"{kind.capitalize()} not found: {explicit}. Available: {_format_choices(items, identify)}"
+        )
+
+    if len(items) == 1:
+        return items[0]
+
+    if non_interactive:
+        raise BootstrapError(
+            f"Multiple {kind} found; rerun with {flag}. Available: {_format_choices(items, identify)}"
+        )
+
+    print(f"Found {kind}:")
+    for index, item in enumerate(items, start=1):
+        print(f"{index}. {_item_name(item) or 'unnamed'} ({identify(item) or 'no id'})")
+    selected = input(f"Use which {kind.rstrip('s')}? ").strip()
+    try:
+        choice = int(selected)
+    except ValueError as exc:
+        raise BootstrapError(f"Invalid {kind} selection: {selected}") from exc
+    if choice < 1 or choice > len(items):
+        raise BootstrapError(f"Invalid {kind} selection: {selected}")
+    return items[choice - 1]
+
+
 def _select_account(
     accounts: list[Mapping[str, Any]],
     *,
@@ -167,17 +301,14 @@ def _select_account(
 ) -> Mapping[str, Any]:
     if not accounts:
         raise BootstrapError("No accessible Informaniak accounts found")
-
     if account_id:
         for account in accounts:
             if _item_id(account) == str(account_id):
                 return account
         choices = _format_choices(accounts)
         raise BootstrapError(f"Account not found: {account_id}. Available accounts: {choices}")
-
     if len(accounts) == 1:
         return accounts[0]
-
     if non_interactive:
         choices = _format_choices(accounts)
         raise BootstrapError(f"Multiple accounts found; rerun with --account-id. Available accounts: {choices}")
@@ -195,8 +326,9 @@ def _select_account(
     return accounts[choice - 1]
 
 
-def _format_choices(items: list[Mapping[str, Any]]) -> str:
-    return ", ".join(f"{_item_id(item) or '?'}: {_item_name(item) or 'unnamed'}" for item in items)
+def _format_choices(items: list[Mapping[str, Any]], identify: Callable | None = None) -> str:
+    identify = identify or _item_id
+    return ", ".join(f"{identify(item) or '?'}: {_item_name(item) or 'unnamed'}" for item in items)
 
 
 def _item_id(item: Mapping[str, Any] | None) -> str | None:

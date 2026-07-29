@@ -1,5 +1,7 @@
 import pytest
 
+import pytest
+
 from infomaniak_cli.bootstrap import BootstrapError, bootstrap_profile
 from infomaniak_cli.profiles import ProfileManager
 
@@ -19,7 +21,7 @@ def test_bootstrap_auto_selects_single_account_and_saves_discovered_account_defa
     manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
@@ -40,7 +42,7 @@ def test_bootstrap_auto_selects_single_account_and_saves_discovered_account_defa
 
     assert result["profile"] == "work"
     assert result["account"]["id"] == "42"
-    assert result["informaniak_user"] == "gui@example.com"
+    assert result["informaniak_user"] == "owner@example.com"
     assert api.calls == [
         ("/2/profile", None),
         ("/1/accounts", None),
@@ -50,7 +52,7 @@ def test_bootstrap_auto_selects_single_account_and_saves_discovered_account_defa
         ("/2/drive", {"account_id": "42"}),
     ]
     profile = manager.get("work")
-    assert profile.informaniak_user == "gui@example.com"
+    assert profile.informaniak_user == "owner@example.com"
     assert profile.account_id == "42"
     assert profile.account_name == "Example Co"
     assert profile.mail_hosting_id == "mail-1"
@@ -65,7 +67,7 @@ def test_bootstrap_enriches_mailbox_and_drive_defaults_from_optional_endpoints(t
     manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
@@ -106,7 +108,13 @@ def test_bootstrap_enriches_mailbox_and_drive_defaults_from_optional_endpoints(t
         }
     )
 
-    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
+    # 0.2.19: two drives and two mailboxes, and the profile user matches neither
+    # mailbox — both choices are ambiguous, so they must be stated explicitly
+    # rather than silently resolved to the first candidate.
+    result = bootstrap_profile(
+        "work", api, manager=manager, non_interactive=True,
+        drive_id="777", mailbox="contact@example.com",
+    )
 
     assert result["default_mailbox"] == "contact@example.com"
     assert result["default_drive"] == {"id": "777", "name": "Example Documents"}
@@ -190,7 +198,7 @@ def test_bootstrap_finds_drive_with_account_filtered_drive_endpoint(tmp_path):
     manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {"result": "success", "data": []},
             "/1/accounts/42/services": {"result": "success", "data": []},
@@ -226,7 +234,7 @@ def test_bootstrap_preserves_existing_drive_when_drive_endpoint_is_empty(tmp_pat
     )
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
@@ -258,7 +266,7 @@ def test_bootstrap_preserves_existing_drive_when_drive_endpoint_returns_catalog_
     )
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
@@ -288,7 +296,7 @@ def test_bootstrap_preserves_existing_drive_when_drive_response_has_no_real_driv
     manager.create_or_update("work", default_drive_id="3000001", make_default=True)
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {"result": "success", "data": []},
             "/1/accounts/42/services": {"result": "success", "data": []},
@@ -310,7 +318,7 @@ def test_bootstrap_preserves_kchat_team_without_probing_main_api(tmp_path):
     manager.create_or_update("work", kchat_team_id="54", make_default=True)
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
@@ -337,7 +345,7 @@ def test_bootstrap_continues_when_optional_service_endpoints_are_missing(tmp_pat
     manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
@@ -380,7 +388,7 @@ def test_bootstrap_does_not_wipe_existing_service_config_on_partial_discovery_fa
     )
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {"result": "success", "data": []},
             "/1/accounts/42/services": {"result": "success", "data": []},
@@ -408,7 +416,7 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
     )
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
             "/1/accounts/42/products": {
                 "result": "success",
@@ -428,7 +436,7 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
             },
             "/1/mail_hostings/3000003/mailboxes": {
                 "result": "success",
-                "data": [{"id": "mbox-1", "email": "gui@example.com"}],
+                "data": [{"id": "mbox-1", "email": "owner@example.com"}],
             },
             "/2/drive": {"result": "success", "data": []},
         }
@@ -437,7 +445,7 @@ def test_bootstrap_does_not_save_service_catalog_ids_as_resource_defaults(tmp_pa
     result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
 
     assert result["mail_hosting_id"] == "3000003"
-    assert result["default_mailbox"] == "gui@example.com"
+    assert result["default_mailbox"] == "owner@example.com"
     assert result["default_drive"] == {"id": None, "name": None}
     assert result["kchat_team_id"] is None
     profile = manager.get("work")
@@ -453,7 +461,7 @@ def test_bootstrap_non_interactive_requires_account_id_when_multiple_accounts(tm
     manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {
                 "result": "success",
                 "data": [
@@ -478,7 +486,7 @@ def test_bootstrap_uses_explicit_account_id_when_multiple_accounts(tmp_path):
     manager.create_or_update("work", make_default=True)
     api = FakeAPI(
         {
-            "/2/profile": {"result": "success", "data": {"email": "gui@example.com"}},
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
             "/1/accounts": {
                 "result": "success",
                 "data": [
@@ -495,3 +503,117 @@ def test_bootstrap_uses_explicit_account_id_when_multiple_accounts(tmp_path):
     bootstrap_profile("work", api, manager=manager, account_id="42", non_interactive=True)
 
     assert manager.get("work").account_name == "Example Co"
+
+
+# --- v0.2.19 multi-service selection --------------------------------------
+
+
+def _multi_drive_api():
+    return FakeAPI(
+        {
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
+            "/1/accounts/42/products": {"result": "success", "data": []},
+            "/1/accounts/42/services": {"result": "success", "data": []},
+            "/2/drive": {
+                "result": "success",
+                "data": [
+                    {"id": 777, "name": "Example Documents", "account_id": 42, "role": "admin"},
+                    {"id": 778, "name": "Shared Admin", "account_id": 42, "role": "admin"},
+                ],
+            },
+        }
+    )
+
+
+def test_bootstrap_refuses_to_guess_between_several_drives(tmp_path):
+    """0.2.19: a silent first-drive pick redirected every later drive command."""
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+
+    with pytest.raises(BootstrapError) as excinfo:
+        bootstrap_profile("work", _multi_drive_api(), manager=manager, non_interactive=True)
+
+    message = str(excinfo.value)
+    assert "--drive-id" in message
+    # the error must list what to choose between, not just complain
+    assert "777" in message and "778" in message
+    assert "Example Documents" in message and "Shared Admin" in message
+
+
+def test_bootstrap_selects_the_named_drive(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+
+    result = bootstrap_profile(
+        "work", _multi_drive_api(), manager=manager, non_interactive=True, drive_id="778"
+    )
+
+    assert result["default_drive"] == {"id": "778", "name": "Shared Admin"}
+    assert manager.get("work").default_drive_id == "778"
+
+
+def test_bootstrap_rejects_an_unknown_drive_id_with_the_valid_choices(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+
+    with pytest.raises(BootstrapError) as excinfo:
+        bootstrap_profile(
+            "work", _multi_drive_api(), manager=manager, non_interactive=True, drive_id="999"
+        )
+
+    assert "999" in str(excinfo.value)
+    assert "777" in str(excinfo.value)
+
+
+def test_bootstrap_single_drive_is_still_auto_selected(tmp_path):
+    """Unambiguous cases must behave exactly as before."""
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+    api = FakeAPI(
+        {
+            "/2/profile": {"result": "success", "data": {"email": "owner@example.com"}},
+            "/1/accounts": {"result": "success", "data": [{"id": 42, "name": "Example Co"}]},
+            "/1/accounts/42/products": {"result": "success", "data": []},
+            "/1/accounts/42/services": {"result": "success", "data": []},
+            "/2/drive": {
+                "result": "success",
+                "data": [{"id": 777, "name": "Example Documents", "account_id": 42, "role": "admin"}],
+            },
+        }
+    )
+
+    result = bootstrap_profile("work", api, manager=manager, non_interactive=True)
+
+    assert result["default_drive"] == {"id": "777", "name": "Example Documents"}
+
+
+def test_bootstrap_dry_run_reports_the_selection_and_saves_nothing(tmp_path):
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+
+    result = bootstrap_profile(
+        "work", _multi_drive_api(), manager=manager,
+        non_interactive=True, drive_id="778", dry_run=True,
+    )
+
+    assert result["dry_run"] is True
+    assert result["saved"] is False
+    assert result["selection"]["drive"] == {"id": "778", "name": "Shared Admin"}
+    assert result["selection"]["candidates"]["drives"] == 2
+    assert result["selection"]["writes"] == "local profile config only"
+    # nothing was persisted
+    assert manager.get("work").default_drive_id is None
+
+
+def test_bootstrap_performs_no_service_write(tmp_path):
+    """Bootstrap changes local config only; it must never mutate a service."""
+    manager = ProfileManager(config_dir=tmp_path)
+    manager.create_or_update("work", make_default=True)
+    api = _multi_drive_api()
+
+    bootstrap_profile("work", api, manager=manager, non_interactive=True, drive_id="777")
+
+    # FakeAPI records reads as (path, params); any write would need another verb
+    assert all(not isinstance(call[0], str) or not call[0].startswith(("POST", "PUT", "DELETE"))
+               for call in api.calls)
