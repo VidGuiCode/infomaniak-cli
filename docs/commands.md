@@ -404,11 +404,47 @@ ik contacts search "accountant"
 ik contacts search "example.com" --json
 ik contacts show <contact_id> --json
 ik contacts show <contact_id> --json --raw
+ik contacts export --output backup.vcf
+ik contacts export --format json --json
+ik contacts duplicates --json
 ```
 
 `ik contacts list`, `ik contacts search`, and `ik contacts show` use the configured CardDAV collection URL. `ik auth contacts` auto-discovers that collection from the default DAV base `https://sync.infomaniak.com/`; pass `--url` to override or `--no-discover` to save a URL verbatim. JSON output defaults to a stable slim contact schema. Add `--raw` with `--json` to include the full parsed contact payload, including the raw vCard text when available.
 
 Search is client-side and matches available name, email, phone, and organization fields case-insensitively.
+
+`ik contacts export` is read-only. It writes the address book as `--format vcf` (default) or
+`json`, to `--output <path>` or stdout, and refuses to overwrite an existing file without
+`--force`. vCard output copies each contact's original card **verbatim**, so photos, custom `X-`
+properties and anything else this CLI does not model survive a backup round trip; contacts without
+a parseable vCard are reported in `skipped` rather than silently dropped. With `--json`/`--compact`
+and no `--output`, the export travels inside the structured envelope as `body`.
+
+Parsed contacts now also carry `addresses` (all seven `ADR` components), `groups` (`CATEGORIES`),
+and `typed_emails`/`typed_phones` that preserve `TYPE=` parameters. The flat `emails` and `phones`
+lists are unchanged, so existing consumers keep working.
+
+`ik contacts duplicates` is read-only. It groups candidates by shared email address first, then by
+display name, and reports which key matched so you can judge a name-only match yourself.
+
+`ik contacts merge <primary_id> <secondary_id>` unions the secondary's fields onto the primary.
+Conflicting scalar fields keep the **primary's** value and are listed as conflicts rather than
+resolved silently. **The secondary contact is never deleted** — remove it explicitly with
+`ik contacts delete` if you want to. The write touches the primary only, conditionally.
+
+`ik contacts import <file.vcf>` accepts a document containing one or more vCards. Collisions are
+detected by UID first, then by email, and a colliding contact is **skipped by default**; pass
+`--update-existing` to update it instead, and even then the write is conditional on the current
+ETag. `--dry-run` reports how many would be created and how many collide, on which key, without
+writing anything. If a failure occurs partway through, the CLI reports how many contacts were
+already written.
+
+`ik contacts delete <contact_id>` resolves exactly one contact and deletes it with
+`If-Match: <etag>`, so a contact changed remotely since it was resolved is never removed. The
+preview shows the display name, emails, phones and organization, states plainly that the deletion
+is irreversible, and the result reports whether removal was confirmed.
+
+Still excluded: silent merge, bulk delete, and destructive address-book sync.
 
 Protected writes:
 
@@ -417,6 +453,10 @@ ik --profile work contacts create --name "Example Person" --email person@example
 ik --profile work contacts create --name "Example Person" --email person@example.com
 ik --profile work contacts update <contact_id> --organization "Example Co" --dry-run
 ik --profile work contacts update <contact_id> --phone "+352 123" --yes --json
+ik contacts merge <primary_id> <secondary_id> --dry-run --json
+ik contacts import ./contacts.vcf --dry-run --json
+ik --profile work contacts import ./contacts.vcf --update-existing --yes
+ik contacts delete <contact_id> --dry-run --json
 ```
 
 Create writes one vCard with `If-None-Match: *`, so it never overwrites an existing resource. Update first resolves exactly one contact, previews before/after fields, preserves unmodeled raw vCard properties, and writes with the resolved ETag in `If-Match` to prevent lost updates. Both require confirmation by default, support `--dry-run` and structured output, and allow `--yes` only with an explicit profile.

@@ -64,12 +64,17 @@ from .services.chat import (
 from .services.contacts import (
     ContactError,
     ContactsClient,
+    build_contacts_export,
     build_vcard,
     find_contact,
+    find_duplicate_groups,
+    merge_contact_fields,
     merge_vcard,
+    parse_vcard,
     search_contacts,
     slim_contact,
     slim_contacts,
+    split_vcards,
 )
 from .services.dav_discovery import (
     DavDiscoveryError,
@@ -3518,6 +3523,348 @@ def cmd_contacts_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _contacts_write_gate(args: argparse.Namespace, action: str) -> None:
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            f"Refusing to {action} with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE)."
+        )
+
+
+def cmd_contacts_export(args: argparse.Namespace) -> int:
+    """Read-only export of the address book, preserving full vCard data."""
+    profile, client = _contacts_profile_and_client(args)
+    contacts = client.list_contacts(limit=args.limit)
+
+    skipped: list[str] = []
+    if args.format == "vcf":
+        body, skipped = build_contacts_export(contacts)
+    else:
+        body = pretty_json(contacts if _raw_output(args) else slim_contacts(contacts))
+
+    destination = None
+    if args.output:
+        destination = Path(normalize_local_path(args.output))
+        if destination.exists() and not args.force:
+            raise ValueError(
+                f"Refusing to overwrite an existing export file: {destination}. "
+                "Pass --force to replace it."
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(body, encoding="utf-8", newline="")
+
+    summary = {
+        "profile": profile.name,
+        "addressbook": profile.contacts_url,
+        "format": args.format,
+        "count": len(contacts) - len(skipped),
+        "skipped": skipped,
+        "output": str(destination) if destination else None,
+    }
+
+    if destination is None:
+        if _machine_output(args):
+            print_machine({**summary, "body": body}, args)
+            return 0
+        print(body, end="" if body.endswith("\n") else "\n")
+        if skipped:
+            print(
+                f"note: {len(skipped)} contact(s) had no parseable vCard and were skipped: "
+                f"{', '.join(skipped)}",
+                file=sys.stderr,
+            )
+        return 0
+
+    if _machine_output(args):
+        print_machine(summary, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Exported {summary['count']} contact(s) as {args.format} to {destination}")
+        if skipped:
+            print(f"Skipped {len(skipped)} contact(s) with no parseable vCard.")
+    return 0
+
+
+def cmd_contacts_duplicates(args: argparse.Namespace) -> int:
+    """Read-only duplicate detection. Never merges or deletes anything."""
+    profile, client = _contacts_profile_and_client(args)
+    contacts = client.list_contacts(limit=args.limit)
+    groups = find_duplicate_groups(contacts)
+    payload = {
+        "profile": profile.name,
+        "count": len(groups),
+        "groups": [
+            {
+                "reason": group["reason"],
+                "key": group["key"],
+                "contacts": slim_contacts(list(group["contacts"])),
+            }
+            for group in groups
+        ],
+    }
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Duplicate groups: {len(groups)}")
+        for group in payload["groups"]:
+            print(f"  [{group['reason']}] {group['key']}")
+            for contact in group["contacts"]:
+                print(f"    {contact.get('id')}  {contact.get('display_name') or '-'}")
+        if not groups:
+            print("No duplicate candidates found.")
+    return 0
+
+
+def cmd_contacts_merge(args: argparse.Namespace) -> int:
+    """Merge the secondary contact's fields into the primary. Never deletes."""
+    profile, client = _contacts_profile_and_client(args)
+    contacts = client.list_contacts()
+    primary = find_contact(contacts, args.primary_id)
+    secondary = find_contact(contacts, args.secondary_id)
+    if primary is None:
+        raise ValueError(f"Contact not found: {args.primary_id}")
+    if secondary is None:
+        raise ValueError(f"Contact not found: {args.secondary_id}")
+    if str(primary.get("id")) == str(secondary.get("id")):
+        raise ValueError("Refusing to merge a contact into itself.")
+
+    raw_vcard = primary.get("raw_vcard")
+    if not isinstance(raw_vcard, str):
+        raise ValueError("Primary contact has no raw vCard; refusing an unsafe merge.")
+
+    merged, conflicts = merge_contact_fields(primary, secondary)
+    uid = str(primary.get("id"))
+    vcard = merge_vcard(
+        raw_vcard,
+        uid=uid,
+        display_name=merged.get("display_name"),
+        given_name=merged.get("given_name"),
+        family_name=merged.get("family_name"),
+        emails=list(merged.get("emails") or []),
+        phones=list(merged.get("phones") or []),
+        organization=merged.get("organization"),
+    )
+
+    plan = {
+        "profile": profile.name,
+        "primary_id": uid,
+        "secondary_id": str(secondary.get("id")),
+        "before": slim_contact(primary),
+        "after": merged,
+        "conflicts": conflicts,
+        "secondary_deleted": False,
+    }
+
+    def _preview() -> None:
+        print(f"Profile: {profile.name}")
+        print(f"Merging {plan['secondary_id']} into {uid}")
+        print(f"Emails after: {', '.join(merged.get('emails') or []) or '-'}")
+        print(f"Phones after: {', '.join(merged.get('phones') or []) or '-'}")
+        for conflict in conflicts:
+            print(
+                f"  conflict on {conflict['field']}: keeping primary "
+                f"{conflict['primary']!r} over {conflict['secondary']!r}"
+            )
+        print(
+            f"The secondary contact {plan['secondary_id']} is NOT deleted. "
+            f"Remove it explicitly with `ik contacts delete {plan['secondary_id']}` if you want to."
+        )
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "vcard": vcard, "dry_run": True, "merged": False}, args)
+        else:
+            _preview()
+            print("Dry run: nothing was merged.")
+        return 0
+
+    _contacts_write_gate(args, "merge contacts")
+    if not _machine_output(args):
+        _preview()
+    if not _confirm(args, "Merge into the primary contact? [y/N] ", action="contacts merge"):
+        print("Merge cancelled.")
+        return 2
+
+    client.update_contact(vcard, primary)
+    readback = find_contact(client.list_contacts(), uid)
+    if _machine_output(args):
+        print_machine(
+            {**plan, "merged": True, "readback": slim_contact(readback) if readback else None}, args
+        )
+    else:
+        print(f"Merged into {uid}. The secondary contact was left untouched.")
+    return 0
+
+
+def cmd_contacts_import(args: argparse.Namespace) -> int:
+    """Import vCards with collision detection and a no-overwrite default."""
+    profile, client = _contacts_profile_and_client(args)
+    source = Path(normalize_local_path(args.path))
+    if not source.exists():
+        raise ValueError(f"Import file does not exist: {source}")
+    if not source.is_file():
+        raise ValueError(f"Import source is not a single file: {source}")
+
+    cards = split_vcards(source.read_text(encoding="utf-8", errors="replace"))
+    if not cards:
+        raise ValueError(f"No vCards found in {source}.")
+
+    existing = client.list_contacts()
+    by_uid = {str(c.get("id")): c for c in existing if c.get("id")}
+    by_email: dict[str, Mapping[str, Any]] = {}
+    for contact in existing:
+        for email in contact.get("emails") or []:
+            by_email.setdefault(str(email).casefold(), contact)
+
+    planned: list[dict[str, Any]] = []
+    for card in cards:
+        parsed = parse_vcard(card)
+        uid = str(parsed.get("id") or "")
+        collision = by_uid.get(uid)
+        reason = "uid" if collision else None
+        if collision is None:
+            for email in parsed.get("emails") or []:
+                candidate = by_email.get(str(email).casefold())
+                if candidate is not None:
+                    collision, reason = candidate, "email"
+                    break
+        planned.append(
+            {
+                "uid": uid,
+                "display_name": parsed.get("display_name"),
+                "vcard": card,
+                "collides_with": str(collision.get("id")) if collision else None,
+                "collision_reason": reason,
+                "existing": collision,
+            }
+        )
+
+    creates = [item for item in planned if item["collides_with"] is None]
+    collisions = [item for item in planned if item["collides_with"] is not None]
+    plan = {
+        "profile": profile.name,
+        "source": str(source),
+        "total": len(planned),
+        "to_create": len(creates),
+        "collisions": len(collisions),
+        "update_existing": bool(args.update_existing),
+        "entries": [
+            {k: v for k, v in item.items() if k not in {"vcard", "existing"}} for item in planned
+        ],
+    }
+
+    def _preview() -> None:
+        print(f"Profile: {profile.name}")
+        print(f"Source: {source}")
+        print(f"vCards found: {len(planned)}")
+        print(f"Would create: {len(creates)}")
+        print(f"Collisions: {len(collisions)}")
+        for item in collisions:
+            print(
+                f"  {item['uid'] or '(no uid)'} collides with {item['collides_with']} "
+                f"by {item['collision_reason']}"
+            )
+        print(
+            "Existing contacts are skipped unless --update-existing is passed."
+            if not args.update_existing
+            else "--update-existing: colliding contacts will be updated conditionally."
+        )
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "created": 0, "updated": 0}, args)
+        else:
+            _preview()
+            print("Dry run: nothing was imported.")
+        return 0
+
+    _contacts_write_gate(args, "import contacts")
+    if not _machine_output(args):
+        _preview()
+    if not _confirm(args, f"Import {len(planned)} vCard(s)? [y/N] ", action="contacts import"):
+        print("Import cancelled.")
+        return 2
+
+    results: list[dict[str, Any]] = []
+    for item in planned:
+        uid = item["uid"]
+        try:
+            if item["collides_with"] is None:
+                client.create_contact(item["vcard"], uid)
+                results.append({"uid": uid, "action": "created"})
+            elif args.update_existing:
+                client.update_contact(item["vcard"], item["existing"])
+                results.append({"uid": uid, "action": "updated"})
+            else:
+                results.append({"uid": uid, "action": "skipped"})
+        except ContactError as exc:
+            done = [r for r in results if r["action"] in {"created", "updated"}]
+            print(
+                f"error: import stopped at {uid or '(no uid)'}: {exc}. "
+                f"{len(done)} contact(s) were already written.",
+                file=sys.stderr,
+            )
+            raise
+
+    created = sum(1 for r in results if r["action"] == "created")
+    updated = sum(1 for r in results if r["action"] == "updated")
+    payload = {**plan, "created": created, "updated": updated, "results": results}
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        skipped = len(results) - created - updated
+        print(f"Imported: {created} created, {updated} updated, {skipped} skipped.")
+    return 0
+
+
+def cmd_contacts_delete(args: argparse.Namespace) -> int:
+    """Delete one exactly-resolved contact, conditional on its ETag."""
+    profile, client = _contacts_profile_and_client(args)
+    contact = find_contact(client.list_contacts(), args.contact_id)
+    if contact is None:
+        raise ValueError(f"Contact not found: {args.contact_id}")
+
+    slim = slim_contact(contact)
+    plan = {
+        "profile": profile.name,
+        "addressbook": profile.contacts_url,
+        "contact_id": str(contact.get("id")),
+        "contact": slim,
+    }
+
+    def _preview() -> None:
+        print(f"Profile: {profile.name}")
+        print(f"Contact: {slim.get('display_name') or '-'} (id {plan['contact_id']})")
+        print(f"Emails: {', '.join(slim.get('emails') or []) or '-'}")
+        print(f"Phones: {', '.join(slim.get('phones') or []) or '-'}")
+        print(f"Organization: {slim.get('organization') or '-'}")
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "deleted": False}, args)
+        else:
+            _preview()
+            print("Dry run: nothing was deleted.")
+        return 0
+
+    _contacts_write_gate(args, "delete a contact")
+    if not _machine_output(args):
+        _preview()
+        print("This permanently removes the contact and cannot be undone.")
+    if not _confirm(args, "Delete this contact? [y/N] ", action="contacts delete"):
+        print("Contact deletion cancelled.")
+        return 2
+
+    result = client.delete_contact(contact)
+    gone = find_contact(client.list_contacts(), plan["contact_id"]) is None
+    if _machine_output(args):
+        print_machine({**plan, "deleted": True, "confirmed_gone": gone, "result": result}, args)
+    else:
+        print(f"Deleted contact {plan['contact_id']} (confirmed removed: {gone}).")
+    return 0
+
+
 def cmd_contacts_update(args: argparse.Namespace) -> int:
     profile, client = _contacts_profile_and_client(args)
     changed_fields = ("name", "given_name", "family_name", "emails", "phones", "organization")
@@ -5409,6 +5756,51 @@ def build_parser() -> argparse.ArgumentParser:
     contacts_update.add_argument("--json", action="store_true")
     contacts_update.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     contacts_update.set_defaults(func=cmd_contacts_update)
+
+    contacts_export = contacts_sub.add_parser("export", help="Export contacts as vcf or json (read-only)")
+    contacts_export.add_argument("--format", choices=("vcf", "json"), default="vcf", help="Export format. Defaults to vcf.")
+    contacts_export.add_argument("--output", help="Write to this file instead of stdout.")
+    contacts_export.add_argument("--force", action="store_true", help="Overwrite an existing --output file.")
+    contacts_export.add_argument("--limit", type=int, help="Maximum contacts to export.")
+    contacts_export.add_argument("--json", action="store_true")
+    contacts_export.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_export.add_argument("--raw", action="store_true", help="With --format json, emit full parsed contacts.")
+    contacts_export.set_defaults(func=cmd_contacts_export)
+
+    contacts_duplicates = contacts_sub.add_parser("duplicates", help="List duplicate candidates (read-only)")
+    contacts_duplicates.add_argument("--limit", type=int, help="Maximum contacts to scan.")
+    contacts_duplicates.add_argument("--json", action="store_true")
+    contacts_duplicates.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_duplicates.set_defaults(func=cmd_contacts_duplicates)
+
+    contacts_merge = contacts_sub.add_parser("merge", help="Merge one contact into another (protected write)")
+    contacts_merge.add_argument("primary_id", help="Contact that is kept and updated.")
+    contacts_merge.add_argument("secondary_id", help="Contact whose fields are merged in. Never deleted.")
+    contacts_merge.add_argument("--dry-run", action="store_true", help="Preview the merge without writing.")
+    contacts_merge.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    contacts_merge.add_argument("--json", action="store_true")
+    contacts_merge.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_merge.set_defaults(func=cmd_contacts_merge)
+
+    contacts_import = contacts_sub.add_parser("import", help="Import vCards (no-overwrite by default)")
+    contacts_import.add_argument("path", help="Path to a .vcf file containing one or more vCards.")
+    contacts_import.add_argument(
+        "--update-existing", dest="update_existing", action="store_true",
+        help="Update colliding contacts instead of skipping them.",
+    )
+    contacts_import.add_argument("--dry-run", action="store_true", help="Summarize without importing.")
+    contacts_import.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    contacts_import.add_argument("--json", action="store_true")
+    contacts_import.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_import.set_defaults(func=cmd_contacts_import)
+
+    contacts_delete = contacts_sub.add_parser("delete", help="Delete one resolved contact (irreversible)")
+    contacts_delete.add_argument("contact_id", help="Exact contact ID or UID.")
+    contacts_delete.add_argument("--dry-run", action="store_true", help="Preview without deleting.")
+    contacts_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    contacts_delete.add_argument("--json", action="store_true")
+    contacts_delete.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_delete.set_defaults(func=cmd_contacts_delete)
 
     calendar = sub.add_parser("calendar", help="Read-only CalDAV calendar commands")
     calendar_sub = calendar.add_subparsers(dest="calendar_command", required=True)

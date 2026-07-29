@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.17] - 2026-07-29
+### Added
+- **Read-only export first:** `ik contacts export` writes the address book as `vcf` (default) or
+  `json`, to `--output <path>` or stdout. vCard output copies each contact's original card
+  **verbatim**, so photos, custom `X-` properties and anything else the CLI does not model survive
+  a backup round trip. Contacts without a parseable vCard are reported in `skipped`, never
+  silently dropped. An existing output file needs `--force`.
+- **Richer field modelling:** `ADR` addresses (all seven components), `CATEGORIES` groups, and
+  `TYPE=` parameters on `EMAIL`/`TEL`. The flat `emails`/`phones` lists are unchanged for
+  compatibility; `typed_emails`/`typed_phones`/`addresses`/`groups` are additive.
+- **Duplicate detection:** `ik contacts duplicates` is read-only and groups candidates by shared
+  email first, then by display name, reporting which key matched.
+- **Merge with preview:** `ik contacts merge <primary_id> <secondary_id>` unions the two contacts
+  onto the primary. Conflicting scalar fields keep the primary's value and are reported rather
+  than hidden. **The secondary is never deleted** — removing it stays an explicit, separate step.
+- **Import with a no-overwrite default:** `ik contacts import <file.vcf>` detects collisions by UID
+  then by email, and **skips** colliding contacts unless `--update-existing` is passed; even then
+  the write is conditional on the current ETag. A failure partway through reports how many
+  contacts were already written.
+- **Single-contact delete:** `ik contacts delete <contact_id>` resolves exactly one contact and
+  deletes it with `If-Match: <etag>`, so a contact changed remotely since resolution is never
+  removed. 412 maps to "changed remotely; nothing was deleted". The preview shows name, emails,
+  phones and organization, states plainly that it is irreversible, and the result reports whether
+  removal was confirmed.
+
+### Notes
+- Silent merge, bulk delete, and destructive address-book sync remain excluded.
+
 ## [0.2.16] - 2026-07-29
 ### Added
 - **`ik chat reply <post_id>`:** replies in a thread. The channel is derived from the resolved

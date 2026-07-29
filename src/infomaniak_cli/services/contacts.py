@@ -91,6 +91,47 @@ class ContactsClient:
         uid = str(contact.get("id") or "")
         return self._put_vcard(str(resource_url), vcard, uid=uid, etag=str(etag))
 
+    def delete_contact(self, contact: Mapping[str, Any]) -> dict[str, Any]:
+        """Delete one exactly-resolved contact, conditional on its ETag.
+
+        ``If-Match`` means a contact changed remotely since it was resolved is
+        never removed on stale information.
+        """
+        resource_url = contact.get("url")
+        if not resource_url:
+            raise ContactError(
+                "Resolved contact has no CardDAV resource URL; refusing an unsafe delete."
+            )
+        etag = contact.get("etag")
+        if not etag:
+            raise ContactError(
+                "Resolved contact has no ETag; refusing an unconditional delete."
+            )
+        headers = {
+            "Authorization": _basic_auth(self.username, self.password),
+            "If-Match": str(etag),
+        }
+        request = _MethodRequest(str(resource_url), method="DELETE", headers=headers)
+        try:
+            with self._opener(request) as response:
+                status = getattr(response, "status", None) or getattr(response, "code", 204)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 412:
+                raise ContactError(
+                    "Contact changed remotely since it was resolved; nothing was deleted."
+                ) from exc
+            raise ContactError(f"Contacts CardDAV delete failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise ContactError(
+                f"Contacts CardDAV delete failed: "
+                f"{redact_secret(str(exc.reason), secrets=[self.password])}"
+            ) from exc
+        except OSError as exc:
+            raise ContactError(
+                f"Contacts CardDAV delete failed: {redact_secret(str(exc), secrets=[self.password])}"
+            ) from exc
+        return {"url": str(resource_url), "status": status, "deleted": True}
+
     def _put_vcard(
         self,
         resource_url: str,
@@ -169,6 +210,12 @@ def slim_contact(contact: Mapping[str, Any]) -> dict[str, Any]:
         "emails": _string_list(contact.get("emails")),
         "phones": _string_list(contact.get("phones")),
         "organization": _string_or_none(contact.get("organization")),
+        # 0.2.17: richer multi-value fields. `emails`/`phones` stay flat lists so
+        # existing consumers keep working; the typed variants carry TYPE=.
+        "typed_emails": list(contact.get("typed_emails") or []),
+        "typed_phones": list(contact.get("typed_phones") or []),
+        "addresses": list(contact.get("addresses") or []),
+        "groups": _string_list(contact.get("groups")),
     }
 
 
@@ -287,6 +334,115 @@ def merge_vcard(
     return "\r\n".join([*preserved, *replacement_lines, "END:VCARD"]) + "\r\n"
 
 
+def build_contacts_export(contacts: list[Mapping[str, Any]]) -> tuple[str, list[str]]:
+    """Concatenate each contact's original vCard verbatim.
+
+    Returns ``(vcf, skipped_ids)``. Copying ``raw_vcard`` untouched is what makes
+    an export a faithful backup: photos, custom ``X-`` properties and anything
+    else this CLI does not model survive a round trip.
+    """
+    blocks: list[str] = []
+    skipped: list[str] = []
+    for contact in contacts:
+        raw = contact.get("raw_vcard")
+        if not raw or not isinstance(raw, str) or "BEGIN:VCARD" not in raw.upper():
+            skipped.append(str(contact.get("id") or contact.get("uid") or "<unknown>"))
+            continue
+        blocks.append(raw.strip("\r\n"))
+    return "\r\n".join(blocks) + ("\r\n" if blocks else ""), skipped
+
+
+def split_vcards(text: str) -> list[str]:
+    """Split a multi-vCard document into individual vCard strings."""
+    cards: list[str] = []
+    current: list[str] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        upper = line.strip().upper()
+        if upper == "BEGIN:VCARD":
+            current = [line]
+        elif upper == "END:VCARD":
+            if current:
+                current.append(line)
+                cards.append("\r\n".join(current) + "\r\n")
+                current = []
+        elif current:
+            current.append(line)
+    return cards
+
+
+def _normalized_key(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def find_duplicate_groups(contacts: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Group contacts that share an email address, or failing that a display name.
+
+    Detection only — nothing here merges or deletes. Email is checked first
+    because it is the stronger signal; a name-only match is reported separately
+    so the caller can judge it.
+    """
+    groups: list[dict[str, Any]] = []
+    claimed: set[int] = set()
+
+    by_email: dict[str, list[int]] = {}
+    for index, contact in enumerate(contacts):
+        for email in _string_list(contact.get("emails")):
+            key = _normalized_key(email)
+            if key:
+                by_email.setdefault(key, []).append(index)
+    for key, indexes in by_email.items():
+        unique = sorted(set(indexes))
+        if len(unique) > 1:
+            groups.append({"reason": "email", "key": key, "contacts": [contacts[i] for i in unique]})
+            claimed.update(unique)
+
+    by_name: dict[str, list[int]] = {}
+    for index, contact in enumerate(contacts):
+        if index in claimed:
+            continue
+        key = _normalized_key(contact.get("display_name"))
+        if key:
+            by_name.setdefault(key, []).append(index)
+    for key, indexes in by_name.items():
+        unique = sorted(set(indexes))
+        if len(unique) > 1:
+            groups.append({"reason": "display_name", "key": key, "contacts": [contacts[i] for i in unique]})
+
+    return groups
+
+
+def merge_contact_fields(
+    primary: Mapping[str, Any], secondary: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Compute a union of two contacts, favouring the primary on conflicts.
+
+    Returns ``(merged_fields, conflicts)``. The secondary is never modified or
+    deleted here — merging is additive on the primary only, so nothing is lost
+    silently.
+    """
+    merged: dict[str, Any] = {}
+    conflicts: list[dict[str, Any]] = []
+
+    for field in ("display_name", "given_name", "family_name", "organization"):
+        p_value = primary.get(field)
+        s_value = secondary.get(field)
+        if p_value and s_value and _normalized_key(p_value) != _normalized_key(s_value):
+            conflicts.append({"field": field, "primary": p_value, "secondary": s_value})
+        merged[field] = p_value or s_value or None
+
+    for field in ("emails", "phones"):
+        combined: list[str] = []
+        seen: set[str] = set()
+        for value in _string_list(primary.get(field)) + _string_list(secondary.get(field)):
+            key = _normalized_key(value)
+            if key and key not in seen:
+                seen.add(key)
+                combined.append(value)
+        merged[field] = combined
+
+    return merged, conflicts
+
+
 def parse_vcard(vcard: str, *, fallback_id: str | None = None) -> dict[str, Any]:
     data: dict[str, Any] = {
         "id": fallback_id,
@@ -296,6 +452,10 @@ def parse_vcard(vcard: str, *, fallback_id: str | None = None) -> dict[str, Any]
         "emails": [],
         "phones": [],
         "organization": None,
+        "addresses": [],
+        "groups": [],
+        "typed_emails": [],
+        "typed_phones": [],
         "raw_vcard": vcard,
     }
     for line in _unfold_vcard_lines(vcard):
@@ -303,6 +463,8 @@ def parse_vcard(vcard: str, *, fallback_id: str | None = None) -> dict[str, Any]
             continue
         left, value = line.split(":", 1)
         name = left.split(";", 1)[0].upper()
+        params = left.split(";")[1:]
+        value_type = _type_parameter(params)
         value = _unescape_vcard_value(value)
         if name == "UID" and value:
             data["id"] = value
@@ -314,10 +476,28 @@ def parse_vcard(vcard: str, *, fallback_id: str | None = None) -> dict[str, Any]
             data["given_name"] = parts[1] if len(parts) > 1 and parts[1] else None
         elif name == "EMAIL" and value:
             data["emails"].append(value)
+            data["typed_emails"].append({"value": value, "type": value_type})
         elif name == "TEL" and value:
             data["phones"].append(value)
+            data["typed_phones"].append({"value": value, "type": value_type})
         elif name == "ORG" and value:
             data["organization"] = value.split(";", 1)[0]
+        elif name == "ADR" and value:
+            parts = (value.split(";") + [""] * 7)[:7]
+            data["addresses"].append(
+                {
+                    "type": value_type,
+                    "post_office_box": parts[0] or None,
+                    "extended": parts[1] or None,
+                    "street": parts[2] or None,
+                    "locality": parts[3] or None,
+                    "region": parts[4] or None,
+                    "postal_code": parts[5] or None,
+                    "country": parts[6] or None,
+                }
+            )
+        elif name == "CATEGORIES" and value:
+            data["groups"].extend(item.strip() for item in value.split(",") if item.strip())
 
     if not data["display_name"]:
         data["display_name"] = _fallback_display_name(data)
@@ -392,6 +572,15 @@ def _escape_vcard_value(value: str) -> str:
         .replace(";", "\\;")
         .replace(",", "\\,")
     )
+
+
+def _type_parameter(params: list[str]) -> str | None:
+    """Extract a vCard TYPE= parameter value, e.g. EMAIL;TYPE=work."""
+    for param in params:
+        key, _, value = param.partition("=")
+        if key.strip().upper() == "TYPE" and value.strip():
+            return value.strip().strip('"').casefold()
+    return None
 
 
 def _fallback_display_name(data: Mapping[str, Any]) -> str | None:
