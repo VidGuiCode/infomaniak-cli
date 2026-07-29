@@ -3445,6 +3445,134 @@ def _validated_event_uid(value: str) -> str:
     return clean
 
 
+def cmd_calendar_create_series(args: argparse.Namespace) -> int:
+    """Create one event per explicit date, with deterministic per-date UIDs.
+
+    The administrative case this exists for is a fixed list of deadlines. UIDs
+    derive from ``--uid-prefix`` plus each date, so a re-run with ``--if-missing``
+    is a no-op rather than a second set of events. Adds no attendees.
+    """
+    profile, client = _calendar_profile_and_client(args)
+
+    summary = args.summary
+    if not summary.strip():
+        raise ValueError("Refusing to create events with an empty --summary.")
+
+    all_day = getattr(args, "all_day", False)
+    prefix = _validated_event_uid(args.uid_prefix)
+    reminders = list(getattr(args, "reminder_minutes", None) or [])
+    if_missing = getattr(args, "if_missing", False)
+
+    starts: list[datetime.date] = []
+    for raw in args.dates:
+        starts.append(parse_event_input(raw, all_day=all_day))
+    if len(set(starts)) != len(starts):
+        raise ValueError("--date values must be unique; the same start appeared more than once.")
+
+    minutes = getattr(args, "duration_minutes", None)
+    if minutes is not None and minutes <= 0:
+        raise ValueError("--duration-minutes must be greater than zero.")
+
+    planned = []
+    for start in starts:
+        if all_day:
+            end = start + datetime.timedelta(days=1)
+        elif minutes is not None:
+            end = start + datetime.timedelta(minutes=minutes)
+        else:
+            end = start + datetime.timedelta(hours=1)
+        stamp = start.strftime("%Y%m%d") if all_day else start.strftime("%Y%m%dT%H%M")
+        planned.append({"uid": f"{prefix}-{stamp}", "start": start, "end": end})
+
+    uids = [item["uid"] for item in planned]
+    if len(set(uids)) != len(uids):
+        raise ValueError("Derived UIDs collided; use distinct --date values or a different prefix.")
+
+    target = args.calendar or profile.calendar_url
+    plan = {
+        "profile": profile.name,
+        "calendar": target,
+        "summary": summary,
+        "all_day": all_day,
+        "location": args.location,
+        "description": args.description,
+        "reminders": reminders,
+        "if_missing": if_missing,
+        "uid_prefix": prefix,
+        "count": len(planned),
+        "events": [
+            {"uid": item["uid"], "start": item["start"].isoformat(), "end": item["end"].isoformat()}
+            for item in planned
+        ],
+    }
+
+    def _preview() -> None:
+        print(f"Profile: {profile.name}")
+        print(f"Calendar: {target}")
+        print(f"Summary: {summary}")
+        print(f"Events to create: {len(planned)}")
+        for item in plan["events"]:
+            print(f"  {item['start']} -> {item['end']}  (uid {item['uid']})")
+        if reminders:
+            print("Reminders: " + ", ".join(f"{value} min before" for value in reminders))
+        if if_missing:
+            print("Mode: --if-missing (existing UIDs are left untouched)")
+        print("(No attendees are invited; this only writes to your own calendar.)")
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "created": 0}, args)
+        else:
+            _preview()
+            print("Dry run: no events were created.")
+        return 0
+
+    _require_explicit_profile_for_yes(args, "create a series")
+    if not _machine_output(args):
+        _preview()
+    if not _confirm(args, f"Create these {len(planned)} events? [y/N] ", action="calendar create-series"):
+        print("Series creation cancelled.")
+        return 2
+
+    dtstamp = datetime.datetime.now(datetime.UTC)
+    results = []
+    for item in planned:
+        ics = build_event_ics(
+            uid=item["uid"],
+            dtstamp=dtstamp,
+            summary=summary,
+            start=item["start"],
+            end=item["end"],
+            all_day=all_day,
+            description=args.description,
+            location=args.location,
+            reminders=reminders,
+        )
+        try:
+            created = client.create_event(ics, item["uid"], calendar=args.calendar)
+        except CalendarConflictError:
+            if not if_missing:
+                raise
+            results.append({"uid": item["uid"], "created": False, "existed": True})
+            continue
+        results.append(
+            {"uid": item["uid"], "created": True, "existed": False, "url": created.get("url")}
+        )
+
+    created_count = sum(1 for item in results if item["created"])
+    payload = {
+        **plan,
+        "created": created_count,
+        "existed": len(results) - created_count,
+        "results": results,
+    }
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Created {created_count} event(s); {len(results) - created_count} already existed.")
+    return 0
+
+
 def cmd_calendar_create(args: argparse.Namespace) -> int:
     profile, client = _calendar_profile_and_client(args)
 
@@ -4570,6 +4698,43 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_search.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     calendar_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
     calendar_search.set_defaults(func=cmd_calendar_search)
+    calendar_series = calendar_sub.add_parser(
+        "create-series", help="Create one event per explicit date, with deterministic UIDs"
+    )
+    calendar_series.add_argument("--summary", required=True, help="Event title/summary, shared by every date.")
+    calendar_series.add_argument(
+        "--date", dest="dates", action="append", required=True, metavar="WHEN",
+        help="One event start, ISO 8601 (or YYYY-MM-DD with --all-day). Repeatable.",
+    )
+    calendar_series.add_argument(
+        "--uid-prefix", dest="uid_prefix", required=True,
+        help="UID prefix; each event's UID is <prefix>-<date>, so a re-run cannot duplicate.",
+    )
+    calendar_series.add_argument(
+        "--duration-minutes", type=int, dest="duration_minutes",
+        help="Event length in minutes. Defaults to 60 (ignored with --all-day).",
+    )
+    calendar_series.add_argument("--all-day", action="store_true", help="Treat each --date as an all-day date.")
+    calendar_series.add_argument("--location", help="Optional event location.")
+    calendar_series.add_argument("--description", help="Optional event description/notes.")
+    calendar_series.add_argument(
+        "--reminder-minutes", type=int, action="append", dest="reminder_minutes", metavar="MINUTES",
+        help="Display reminder this many minutes before each start. Repeatable.",
+    )
+    calendar_series.add_argument(
+        "--if-missing", action="store_true", dest="if_missing",
+        help="Treat an already-existing UID as a no-op instead of an error.",
+    )
+    calendar_series.add_argument("--calendar", help="Target calendar ID or collection URL.")
+    calendar_series.add_argument("--dry-run", action="store_true", help="Preview every event without creating any.")
+    calendar_series.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    calendar_series.add_argument("--json", action="store_true")
+    calendar_series.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    calendar_series.set_defaults(func=cmd_calendar_create_series)
+
     calendar_repair = calendar_sub.add_parser(
         "repair", help="Resolve and save the profile's real CalDAV collection URL (local config only)"
     )

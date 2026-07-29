@@ -932,6 +932,95 @@ def test_cli_calendar_create_rejects_a_malformed_rrule_before_writing(
     assert not any(call[0] == "create_event" for c in clients for call in c.calls)
 
 
+def test_cli_calendar_create_series_creates_one_event_per_date_with_derived_uids(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create-series", "--summary", "Quarterly deadline",
+        "--date", "2026-03-31T09:00", "--date", "2026-06-30T09:00",
+        "--uid-prefix", "quarterly-2026", "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] == 2
+    assert payload["created"] == 2
+    assert [item["uid"] for item in payload["results"]] == [
+        "quarterly-2026-20260331T0900", "quarterly-2026-20260630T0900"
+    ]
+    creates = [c for client in clients for c in client.calls if c[0] == "create_event"]
+    assert len(creates) == 2
+    assert all("ATTENDEE" not in call[1] for call in creates)
+
+
+def test_cli_calendar_create_series_dry_run_creates_nothing(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create-series", "--summary", "Quarterly deadline",
+        "--date", "2026-03-31T09:00", "--uid-prefix", "quarterly-2026",
+        "--dry-run", "--json",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["created"] == 0
+    assert not any(call[0] == "create_event" for c in clients for call in c.calls)
+
+
+def test_cli_calendar_create_series_is_idempotent_with_if_missing(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+
+    class ConflictingClient(FakeCalendarClient):
+        def create_event(self, ics, uid, *, calendar=None):
+            self.calls.append(("create_event", ics, uid, calendar))
+            raise CalendarConflictError(f"An event with uid {uid} already exists.")
+
+    monkeypatch.setattr(cli, "CalendarClient", ConflictingClient)
+
+    assert cli.main([
+        "calendar", "create-series", "--summary", "Quarterly deadline",
+        "--date", "2026-03-31T09:00", "--date", "2026-06-30T09:00",
+        "--uid-prefix", "quarterly-2026", "--if-missing",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["created"] == 0
+    assert payload["existed"] == 2
+
+
+def test_cli_calendar_create_series_rejects_duplicate_dates(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create-series", "--summary", "Quarterly deadline",
+        "--date", "2026-03-31T09:00", "--date", "2026-03-31T09:00",
+        "--uid-prefix", "quarterly-2026", "--yes", "--profile", "work",
+    ]) == 1
+
+    assert "must be unique" in capsys.readouterr().err
+    assert not any(call[0] == "create_event" for c in clients for call in c.calls)
+
+
+def test_cli_calendar_create_series_requires_explicit_profile_for_yes(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create-series", "--summary", "Quarterly deadline",
+        "--date", "2026-03-31T09:00", "--uid-prefix", "quarterly-2026", "--yes",
+    ]) == 1
+
+    assert "profile is explicit" in capsys.readouterr().err
+    assert not any(call[0] == "create_event" for c in clients for call in c.calls)
+
+
 def test_cli_calendar_create_uses_a_caller_supplied_uid_verbatim(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch)
     clients = _make_recording_client(monkeypatch)
@@ -1058,7 +1147,7 @@ def test_calendar_parser_exposes_lifecycle_writes_but_not_rsvp_or_invites():
 
     assert set(choices) == {
         "list", "upcoming", "today", "search", "show", "export",
-        "create", "update", "cancel", "delete", "repair",
+        "create", "create-series", "update", "cancel", "delete", "repair",
     }
     # 0.2.14 boundary: collaboration and bulk surfaces must not appear yet.
     assert not {"rsvp", "invite", "sync", "import"} & set(choices)
