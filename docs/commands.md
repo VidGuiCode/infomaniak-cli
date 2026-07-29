@@ -220,6 +220,19 @@ ik --profile work drive rm <file_id>
 ik --profile work drive rm <file_id> --yes --json
 ```
 
+Reversible single-item workflows:
+
+```bash
+ik --profile work drive upload ./report.pdf --parent <folder_id> --dry-run
+ik --profile work drive upload /c/Users/user/report.pdf --parent <folder_id> --yes --json
+ik --profile work drive move <file_id> <destination_folder_id> --dry-run
+ik --profile work drive rename <file_id> "New name.pdf" --dry-run
+ik drive trash list --limit 10 --json
+ik drive trash show <file_id> --json
+ik --profile work drive trash restore <file_id> --destination <folder_id> --dry-run
+ik drive share-state <file_id> --json
+```
+
 `ik drive list` uses the selected profile's default kDrive ID and calls `GET /2/drive/{drive_id}/files`. Use `--drive-id <id>` to override the profile default. `--parent <folder_id>` is passed to the same endpoint as `parent_id`.
 
 `ik drive folders` uses the same files endpoint and filters the returned items to folders/directories only. It supports `--drive-id`, `--parent`, `--limit`, `--json`, and `--raw`.
@@ -234,11 +247,17 @@ ik --profile work drive rm <file_id> --yes --json
 
 `ik drive download <file_id>` fetches a file's raw bytes via `GET /2/drive/{drive_id}/files/{file_id}/download` (confirmed live) and writes them locally. It first reads the file's metadata via `GET /2/drive/{drive_id}/files/{file_id}` to resolve the name and reject folders. The server side is read-only — no server change is made. `--output <path>` sets the destination (a directory keeps the remote name; otherwise the exact path is used); with no `--output` it writes the remote name into the current directory. It never overwrites an existing local file unless `--force` is given. Supports `--drive-id`, `--json`, and `--compact`.
 
-On Windows, MSYS paths such as `/c/Users/Gui/Downloads/report.pdf` are translated to native `C:\\Users\\Gui\\Downloads\\report.pdf` paths. The destination parent must already exist; the error names the missing directory and tells you to create it or select an existing path.
+On Windows, MSYS paths such as `/c/Users/user/Downloads/report.pdf` are translated to native `C:\\Users\\user\\Downloads\\report.pdf` paths by the same central normalizer used for download and upload. Ordinary native Windows and Unix paths are left intact. A download destination parent must already exist; the error names the missing directory and tells you to create it or select an existing path.
 
 `ik drive rm <file_id>` resolves one target via `GET /2/drive/{drive_id}/files/{file_id}`, previews its name/type/id, then moves it to trash via `DELETE /2/drive/{drive_id}/files/{file_id}`. This is an undoable soft-delete; JSON includes returned undo metadata such as `cancel_id`. Confirmation is required unless `--yes` is used with an explicit profile. `--dry-run` resolves and previews without deleting. The drive root is refused; permanent, recursive, and bulk deletion are not available.
 
-Not implemented: upload, move, permanent delete, recursive/bulk trash, restore, share changes, or recursive sync.
+`ik drive upload <path>` uploads one local file through `POST /3/drive/{drive_id}/upload` with an octet-stream body, exact `total_size`, destination folder, and `conflict=error`. Remote overwrite/version creation is never selected. Files above 1 GB are refused because chunked upload is not implemented. The destination is resolved first, and the returned file id is read back after upload.
+
+`ik drive move` and `ik drive rename` operate on one resolved id, show before/after state, refuse the drive root, use collision-safe server modes, and read back the result. `drive trash list/show` use the confirmed v3 trash reads; `drive trash restore` restores one exact trashed item through the v2 endpoint, optionally into one resolved destination folder. All four mutations confirm by default, support `--dry-run`, and allow `--yes` only with an explicit profile.
+
+`ik drive share-state <file_id>` is read-only. It reads both the public-link and multi-access endpoints; an absent link is reported as `link: null`. Share creation/revocation remains disabled because recipient, public-link, and permission effects have not been proven safely.
+
+Not implemented: remote overwrite/version upload, permanent delete, empty-trash, recursive/bulk operations, share creation/revocation, chunked upload, or sync.
 
 ## kChat
 

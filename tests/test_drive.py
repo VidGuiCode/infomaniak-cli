@@ -17,7 +17,14 @@ from infomaniak_cli.services.drive import (
     search_files,
     shared_files,
     slim_file,
+    get_share_state,
+    list_trash,
+    move_file,
+    rename_file,
+    restore_file,
+    upload_file,
 )
+from infomaniak_cli.local_paths import normalize_local_path
 
 
 class FakeAPI:
@@ -29,6 +36,8 @@ class FakeAPI:
         self.calls.append((path, params))
         params_key = tuple(sorted(params.items())) if params else None
         response = self.responses.get((path, params_key), self.responses.get(path))
+        if callable(response):
+            response = response()
         if isinstance(response, Exception):
             raise response
         return response
@@ -37,6 +46,8 @@ class FakeAPI:
         self.calls.append(("POST", path, json))
         key = ("POST", path)
         response = self.responses.get(key, self.responses.get(path))
+        if callable(response):
+            response = response()
         if isinstance(response, Exception):
             raise response
         return response
@@ -44,6 +55,8 @@ class FakeAPI:
     def delete(self, path, params=None):
         self.calls.append(("DELETE", path, params))
         response = self.responses.get(("DELETE", path), self.responses.get(path))
+        if callable(response):
+            response = response()
         if isinstance(response, Exception):
             raise response
         return response
@@ -56,6 +69,100 @@ class FakeAPI:
         if response is None:
             raise KeyError(f"no download stub for {path}")
         return response  # (content_bytes, headers)
+
+    def upload(self, path, data, *, params=None):
+        self.calls.append(("UPLOAD", path, data, params))
+        response = self.responses.get(("UPLOAD", path), self.responses.get(path))
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def test_normalize_local_path_handles_windows_msys_and_unix_inputs():
+    assert normalize_local_path("/c/Users/user/report.txt", os_name="nt") == r"C:\Users\user\report.txt"
+    assert normalize_local_path(r"C:\Users\user\report.txt", os_name="nt") == r"C:\Users\user\report.txt"
+    assert normalize_local_path("/home/user/report.txt", os_name="posix") == "/home/user/report.txt"
+
+
+def test_drive_service_upload_uses_octet_stream_with_no_overwrite_conflict():
+    api = FakeAPI(
+        {
+            ("UPLOAD", "/3/drive/drive-1/upload"): {
+                "result": "success",
+                "data": {"id": 83, "name": "report.txt", "type": "file"},
+            }
+        }
+    )
+
+    result = upload_file(api, "drive-1", b"hello", "report.txt", parent_id="123")
+
+    assert result["id"] == 83
+    assert api.calls == [
+        (
+            "UPLOAD",
+            "/3/drive/drive-1/upload",
+            b"hello",
+            {
+                "directory_id": "123",
+                "file_name": "report.txt",
+                "total_size": 5,
+                "conflict": "error",
+            },
+        )
+    ]
+
+
+def test_drive_service_rename_move_trash_restore_and_share_state_routes():
+    api = FakeAPI(
+        {
+            ("POST", "/2/drive/drive-1/files/82/rename"): {
+                "result": "success", "data": {"id": 82, "name": "renamed.txt"}
+            },
+            ("POST", "/3/drive/drive-1/files/82/move/123"): {
+                "result": "success", "data": {"id": 82, "parent_id": 123}
+            },
+            "/3/drive/drive-1/trash": {
+                "result": "success", "data": [{"id": 82, "name": "trashed.txt"}]
+            },
+            ("POST", "/2/drive/drive-1/trash/82/restore"): {
+                "result": "success", "data": {"id": 82, "name": "restored.txt"}
+            },
+            "/2/drive/drive-1/files/82/link": {
+                "result": "success", "data": {"enabled": False}
+            },
+            "/2/drive/drive-1/files/82/access": {
+                "result": "success", "data": {"users": [], "teams": []}
+            },
+        }
+    )
+
+    assert rename_file(api, "drive-1", "82", "renamed.txt")["name"] == "renamed.txt"
+    assert move_file(api, "drive-1", "82", "123")["parent_id"] == 123
+    assert list_trash(api, "drive-1", limit=10)[0]["id"] == 82
+    assert restore_file(api, "drive-1", "82", destination_id="123")["id"] == 82
+    assert get_share_state(api, "drive-1", "82") == {
+        "link": {"enabled": False}, "access": {"users": [], "teams": []}
+    }
+    assert ("POST", "/2/drive/drive-1/files/82/rename", {"name": "renamed.txt"}) in api.calls
+    assert ("POST", "/3/drive/drive-1/files/82/move/123", {"conflict": "error"}) in api.calls
+    assert ("/3/drive/drive-1/trash", {"limit": 10}) in api.calls
+    assert ("POST", "/2/drive/drive-1/trash/82/restore", {"destination_directory_id": 123}) in api.calls
+
+
+def test_drive_share_state_treats_missing_share_link_as_disabled():
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/82/link": InformaniakAPIError(404, "Object not found"),
+            "/2/drive/drive-1/files/82/access": {
+                "result": "success", "data": {"users": [], "teams": []}
+            },
+        }
+    )
+
+    assert get_share_state(api, "drive-1", "82") == {
+        "link": None,
+        "access": {"users": [], "teams": []},
+    }
 
 
 def test_drive_service_create_folder_success():
@@ -694,10 +801,10 @@ def test_cli_drive_download_json_output(tmp_path, monkeypatch, capsys):
 
 def test_normalize_download_path_translates_msys_drive_path_on_windows():
     normalized = cli._normalize_download_path(
-        "/c/Users/Gui/Downloads/report.pdf", os_name="nt"
+        "/c/Users/user/Downloads/report.pdf", os_name="nt"
     )
 
-    assert normalized == r"C:\Users\Gui\Downloads\report.pdf"
+    assert normalized == r"C:\Users\user\Downloads\report.pdf"
 
 
 def test_normalize_download_path_leaves_msys_shape_on_non_windows():
@@ -810,6 +917,345 @@ def test_cli_drive_rm_refuses_drive_root(tmp_path, monkeypatch, capsys):
 
     assert "Refusing to trash the kDrive root" in capsys.readouterr().err
     assert not any(call[0] == "DELETE" for call in api.calls)
+
+
+# --- v0.2.12 reversible file workflows ----------------------------------
+
+
+def test_cli_drive_upload_dry_run_previews_without_reading_or_uploading(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "report.txt"
+    source.write_bytes(b"hello")
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/1": {
+                "result": "success", "data": {"id": 1, "name": "Root", "type": "dir"}
+            }
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "upload", str(source), "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["uploaded"] is False
+    assert payload["before"] is None
+    assert payload["after"]["name"] == "report.txt"
+    assert payload["after"]["bytes"] == 5
+    assert not any(call[0] == "UPLOAD" for call in api.calls)
+
+
+def test_cli_drive_upload_explicit_yes_uses_conflict_error_and_reads_back(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "report.txt"
+    source.write_bytes(b"hello")
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/1": {
+                "result": "success", "data": {"id": 1, "name": "Root", "type": "dir"}
+            },
+            ("UPLOAD", "/3/drive/drive-1/upload"): {
+                "result": "success", "data": {"id": 83, "name": "report.txt", "type": "file"}
+            },
+            "/2/drive/drive-1/files/83": {
+                "result": "success",
+                "data": {"id": 83, "name": "report.txt", "type": "file", "parent_id": 1, "size": 5},
+            },
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main([
+        "--profile", "work", "drive", "upload", str(source), "--yes", "--json"
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["uploaded"] is True
+    assert payload["readback"]["id"] == "83"
+    upload_call = next(call for call in api.calls if call[0] == "UPLOAD")
+    assert upload_call[3]["conflict"] == "error"
+    assert upload_call[3]["total_size"] == 5
+
+
+def test_cli_drive_rename_requires_explicit_profile_for_yes_and_reads_back(tmp_path, monkeypatch, capsys):
+    states = iter([
+        {"result": "success", "data": {"id": 82, "name": "old.txt", "type": "file"}},
+        {"result": "success", "data": {"id": 82, "name": "new.txt", "type": "file"}},
+    ])
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/82": lambda: next(states),
+            ("POST", "/2/drive/drive-1/files/82/rename"): {
+                "result": "success", "data": {"id": 82, "name": "new.txt"}
+            },
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "rename", "82", "new.txt", "--yes"]) == 1
+    assert "profile is explicit" in capsys.readouterr().err
+    assert not any(call[0] == "POST" for call in api.calls)
+
+    states = iter([
+        {"result": "success", "data": {"id": 82, "name": "old.txt", "type": "file"}},
+        {"result": "success", "data": {"id": 82, "name": "new.txt", "type": "file"}},
+    ])
+    api.responses["/2/drive/drive-1/files/82"] = lambda: next(states)
+
+    assert cli.main([
+        "--profile", "work", "drive", "rename", "82", "new.txt", "--yes", "--json"
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["before"]["name"] == "old.txt"
+    assert payload["after"]["name"] == "new.txt"
+    assert payload["readback"]["name"] == "new.txt"
+
+
+def test_cli_drive_move_resolves_destination_uses_conflict_error_and_reads_back(tmp_path, monkeypatch, capsys):
+    states = iter([
+        {"result": "success", "data": {"id": 82, "name": "file.txt", "type": "file", "parent_id": 1}},
+        {"result": "success", "data": {"id": 82, "name": "file.txt", "type": "file", "parent_id": 123}},
+    ])
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/82": lambda: next(states),
+            "/2/drive/drive-1/files/123": {
+                "result": "success", "data": {"id": 123, "name": "Destination", "type": "dir"}
+            },
+            ("POST", "/3/drive/drive-1/files/82/move/123"): {
+                "result": "success", "data": {"id": 82, "parent_id": 123}
+            },
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main([
+        "--profile", "work", "drive", "move", "82", "123", "--yes", "--json"
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["before"]["parent_id"] == "1"
+    assert payload["after"]["parent_id"] == "123"
+    assert payload["readback"]["parent_id"] == "123"
+    assert ("POST", "/3/drive/drive-1/files/82/move/123", {"conflict": "error"}) in api.calls
+
+
+def test_cli_drive_trash_list_show_and_share_state_are_read_only(tmp_path, monkeypatch, capsys):
+    api = FakeAPI(
+        {
+            "/3/drive/drive-1/trash": {
+                "result": "success", "data": [{"id": 82, "name": "trashed.txt", "type": "file"}]
+            },
+            "/3/drive/drive-1/trash/82": {
+                "result": "success", "data": {"id": 82, "name": "trashed.txt", "type": "file"}
+            },
+            "/2/drive/drive-1/files/90": {
+                "result": "success", "data": {"id": 90, "name": "shared.txt", "type": "file"}
+            },
+            "/2/drive/drive-1/files/90/link": {
+                "result": "success", "data": {"enabled": False}
+            },
+            "/2/drive/drive-1/files/90/access": {
+                "result": "success", "data": {"users": [], "teams": []}
+            },
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "trash", "list", "--limit", "5", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["count"] == 1
+    assert cli.main(["drive", "trash", "show", "82", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["item"]["id"] == "82"
+    assert cli.main(["drive", "share-state", "90", "--json"]) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["state"]["link"]["enabled"] is False
+    assert not any(call[0] in {"POST", "DELETE", "UPLOAD"} for call in api.calls)
+
+
+def test_cli_drive_trash_restore_previews_then_reads_back(tmp_path, monkeypatch, capsys):
+    api = FakeAPI(
+        {
+            "/3/drive/drive-1/trash/82": {
+                "result": "success", "data": {"id": 82, "name": "trashed.txt", "type": "file"}
+            },
+            "/2/drive/drive-1/files/123": {
+                "result": "success", "data": {"id": 123, "name": "Restore here", "type": "dir"}
+            },
+            ("POST", "/2/drive/drive-1/trash/82/restore"): {
+                "result": "success", "data": {"id": 82, "name": "trashed.txt"}
+            },
+            "/2/drive/drive-1/files/82": {
+                "result": "success", "data": {"id": 82, "name": "trashed.txt", "type": "file", "parent_id": 123}
+            },
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main([
+        "drive", "trash", "restore", "82", "--destination", "123", "--dry-run", "--json"
+    ]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["dry_run"] is True
+    assert preview["restored"] is False
+    assert not any(call[0] == "POST" for call in api.calls)
+
+    assert cli.main([
+        "--profile", "work", "drive", "trash", "restore", "82",
+        "--destination", "123", "--yes", "--json"
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["restored"] is True
+    assert payload["readback"]["parent_id"] == "123"
+
+
+def test_drive_parser_exposes_reversible_workflows_but_no_permanent_delete():
+    parser = cli.build_parser()
+    drive_parser = parser._subparsers._group_actions[0].choices["drive"]
+    choices = drive_parser._subparsers._group_actions[0].choices
+
+    assert {"upload", "move", "rename", "trash", "share-state"} <= set(choices)
+    assert not {"sync", "purge", "share", "unshare"} & set(choices)
+
+    trash_choices = choices["trash"]._subparsers._group_actions[0].choices
+    assert set(trash_choices) == {"list", "show", "restore"}
+    assert not {"delete", "empty", "purge"} & set(trash_choices)
+
+
+def test_cli_drive_rename_and_move_refuse_the_drive_root(tmp_path, monkeypatch, capsys):
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/1": {
+                "result": "success",
+                "data": {"id": 1, "name": "Root", "type": "dir", "visibility": "is_root"},
+            },
+            "/2/drive/drive-1/files/123": {
+                "result": "success", "data": {"id": 123, "name": "Target", "type": "dir"}
+            },
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "rename", "1", "new-name", "--dry-run"]) == 1
+    assert "Refusing to rename the kDrive root" in capsys.readouterr().err
+
+    assert cli.main(["drive", "move", "1", "123", "--dry-run"]) == 1
+    assert "Refusing to move the kDrive root" in capsys.readouterr().err
+
+    assert not any(call[0] == "POST" for call in api.calls)
+
+
+def test_cli_drive_move_refuses_moving_an_item_into_itself(tmp_path, monkeypatch, capsys):
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/82": {
+                "result": "success", "data": {"id": 82, "name": "Folder", "type": "dir"}
+            }
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "move", "82", "82", "--dry-run"]) == 1
+
+    assert "cannot be moved into itself" in capsys.readouterr().err
+    assert not any(call[0] == "POST" for call in api.calls)
+
+
+def test_cli_drive_move_refuses_a_non_folder_destination(tmp_path, monkeypatch, capsys):
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/82": {
+                "result": "success", "data": {"id": 82, "name": "doc.txt", "type": "file"}
+            },
+            "/2/drive/drive-1/files/91": {
+                "result": "success", "data": {"id": 91, "name": "other.txt", "type": "file"}
+            },
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "move", "82", "91", "--dry-run"]) == 1
+
+    assert "not a kDrive folder" in capsys.readouterr().err
+    assert not any(call[0] == "POST" for call in api.calls)
+
+
+@pytest.mark.parametrize("bad_name", ["", "   ", ".", "..", "a/b", "a\\b"])
+def test_cli_drive_rename_rejects_empty_relative_and_path_like_names(
+    tmp_path, monkeypatch, capsys, bad_name
+):
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/82": {
+                "result": "success", "data": {"id": 82, "name": "old.txt", "type": "file"}
+            }
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "rename", "82", bad_name, "--dry-run"]) == 1
+
+    assert "Remote file name must" in capsys.readouterr().err
+    assert not any(call[0] == "POST" for call in api.calls)
+
+
+def test_cli_drive_upload_refuses_a_missing_source_and_a_directory_source(
+    tmp_path, monkeypatch, capsys
+):
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/1": {
+                "result": "success", "data": {"id": 1, "name": "Root", "type": "dir"}
+            }
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main(["drive", "upload", str(tmp_path / "absent.txt"), "--dry-run"]) == 1
+    assert "does not exist" in capsys.readouterr().err
+
+    folder = tmp_path / "a_folder"
+    folder.mkdir()
+    assert cli.main(["drive", "upload", str(folder), "--dry-run"]) == 1
+    assert "not a single file" in capsys.readouterr().err
+
+    assert not any(call[0] == "UPLOAD" for call in api.calls)
+
+
+def test_cli_drive_upload_aborts_readback_when_the_api_returns_no_file_id(
+    tmp_path, monkeypatch, capsys
+):
+    source = tmp_path / "report.txt"
+    source.write_bytes(b"hello")
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/1": {
+                "result": "success", "data": {"id": 1, "name": "Root", "type": "dir"}
+            },
+            ("UPLOAD", "/3/drive/drive-1/upload"): {
+                "result": "success", "data": {"name": "report.txt", "type": "file"}
+            },
+        }
+    )
+    _setup_drive_profile(tmp_path, monkeypatch, api)
+
+    assert cli.main([
+        "--profile", "work", "drive", "upload", str(source), "--yes", "--json"
+    ]) == 1
+
+    assert "cannot perform safe readback" in capsys.readouterr().err
+
+
+def test_drive_share_state_reraises_errors_other_than_missing_link():
+    api = FakeAPI(
+        {
+            "/2/drive/drive-1/files/82/link": InformaniakAPIError(500, "Server error"),
+            "/2/drive/drive-1/files/82/access": {
+                "result": "success", "data": {"users": [], "teams": []}
+            },
+        }
+    )
+
+    with pytest.raises(InformaniakAPIError):
+        get_share_state(api, "drive-1", "82")
 
 
 def test_cli_drive_recent_requires_drive_id(tmp_path, monkeypatch, capsys):

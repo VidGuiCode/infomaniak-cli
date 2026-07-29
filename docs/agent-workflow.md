@@ -27,6 +27,18 @@ ik mail send --to recipient@example.com --subject "Hello" --body "Message body" 
 An agent must not remove `--dry-run` or add `--yes` until the user has authorized the exact
 profile, sender, recipients, subject, and body. Actual mail writes require a current-session target.
 
+Protected kDrive examples:
+
+```bash
+ik --profile work drive upload ./report.pdf --parent <folder_id> --dry-run --json
+ik --profile work drive move <file_id> <folder_id> --dry-run --json
+ik --profile work drive rename <file_id> "New name.pdf" --dry-run --json
+ik --profile work drive trash restore <file_id> --dry-run --json
+```
+
+Do not remove `--dry-run` or add `--yes` until the exact profile, source item,
+destination, local path, collision behavior, and before/after preview are authorized.
+
 ## Profile selection precedence
 
 1. `--profile <name>` flag (highest — always use this in automation).
@@ -51,7 +63,7 @@ automation should still pass `--profile` explicitly.
 
 - `whoami`, `doctor`, `bootstrap`
 - `account list`, `account products`, `account services`
-- `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`
+- `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive trash list/show`, `drive share-state`
 - `mail list`, `mail unread`, `mail search`, `mail read`, `mail mailboxes`, `mail hostings`, `mail folders`, `mail threads`
 - `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`
 - `contacts list`, `contacts search`, `contacts show`

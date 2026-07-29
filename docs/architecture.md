@@ -1,8 +1,8 @@
 # Architecture
 
-`infomaniak-cli` is a small, read-only Python CLI (`ik`) for Infomaniak/kSuite.
-It is intentionally stdlib-only with no runtime dependencies. This document maps
-the modules and the patterns that keep it testable.
+`infomaniak-cli` is a small Python CLI (`ik`) for Infomaniak/kSuite. Reads are
+broadly available; writes are added only as protected, exact-target workflows.
+This document maps the modules and the patterns that keep it testable.
 
 ## Layout
 
@@ -15,6 +15,7 @@ src/infomaniak_cli/
   config_paths.py   # config/tokens dir resolution (honors IK_CONFIG_DIR)
   secure_store.py   # secure_dir/secure_write: owner-only credential files at rest
   output.py         # pretty/compact JSON, structured error_json, redact(), render_table
+  local_paths.py    # shared Windows/MSYS/Unix local path normalization
   readiness.py      # build_readiness(): per-service "is it set up?" summary
   doctor.py         # run_doctor(): local diagnostics
   pathcheck.py      # read-only install/PATH diagnostics
@@ -23,7 +24,7 @@ src/infomaniak_cli/
   update.py         # self-update (ik update) against GitHub releases
   services/
     account.py        # accounts/products/services + slim_* projections
-    drive.py          # kDrive files/folders/tree/recent/shared/search + slim_*
+    drive.py          # kDrive reads + protected upload/move/rename/trash/restore services
     mail.py           # IMAPClient (read-only BODY.PEEK) + slim_message
     mail_discovery.py # mailboxes / mail hostings
     contacts.py       # CardDAV ContactsClient

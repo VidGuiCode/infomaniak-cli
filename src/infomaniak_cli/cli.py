@@ -18,6 +18,7 @@ from .debug import probe_profile
 from .doctor import run_doctor
 from .completion import generate_bash, generate_fish, generate_powershell, generate_zsh
 from .output import compact_json, error_json, pretty_json, redact, render_table
+from .local_paths import normalize_local_path
 from .pathcheck import plan_path_fix
 from .profiles import ProfileManager
 from .readiness import build_readiness
@@ -75,16 +76,23 @@ from .services.drive import (
     download_file,
     find_file,
     get_file,
+    get_share_state,
+    get_trashed_file,
     is_folder,
     recent_files,
     list_files,
     list_folders,
+    list_trash,
+    move_file,
+    rename_file,
+    restore_file,
     search_files,
     shared_files,
     slim_file,
     slim_files,
     slim_folder_tree,
     trash_file,
+    upload_file,
 )
 from .services.mail import IMAPClient, MailError, SMTPClient, build_mail_message, slim_message
 from .services.mail_discovery import (
@@ -2382,20 +2390,8 @@ def _resolve_download_destination(output: str | None, remote_name: str) -> Path:
 
 
 def _normalize_download_path(path: str, *, os_name: str | None = None) -> str:
-    """Translate an MSYS ``/c/...`` path to native Windows form."""
-    platform = os.name if os_name is None else os_name
-    if (
-        platform == "nt"
-        and len(path) >= 2
-        and path[0] == "/"
-        and path[1].isalpha()
-        and (len(path) == 2 or path[2] == "/")
-    ):
-        drive = path[1].upper()
-        tail = path[3:] if len(path) > 2 else ""
-        native_tail = tail.replace("/", "\\")
-        return f"{drive}:\\{native_tail}"
-    return path
+    """Backward-compatible wrapper around central local path normalization."""
+    return normalize_local_path(path, os_name=os_name)
 
 
 def cmd_drive_download(args: argparse.Namespace) -> int:
@@ -2522,6 +2518,292 @@ def cmd_drive_rm(args: argparse.Namespace) -> int:
         print(f"Moved '{target.get('name') or file_id}' to kDrive trash.")
         if trash.get("cancel_id"):
             print(f"Undo token: {trash['cancel_id']}")
+    return 0
+
+
+def _require_explicit_profile_for_yes(args: argparse.Namespace, action: str) -> None:
+    if getattr(args, "yes", False) and not _profile_is_explicit(args):
+        raise ValueError(
+            f"Refusing to {action} with --yes unless the profile is explicit. "
+            "Pass --profile <name> (or set IK_PROFILE) so automation cannot write to the wrong account."
+        )
+
+
+def _drive_change_plan(
+    profile: Any,
+    drive_id: str,
+    *,
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "profile": profile.name,
+        "drive_id": drive_id,
+        "before": dict(before) if before is not None else None,
+        "after": dict(after),
+    }
+
+
+def _print_drive_change_preview(plan: Mapping[str, Any], action: str) -> None:
+    print(f"Profile: {plan['profile']}")
+    print(f"Drive ID: {plan['drive_id']}")
+    print(f"Action: {action}")
+    before = plan.get("before")
+    if before:
+        print(f"Before: {before.get('name') or '-'} (id {before.get('id') or '-'})")
+    else:
+        print("Before: no remote file")
+    after = plan.get("after") or {}
+    print(f"After: {after.get('name') or '-'}")
+    if after.get("parent_id") is not None:
+        print(f"Destination folder ID: {after['parent_id']}")
+
+
+def _validated_remote_name(name: str) -> str:
+    clean = name.strip()
+    if not clean or clean in {".", ".."}:
+        raise ValueError("Remote file name must not be empty, '.' or '..'.")
+    if "/" in clean or "\\" in clean:
+        raise ValueError("Remote file name must be one name, not a path.")
+    return clean
+
+
+def _resolve_drive_folder(client: Any, drive_id: str, folder_id: str, *, label: str) -> Mapping[str, Any]:
+    folder = get_file(client, drive_id, folder_id)
+    if not is_folder(folder):
+        raise ValueError(f"{label} is not a kDrive folder: {folder_id}")
+    return folder
+
+
+def cmd_drive_upload(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    source = Path(normalize_local_path(args.path))
+    if not source.exists():
+        raise ValueError(f"Local upload source does not exist: {source}")
+    if not source.is_file():
+        raise ValueError(f"Local upload source is not a single file: {source}")
+    size = source.stat().st_size
+    if size > 1_000_000_000:
+        raise ValueError("Single-file upload is limited to 1 GB; chunked uploads are not implemented.")
+
+    name = _validated_remote_name(args.name or source.name)
+    parent_id = str(args.parent_id or "1")
+    _resolve_drive_folder(client, drive_id, parent_id, label="Upload destination")
+    after = {
+        "name": name,
+        "type": "file",
+        "parent_id": parent_id,
+        "bytes": size,
+        "conflict": "error",
+    }
+    plan = _drive_change_plan(profile, drive_id, before=None, after=after)
+
+    if args.dry_run:
+        payload = {**plan, "source": str(source), "dry_run": True, "uploaded": False}
+        if _machine_output(args):
+            print_machine(payload, args)
+        else:
+            _print_drive_change_preview(plan, "upload one file (remote overwrite refused)")
+            print(f"Local source: {source} ({size} bytes)")
+            print("Dry run: nothing was uploaded.")
+        return 0
+
+    _require_explicit_profile_for_yes(args, "upload")
+    if not _machine_output(args):
+        _print_drive_change_preview(plan, "upload one file (remote overwrite refused)")
+        print(f"Local source: {source} ({size} bytes)")
+    if not _confirm(args, "Upload this file? [y/N] ", action="drive upload"):
+        print("Upload cancelled.")
+        return 2
+
+    uploaded = upload_file(client, drive_id, source.read_bytes(), name, parent_id=parent_id)
+    file_id = uploaded.get("id")
+    if file_id is None:
+        raise ValueError("kDrive upload succeeded without a file id; cannot perform safe readback.")
+    readback = slim_file(get_file(client, drive_id, str(file_id)), drive_id=drive_id)
+    payload = {
+        **plan,
+        "source": str(source),
+        "uploaded": True,
+        "result": dict(uploaded),
+        "readback": readback,
+    }
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Uploaded '{readback.get('name') or name}' (id {readback.get('id')}).")
+    return 0
+
+
+def cmd_drive_rename(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    file_id = str(args.file_id)
+    item = get_file(client, drive_id, file_id)
+    if file_id == "1" or str(item.get("visibility") or "").casefold() == "is_root":
+        raise ValueError("Refusing to rename the kDrive root directory.")
+    name = _validated_remote_name(args.name)
+    before = slim_file(item, drive_id=drive_id)
+    after = {**before, "name": name}
+    plan = _drive_change_plan(profile, drive_id, before=before, after=after)
+    if args.dry_run:
+        payload = {**plan, "dry_run": True, "renamed": False}
+        if _machine_output(args):
+            print_machine(payload, args)
+        else:
+            _print_drive_change_preview(plan, "rename one exact item")
+            print("Dry run: nothing was renamed.")
+        return 0
+
+    _require_explicit_profile_for_yes(args, "rename")
+    if not _machine_output(args):
+        _print_drive_change_preview(plan, "rename one exact item")
+    if not _confirm(args, "Rename this item? [y/N] ", action="drive rename"):
+        print("Rename cancelled.")
+        return 2
+    result = rename_file(client, drive_id, file_id, name)
+    readback = slim_file(get_file(client, drive_id, file_id), drive_id=drive_id)
+    payload = {**plan, "renamed": True, "result": dict(result), "readback": readback}
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Renamed item {file_id} to '{readback.get('name')}'.")
+    return 0
+
+
+def cmd_drive_move(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    file_id = str(args.file_id)
+    destination_id = str(args.destination_id)
+    item = get_file(client, drive_id, file_id)
+    if file_id == "1" or str(item.get("visibility") or "").casefold() == "is_root":
+        raise ValueError("Refusing to move the kDrive root directory.")
+    if file_id == destination_id:
+        raise ValueError("An item cannot be moved into itself.")
+    destination = _resolve_drive_folder(client, drive_id, destination_id, label="Move destination")
+    before = slim_file(item, drive_id=drive_id)
+    after = {**before, "parent_id": destination_id}
+    plan = {
+        **_drive_change_plan(profile, drive_id, before=before, after=after),
+        "destination": slim_file(destination, drive_id=drive_id),
+    }
+    if args.dry_run:
+        payload = {**plan, "dry_run": True, "moved": False}
+        if _machine_output(args):
+            print_machine(payload, args)
+        else:
+            _print_drive_change_preview(plan, "move one exact item (name conflict refused)")
+            print("Dry run: nothing was moved.")
+        return 0
+
+    _require_explicit_profile_for_yes(args, "move")
+    if not _machine_output(args):
+        _print_drive_change_preview(plan, "move one exact item (name conflict refused)")
+    if not _confirm(args, "Move this item? [y/N] ", action="drive move"):
+        print("Move cancelled.")
+        return 2
+    result = move_file(client, drive_id, file_id, destination_id)
+    readback = slim_file(get_file(client, drive_id, file_id), drive_id=drive_id)
+    payload = {**plan, "moved": True, "result": dict(result), "readback": readback}
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Moved item {file_id} into folder {destination_id}.")
+    return 0
+
+
+def cmd_drive_trash_list(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    items = list_trash(client, drive_id, limit=args.limit)
+    output_items = slim_files(items, drive_id=drive_id)
+    if _machine_output(args):
+        print_machine({"profile": profile.name, "drive_id": drive_id, "count": len(items), "items": output_items}, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(f"Trash items: {len(items)}")
+        for item in output_items:
+            print(_display_drive_item(item))
+    return 0
+
+
+def cmd_drive_trash_show(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    item = slim_file(get_trashed_file(client, drive_id, str(args.file_id)), drive_id=drive_id)
+    if _machine_output(args):
+        print_machine({"profile": profile.name, "drive_id": drive_id, "item": item}, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(_display_drive_item(item))
+    return 0
+
+
+def cmd_drive_trash_restore(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    file_id = str(args.file_id)
+    item = get_trashed_file(client, drive_id, file_id)
+    before = slim_file(item, drive_id=drive_id)
+    destination_id = str(args.destination_id) if args.destination_id is not None else None
+    destination = None
+    if destination_id is not None:
+        destination = _resolve_drive_folder(client, drive_id, destination_id, label="Restore destination")
+    after = {**before}
+    if destination_id is not None:
+        after["parent_id"] = destination_id
+    plan = _drive_change_plan(profile, drive_id, before=before, after=after)
+    if destination is not None:
+        plan["destination"] = slim_file(destination, drive_id=drive_id)
+    if args.dry_run:
+        payload = {**plan, "dry_run": True, "restored": False}
+        if _machine_output(args):
+            print_machine(payload, args)
+        else:
+            _print_drive_change_preview(plan, "restore one exact trashed item")
+            print("Dry run: nothing was restored.")
+        return 0
+
+    _require_explicit_profile_for_yes(args, "restore")
+    if not _machine_output(args):
+        _print_drive_change_preview(plan, "restore one exact trashed item")
+    if not _confirm(args, "Restore this item? [y/N] ", action="drive trash restore"):
+        print("Restore cancelled.")
+        return 2
+    result = restore_file(client, drive_id, file_id, destination_id=destination_id)
+    readback = slim_file(get_file(client, drive_id, file_id), drive_id=drive_id)
+    payload = {**plan, "restored": True, "result": dict(result), "readback": readback}
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Restored '{readback.get('name') or file_id}' (id {file_id}).")
+    return 0
+
+
+def cmd_drive_share_state(args: argparse.Namespace) -> int:
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    drive_id = _drive_id_or_error(args, profile)
+    file_id = str(args.file_id)
+    target = slim_file(get_file(client, drive_id, file_id), drive_id=drive_id)
+    state = get_share_state(client, drive_id, file_id)
+    payload = {
+        "profile": profile.name,
+        "drive_id": drive_id,
+        "file_id": file_id,
+        "target": target,
+        "state": {key: dict(value) if value is not None else None for key, value in state.items()},
+    }
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drive ID: {drive_id}")
+        print(f"Target: {target.get('name') or '-'} (id {file_id})")
+        print_json(payload["state"])
     return 0
 
 
@@ -3615,6 +3897,68 @@ def build_parser() -> argparse.ArgumentParser:
     drive_download.add_argument("--json", action="store_true")
     drive_download.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     drive_download.set_defaults(func=cmd_drive_download)
+
+    drive_upload = drive_sub.add_parser("upload", help="Upload one local file without remote overwrite")
+    drive_upload.add_argument("path", help="Local file path (Windows, MSYS /c/..., or Unix form).")
+    drive_upload.add_argument("--name", help="Remote file name. Defaults to the local base name.")
+    drive_upload.add_argument("--parent", dest="parent_id", help="Destination folder ID. Defaults to root.")
+    drive_upload.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_upload.add_argument("--dry-run", action="store_true", help="Resolve and preview without uploading.")
+    drive_upload.add_argument("--yes", "-y", action="store_true", help="Skip confirmation (requires an explicit profile).")
+    drive_upload.add_argument("--json", action="store_true")
+    drive_upload.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_upload.set_defaults(func=cmd_drive_upload)
+
+    drive_rename = drive_sub.add_parser("rename", help="Rename one exact kDrive item (protected write)")
+    drive_rename.add_argument("file_id", help="Single file/folder ID to rename.")
+    drive_rename.add_argument("name", help="New name (not a path).")
+    drive_rename.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_rename.add_argument("--dry-run", action="store_true", help="Resolve and preview without renaming.")
+    drive_rename.add_argument("--yes", "-y", action="store_true", help="Skip confirmation (requires an explicit profile).")
+    drive_rename.add_argument("--json", action="store_true")
+    drive_rename.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_rename.set_defaults(func=cmd_drive_rename)
+
+    drive_move = drive_sub.add_parser("move", help="Move one exact kDrive item (protected write)")
+    drive_move.add_argument("file_id", help="Single file/folder ID to move.")
+    drive_move.add_argument("destination_id", help="Exact destination folder ID.")
+    drive_move.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_move.add_argument("--dry-run", action="store_true", help="Resolve and preview without moving.")
+    drive_move.add_argument("--yes", "-y", action="store_true", help="Skip confirmation (requires an explicit profile).")
+    drive_move.add_argument("--json", action="store_true")
+    drive_move.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_move.set_defaults(func=cmd_drive_move)
+
+    drive_trash = drive_sub.add_parser("trash", help="List, inspect, or restore kDrive trash")
+    drive_trash_sub = drive_trash.add_subparsers(dest="drive_trash_command", required=True)
+    drive_trash_list = drive_trash_sub.add_parser("list", help="List trashed files and folders (read-only)")
+    drive_trash_list.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_trash_list.add_argument("--limit", type=int, help="Maximum number of trash items to request.")
+    drive_trash_list.add_argument("--json", action="store_true")
+    drive_trash_list.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_trash_list.set_defaults(func=cmd_drive_trash_list)
+    drive_trash_show = drive_trash_sub.add_parser("show", help="Show one trashed item (read-only)")
+    drive_trash_show.add_argument("file_id", help="Exact trashed file/folder ID.")
+    drive_trash_show.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_trash_show.add_argument("--json", action="store_true")
+    drive_trash_show.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_trash_show.set_defaults(func=cmd_drive_trash_show)
+    drive_trash_restore = drive_trash_sub.add_parser("restore", help="Restore one exact trashed item (protected write)")
+    drive_trash_restore.add_argument("file_id", help="Exact trashed file/folder ID.")
+    drive_trash_restore.add_argument("--destination", dest="destination_id", help="Optional exact destination folder ID.")
+    drive_trash_restore.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_trash_restore.add_argument("--dry-run", action="store_true", help="Resolve and preview without restoring.")
+    drive_trash_restore.add_argument("--yes", "-y", action="store_true", help="Skip confirmation (requires an explicit profile).")
+    drive_trash_restore.add_argument("--json", action="store_true")
+    drive_trash_restore.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_trash_restore.set_defaults(func=cmd_drive_trash_restore)
+
+    drive_share_state = drive_sub.add_parser("share-state", help="Read public-link and access state for one item")
+    drive_share_state.add_argument("file_id", help="Exact file/folder ID.")
+    drive_share_state.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
+    drive_share_state.add_argument("--json", action="store_true")
+    drive_share_state.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    drive_share_state.set_defaults(func=cmd_drive_share_state)
 
     drive_rm = drive_sub.add_parser("rm", help="Move one kDrive file or folder to trash (protected write)")
     drive_rm.add_argument("file_id", help="Single file/folder ID to move to trash.")

@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.2.11.post1-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.12-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -107,6 +107,12 @@ ik drive search "invoice" --json
 ik drive info <file_id> --json
 ik drive download <file_id> --output ./downloads/
 ik --profile work drive rm <file_id> --dry-run
+ik --profile work drive upload ./report.pdf --parent <folder_id> --dry-run
+ik --profile work drive move <file_id> <destination_folder_id> --dry-run
+ik --profile work drive rename <file_id> "New name.pdf" --dry-run
+ik drive trash list --json
+ik --profile work drive trash restore <file_id> --dry-run
+ik drive share-state <file_id> --json
 
 ik mail folders --json
 ik mail mailboxes --json
@@ -228,7 +234,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | Auth | `auth token`, `auth check`, `auth status`, `auth logout`, `auth mail`, `auth contacts`, `auth calendar`, `auth chat` |
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
-| kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive mkdir`, `drive download`, `drive rm` |
+| kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive mkdir`, `drive download`, `drive upload`, `drive move`, `drive rename`, `drive rm`, `drive trash list/show/restore`, `drive share-state` |
 | Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads`, `mail draft`, `mail send` |
 | Contacts | `contacts list`, `contacts search`, `contacts show`, `contacts create`, `contacts update` |
 | Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`, `calendar create`, `calendar update`, `calendar cancel`, `calendar delete` |
@@ -263,6 +269,12 @@ ik drive search "invoice" --json
 ik drive info <file_id> --json
 ik drive download <file_id> --output ./downloads/
 ik --profile work drive rm <file_id> --dry-run
+ik --profile work drive upload ./report.pdf --parent <folder_id> --dry-run
+ik --profile work drive move <file_id> <destination_folder_id> --dry-run
+ik --profile work drive rename <file_id> "New name.pdf" --dry-run
+ik drive trash list --json
+ik --profile work drive trash restore <file_id> --dry-run
+ik drive share-state <file_id> --json
 
 ik mail folders --json
 ik mail mailboxes --json

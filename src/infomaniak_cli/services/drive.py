@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
-from ..api import redact_secret
+from ..api import InformaniakAPIError, redact_secret
 
 
 class DriveError(ValueError):
@@ -76,6 +76,98 @@ def trash_file(api: Any, drive_id: str, file_id: str) -> Mapping[str, Any]:
     if not isinstance(data, Mapping):
         raise DriveError("Unexpected kDrive trash response: expected result=success with a data object")
     return data
+
+
+def upload_file(
+    api: Any,
+    drive_id: str,
+    content: bytes,
+    name: str,
+    *,
+    parent_id: str | None = None,
+) -> Mapping[str, Any]:
+    """Upload one file, refusing a remote-name conflict by default."""
+    destination = str(parent_id) if parent_id else DRIVE_ROOT_ID
+    payload = api.upload(
+        f"/3/drive/{drive_id}/upload",
+        content,
+        params={
+            "directory_id": destination,
+            "file_name": name,
+            "total_size": len(content),
+            "conflict": "error",
+        },
+    )
+    return _data_object(payload, "upload")
+
+
+def rename_file(api: Any, drive_id: str, file_id: str, name: str) -> Mapping[str, Any]:
+    payload = api.post(
+        f"/2/drive/{drive_id}/files/{file_id}/rename",
+        json={"name": name},
+    )
+    return _data_object(payload, "rename")
+
+
+def move_file(
+    api: Any,
+    drive_id: str,
+    file_id: str,
+    destination_id: str,
+) -> Mapping[str, Any]:
+    payload = api.post(
+        f"/3/drive/{drive_id}/files/{file_id}/move/{destination_id}",
+        json={"conflict": "error"},
+    )
+    return _data_object(payload, "move")
+
+
+def list_trash(
+    api: Any,
+    drive_id: str,
+    *,
+    limit: int | None = None,
+) -> list[Mapping[str, Any]]:
+    params = {"limit": limit} if limit is not None else None
+    payload = api.get(f"/3/drive/{drive_id}/trash", params=params)
+    return _file_items(payload)
+
+
+def get_trashed_file(api: Any, drive_id: str, file_id: str) -> Mapping[str, Any]:
+    payload = api.get(f"/3/drive/{drive_id}/trash/{file_id}")
+    return _data_object(payload, "trash lookup")
+
+
+def restore_file(
+    api: Any,
+    drive_id: str,
+    file_id: str,
+    *,
+    destination_id: str | None = None,
+) -> Mapping[str, Any]:
+    body: dict[str, Any] = {}
+    if destination_id is not None:
+        body["destination_directory_id"] = (
+            int(destination_id) if str(destination_id).isdigit() else destination_id
+        )
+    payload = api.post(
+        f"/2/drive/{drive_id}/trash/{file_id}/restore",
+        json=body,
+    )
+    return _data_object(payload, "restore")
+
+
+def get_share_state(api: Any, drive_id: str, file_id: str) -> dict[str, Mapping[str, Any] | None]:
+    """Read exact-target public-link and multi-access state without changing it."""
+    try:
+        link = _data_object(api.get(f"/2/drive/{drive_id}/files/{file_id}/link"), "share link")
+    except InformaniakAPIError as exc:
+        if exc.status_code != 404:
+            raise
+        # The live API represents "no public link" as object_not_found.
+        link = None
+    access = _data_object(api.get(f"/2/drive/{drive_id}/files/{file_id}/access"), "share access")
+    return {"link": link, "access": access}
 
 
 def download_file(api: Any, drive_id: str, file_id: str) -> tuple[bytes, Mapping[str, str]]:
@@ -253,6 +345,13 @@ def _unwrap_success_data(payload: Any) -> Any:
         return payload
 
     raise DriveError("Unexpected kDrive files response: expected result=success with data list")
+
+
+def _data_object(payload: Any, action: str) -> Mapping[str, Any]:
+    data = _unwrap_success_data(payload)
+    if not isinstance(data, Mapping):
+        raise DriveError(f"Unexpected kDrive {action} response: expected a data object")
+    return data
 
 
 def _error_message(payload: Mapping[str, Any]) -> str:

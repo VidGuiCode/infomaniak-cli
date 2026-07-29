@@ -1,6 +1,12 @@
 import pytest
 
-from infomaniak_cli.api import InformaniakAPIClient, InformaniakAPIError, TransportResponse, redact_secret
+from infomaniak_cli.api import (
+    InformaniakAPIClient,
+    InformaniakAPIError,
+    TransportResponse,
+    UrllibTransport,
+    redact_secret,
+)
 
 
 class FakeTransport:
@@ -8,16 +14,17 @@ class FakeTransport:
         self.responses = list(responses)
         self.requests = []
 
-    def request(self, method, url, *, headers, params=None, json=None):
-        self.requests.append(
-            {
+    def request(self, method, url, *, headers, params=None, json=None, data=None):
+        request = {
                 "method": method,
                 "url": url,
                 "headers": dict(headers),
                 "params": params,
                 "json": json,
             }
-        )
+        if data is not None:
+            request["data"] = data
+        self.requests.append(request)
         return self.responses.pop(0)
 
     def download(self, method, url, *, headers, params=None):
@@ -39,6 +46,70 @@ def test_api_client_download_returns_raw_bytes():
     assert headers["Content-Type"] == "image/png"
     assert transport.requests[0]["download"] is True
     assert transport.requests[0]["url"] == "https://api.example.test/2/drive/1/files/82/download"
+
+
+def test_api_client_upload_sends_binary_body_and_query_without_json_encoding():
+    transport = FakeTransport(
+        TransportResponse(201, '{"result":"success","data":{"id":83,"name":"report.txt"}}')
+    )
+    client = InformaniakAPIClient(
+        token="secret-token", base_url="https://api.example.test", transport=transport
+    )
+
+    payload = client.upload(
+        "/3/drive/1/upload",
+        b"hello\x00world",
+        params={
+            "directory_id": "1",
+            "file_name": "report.txt",
+            "total_size": 11,
+            "conflict": "error",
+        },
+    )
+
+    assert payload["data"]["id"] == 83
+    assert transport.requests == [
+        {
+            "method": "POST",
+            "url": "https://api.example.test/3/drive/1/upload",
+            "headers": {
+                "Accept": "application/json",
+                "Authorization": "Bearer secret-token",
+                "Content-Type": "application/octet-stream",
+            },
+            "params": {
+                "directory_id": "1",
+                "file_name": "report.txt",
+                "total_size": 11,
+                "conflict": "error",
+            },
+            "json": None,
+            "data": b"hello\x00world",
+        }
+    ]
+
+
+def test_api_request_rejects_a_json_and_binary_body_together():
+    transport = FakeTransport(TransportResponse(200, '{"result":"success","data":{}}'))
+    client = InformaniakAPIClient(
+        token="secret-token", base_url="https://api.example.test", transport=transport
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        client.request("POST", "/3/drive/1/upload", json={"a": 1}, data=b"bytes")
+
+    assert transport.requests == []
+
+
+def test_urllib_transport_rejects_a_json_and_binary_body_together():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        UrllibTransport().request(
+            "POST",
+            "https://api.example.test/3/drive/1/upload",
+            headers={},
+            json={"a": 1},
+            data=b"bytes",
+        )
 
 
 def test_api_client_download_raises_on_error_status_and_redacts_token():

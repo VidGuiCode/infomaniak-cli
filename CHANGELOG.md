@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.12] - 2026-07-29
+### Added
+- **Single-file kDrive upload:** `ik drive upload <path>` uses the official v3 octet-stream
+  endpoint with `conflict=error`, so a same-name remote file is never overwritten. It accepts
+  native Windows, MSYS `/c/...`, and Unix local paths through one shared normalizer.
+- **Exact move and rename:** `ik drive move <file_id> <destination_folder_id>` and
+  `ik drive rename <file_id> <name>` resolve one source and destination, refuse the drive root,
+  preview before/after state, reject name conflicts, and read the item back after the write.
+- **Reversible trash lifecycle:** `ik drive trash list`, `trash show`, and protected
+  `trash restore` use the confirmed v3 read/v2 restore contract. Permanent trash deletion,
+  empty-trash, recursive, and bulk operations remain unavailable.
+- **Read-only share state:** `ik drive share-state <file_id>` reads public-link and multi-access
+  state. The live API's normal 404 for “no public link” is represented as `link: null`.
+  Share creation/revocation remains deferred until recipient/link permissions are safely proven.
+- Every Drive mutation supports before/after preview, `--dry-run`, confirmation by default,
+  structured `--json`/`--compact`, explicit-profile-gated `--yes`, redacted errors, and readback.
+
 ## [0.2.11.post1] - 2026-07-15
 ### Fixed
 - Calendar update/cancel now refuse a CalDAV resource containing multiple VEVENT components.

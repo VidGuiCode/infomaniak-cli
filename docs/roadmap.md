@@ -16,6 +16,9 @@ write behavior is added.
 - **`0.4.x`** — an optional MCP wrapper around the stable CLI functions.
 - **`1.0.0`** — stable MVP: safe daily use, documented and tested.
 
+Releases use normal semantic patch versions only. A follow-up fix takes the next
+patch version, never a `.postN` release.
+
 ## Shipped (`0.1.x`)
 
 - Foundation: `setup`, profiles, token auth, `doctor`, account discovery,
@@ -35,6 +38,11 @@ write behavior is added.
   workflow ([agent-workflow.md](agent-workflow.md)).
 
 ## Shipped recently
+
+- **`0.2.12` — kDrive reversible workflows:** single-file upload refuses remote overwrite;
+  exact move/rename and trash restore use before/after preview, confirmation, dry-run,
+  explicit-profile-gated `--yes`, and readback. Trash list/show and exact share state are read-only.
+  Share writes and permanent, recursive, bulk, empty-trash, chunked, or sync operations remain out.
 
 - **`0.2.11` — Calendar lifecycle:** exact-target event update uses CalDAV ETags and preserves
   unmodeled ICS/alarm content; soft cancellation and explicitly acknowledged hard deletion share
@@ -75,17 +83,24 @@ write behavior is added.
 
 ## Next (`0.2.x`)
 
-- **`0.2.12` — kDrive reversible workflows:** upload, move/rename, trash listing, restore, and
-  carefully scoped sharing after live endpoint verification. No permanent, recursive, or bulk delete.
-- **`0.2.13` — Mail attachments and lifecycle:** attachment save/send, UID-based reply/forward,
+- **`0.2.13` — Calendar administrative essentials:** create-time reminders, duplicate-safe
+  (idempotent) event creation, automatic repair when the saved CalDAV URL is only the service root,
+  richer `calendar search` filters, and read-only `ics`/`json` export for audit and backup. No
+  third-party notification effect, so it ships on the existing protected-write contract.
+- **`0.2.14` — Calendar collaboration:** attendees, invitations, recurrence (`--rrule` and explicit
+  date series), contact-name resolution for attendees, and bulk event import. Attendee and invite
+  writes stay disabled until Infomaniak's CalDAV notification behavior is verified live, because
+  they email real people; recurrence edits need exact single-instance targeting first.
+- **`0.2.15` — Mail attachments and lifecycle:** attachment save/send, UID-based reply/forward,
   mark/flag, move/archive, and draft management with normalized local paths.
-- **`0.2.14` — kChat conversation lifecycle:** thread replies, reactions, own-post editing,
+- **`0.2.16` — kChat conversation lifecycle:** thread replies, reactions, own-post editing,
   attachments, and exact-target own-post deletion. Workspace administration stays out.
-- **`0.2.15` — Contacts transfer/lifecycle:** full-fidelity export, richer fields, duplicate/merge
+- **`0.2.17` — Contacts transfer/lifecycle:** full-fidelity export, richer fields, duplicate/merge
   previews, collision-safe import, and exact-target single-contact deletion.
-- **`0.2.16` — Shared write safety/readiness:** stable JSON action/result schemas, result readback,
-  explicit partial-failure reporting, common path normalization, and write-capability checks in doctor.
-- **`0.2.17` — Bootstrap multi-service selection:** deterministic interactive and non-interactive
+- **`0.2.18` — Shared write safety/readiness:** stable JSON action/result schemas, result readback,
+  before/after diffs, idempotency keys, explicit partial-failure and notification-sent reporting,
+  common path normalization, and write-capability checks in doctor.
+- **`0.2.19` — Bootstrap multi-service selection:** deterministic interactive and non-interactive
   selection when discovery finds multiple drives or other same-family services.
 
 ## Later

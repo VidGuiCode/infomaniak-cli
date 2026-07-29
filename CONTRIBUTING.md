@@ -60,4 +60,8 @@ PyPI):
 4. Commit, `git tag -a vX.Y.Z`, push, and
    `gh release create vX.Y.Z dist/*.whl dist/*.tar.gz`.
 
+Releases use normal semantic patch versions only. Do not publish `.postN`
+releases — a follow-up fix takes the next patch version (e.g. `0.2.13`), never
+`0.2.12.post1`. Existing `.post` entries in `CHANGELOG.md` are historical.
+
 See [docs/release.md](docs/release.md) for the full release guidance.

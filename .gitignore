@@ -12,6 +12,7 @@ coverage.xml
 htmlcov/
 .tmp/
 .codex-tmp/
+.release-tmp-*/
 .venv/
 venv/
 dist/

@@ -50,6 +50,7 @@ class Transport(Protocol):
         headers: Mapping[str, str],
         params: Mapping[str, Any] | None = None,
         json: Any | None = None,
+        data: bytes | None = None,
     ) -> TransportResponse:
         ...
 
@@ -73,12 +74,16 @@ class UrllibTransport:
         headers: Mapping[str, str],
         params: Mapping[str, Any] | None = None,
         json: Any | None = None,
+        data: bytes | None = None,
     ) -> TransportResponse:
         if params:
             separator = "&" if "?" in url else "?"
             url = f"{url}{separator}{urlencode(params, doseq=True)}"
 
-        body = None
+        if json is not None and data is not None:
+            raise ValueError("json and data request bodies are mutually exclusive")
+
+        body = data
         if json is not None:
             body = json_module.dumps(json).encode("utf-8")
 
@@ -177,6 +182,16 @@ class InformaniakAPIClient:
     def post(self, path: str, json: Any | None = None) -> Any:
         return self.request("POST", path, json=json)
 
+    def upload(
+        self,
+        path: str,
+        data: bytes,
+        *,
+        params: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """POST an octet-stream body and validate the normal API envelope."""
+        return self.request("POST", path, params=params, data=data)
+
     def delete(self, path: str, params: Mapping[str, Any] | None = None) -> Any:
         return self.request("DELETE", path, params=params)
 
@@ -225,6 +240,7 @@ class InformaniakAPIClient:
         *,
         params: Mapping[str, Any] | None = None,
         json: Any | None = None,
+        data: bytes | None = None,
         validate_envelope: bool = True,
     ) -> Any:
         method = method.upper()
@@ -232,11 +248,25 @@ class InformaniakAPIClient:
             "Accept": "application/json",
             "Authorization": f"Bearer {self.token}",
         }
+        if json is not None and data is not None:
+            raise ValueError("json and data request bodies are mutually exclusive")
         if json is not None:
             headers["Content-Type"] = "application/json"
+        elif data is not None:
+            headers["Content-Type"] = "application/octet-stream"
 
         url = self._url(path)
-        response = self.transport.request(method, url, headers=headers, params=params, json=json)
+        if data is None:
+            response = self.transport.request(method, url, headers=headers, params=params, json=json)
+        else:
+            response = self.transport.request(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json=None,
+                data=data,
+            )
         try:
             payload = self._parse_json(method, path, response)
         except InformaniakAPIError as exc:
