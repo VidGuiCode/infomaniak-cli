@@ -12,6 +12,11 @@ def run_ik(tmp_path, *args):
     env = os.environ.copy()
     env["IK_CONFIG_DIR"] = str(tmp_path / "config")
     env["PYTHONPATH"] = "src"
+    # conftest's keyring mock is in-process only, so a subprocess would otherwise
+    # reach the developer's real OS credential store. The failing backend makes
+    # every keyring call raise, so the stores fall back to files under the
+    # isolated IK_CONFIG_DIR and the suite stays offline.
+    env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.fail.Keyring"
     return subprocess.run(
         [sys.executable, "-m", "infomaniak_cli.cli", *args],
         text=True,
@@ -19,6 +24,30 @@ def run_ik(tmp_path, *args):
         env=env,
         check=False,
     )
+
+
+def test_run_ik_subprocesses_never_touch_the_real_os_keyring(tmp_path):
+    """The offline suite must not read or write the developer's machine keyring.
+
+    ``conftest``'s ``_mock_keyring`` only patches the in-process keyring, so any
+    test that shells out through ``run_ik`` would otherwise fall through to the
+    real OS credential store. A machine entry for a profile named ``work`` then
+    leaks a token into the subprocess and turns offline tests into live API
+    calls. Pinning a failing keyring backend forces the isolated
+    ``IK_CONFIG_DIR`` file fallback instead.
+    """
+    setup = run_ik(tmp_path, "setup", "--profile", "work", "--non-interactive")
+    assert setup.returncode == 0, setup.stderr
+
+    saved = run_ik(tmp_path, "--profile", "work", "auth", "token", "--token", "offline-only-token")
+    assert saved.returncode == 0, saved.stderr
+
+    token_file = tmp_path / "config" / "tokens" / "work.token"
+    assert token_file.exists(), (
+        "token was not written to the isolated config dir, so the subprocess "
+        "reached a real keyring backend"
+    )
+    assert token_file.read_text(encoding="utf-8").strip() == "offline-only-token"
 
 
 def test_cli_setup_whoami_and_doctor_json(tmp_path):

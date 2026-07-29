@@ -138,9 +138,46 @@ If `IK_PROFILE` names a profile that does not exist, commands fail clearly inste
 
 `ik profile rename old new` renames local profile metadata and related local secret files. `ik profile delete old --yes` deletes only that local profile and its related local secrets. `ik auth logout` removes only the selected profile's main API token by default; `ik auth logout --all --yes` also removes local service-specific secrets for mail, contacts, calendar, and chat. None of these commands change remote Informaniak/kSuite services.
 
+## The four credentials
+
+A fully configured profile can hold **four distinct secrets**. They are not interchangeable, they
+are stored separately, and `ik` never copies one into another.
+
+| Credential | Set with | Used for |
+| --- | --- | --- |
+| Informaniak API token | `ik auth token` | REST API: `account`, `drive`, `chat` |
+| Mailbox password | `ik auth mail` | IMAP/SMTP: `mail` |
+| Contacts / CardDAV password | `ik auth contacts` | CardDAV: `contacts` |
+| Calendar / CalDAV password | `ik auth calendar` | CalDAV: `calendar` |
+
+Where they come from:
+
+- The **API token** is an Informaniak API token from the Manager. It is the only credential the
+  REST services use.
+- The **mailbox password** is a mail application password for the mailbox itself.
+- The **CardDAV and CalDAV sync passwords** are generated at
+  `https://config.infomaniak.com/` (My Contacts & Calendars → your platform → generate an
+  application password). These are **distinct from account-level application passwords** — an
+  account app password will not authenticate a CalDAV or CardDAV request.
+
+**Does one sync password cover both CardDAV and CalDAV?** The two passwords are generated in the
+same place and, in practice, the same generated sync password can be supplied to both
+`ik auth contacts` and `ik auth calendar`. `ik` does not assume this: it stores a Contacts password
+and a Calendar password independently, so setting one never changes the other, and rotating one
+does not silently break the other. If you use one sync password for both, run both commands.
+
+Every secret is stored in the OS keyring when one is available, and otherwise in an owner-only
+file under the profile's `tokens/` directory. `ik doctor` reports which credentials are configured
+without ever printing their values.
+
 ## Smart auth behavior
 
 `ik setup` creates or updates local profiles. `ik auth token` stores the selected profile's main Informaniak API token, and `ik auth check` verifies it with a read-only authenticated request.
+
+If a profile's calendar URL was never resolved past the sync service root, calendar reads
+auto-discover a usable collection for that run and print a note. Run `ik calendar repair` to
+resolve and save the real collection to the profile; pass `--url <collection-url>` when several
+calendars exist and repair refuses to guess.
 
 ## Bootstrap/autodiscovery
 

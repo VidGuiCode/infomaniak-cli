@@ -17,6 +17,15 @@ class CalendarError(ValueError):
     pass
 
 
+class CalendarConflictError(CalendarError):
+    """A create refused because the target resource already exists (HTTP 412).
+
+    A ``CalendarError`` subclass so existing handlers keep working, but distinct
+    enough that ``--if-missing`` can treat an existing event as a successful
+    no-op without string-matching the message.
+    """
+
+
 class _MethodRequest(urllib.request.Request):
     def __init__(self, *args: Any, method: str = "GET", **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -135,7 +144,7 @@ class CalendarClient:
                 status = getattr(response, "status", None) or getattr(response, "code", 201)
         except urllib.error.HTTPError as exc:
             if exc.code == 412:
-                raise CalendarError(
+                raise CalendarConflictError(
                     f"An event with uid {uid} already exists at {event_url} (not overwritten)."
                 ) from exc
             raise CalendarError(f"Calendar event creation failed: HTTP {exc.code}") from exc
@@ -268,12 +277,43 @@ def slim_events(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 def search_events(
     events: list[Mapping[str, Any]],
-    query: str,
+    query: str | None = None,
     *,
     limit: int | None = None,
+    attendee: str | None = None,
+    uid: str | None = None,
+    status: str | None = None,
+    description: str | None = None,
+    all_day: bool | None = None,
 ) -> list[Mapping[str, Any]]:
-    query_lower = query.casefold()
-    matches = [event for event in events if query_lower in _event_search_text(event)]
+    """Filter events client-side. Every supplied criterion must match (AND).
+
+    ``query`` keeps its free-text behavior over the existing search text. ``uid``
+    matches exactly because it is an identifier; ``status`` matches exactly but
+    case-insensitively; the remaining text filters are case-insensitive
+    substrings, consistent with the free-text matcher.
+    """
+    matches = list(events)
+    if query:
+        query_lower = query.casefold()
+        matches = [event for event in matches if query_lower in _event_search_text(event)]
+    if attendee:
+        needle = attendee.casefold()
+        matches = [
+            event
+            for event in matches
+            if any(needle in value.casefold() for value in _string_list(event.get("attendees")))
+        ]
+    if uid:
+        matches = [event for event in matches if str(event.get("uid") or "") == uid]
+    if status:
+        wanted = status.casefold()
+        matches = [event for event in matches if str(event.get("status") or "").casefold() == wanted]
+    if description:
+        needle = description.casefold()
+        matches = [event for event in matches if needle in str(event.get("description") or "").casefold()]
+    if all_day is not None:
+        matches = [event for event in matches if bool(event.get("all_day")) is all_day]
     if limit is not None:
         return matches[:limit]
     return matches
@@ -325,8 +365,14 @@ def build_event_ics(
     all_day: bool = False,
     description: str | None = None,
     location: str | None = None,
+    reminders: list[int] | None = None,
 ) -> str:
-    """Build a minimal RFC 5545 VEVENT calendar object (no attendees/invites)."""
+    """Build a minimal RFC 5545 VEVENT calendar object (no attendees/invites).
+
+    ``reminders`` are minutes before start; each one emits a display VALARM with a
+    relative TRIGGER, in the order given, nested inside the VEVENT.
+    """
+    triggers = _validated_reminders(reminders)
     value_date = ";VALUE=DATE" if all_day else ""
     lines = [
         "BEGIN:VCALENDAR",
@@ -344,8 +390,73 @@ def build_event_ics(
         lines.append(f"LOCATION:{_escape_ics_text(location)}")
     if description:
         lines.append(f"DESCRIPTION:{_escape_ics_text(description)}")
+    for minutes in triggers:
+        lines += [
+            "BEGIN:VALARM",
+            "ACTION:DISPLAY",
+            f"TRIGGER:-PT{minutes}M",
+            f"DESCRIPTION:{_escape_ics_text(summary)}",
+            "END:VALARM",
+        ]
     lines += ["END:VEVENT", "END:VCALENDAR"]
     return "\r\n".join(lines) + "\r\n"
+
+
+def build_calendar_export_ics(
+    events: list[Mapping[str, Any]],
+) -> tuple[str, list[str]]:
+    """Wrap each event's original VEVENT in one VCALENDAR envelope.
+
+    Returns ``(ics, skipped_uids)``. Event bodies are copied verbatim from
+    ``raw_ics`` so unmodeled properties survive a backup/restore round trip.
+    Events without a parseable VEVENT are reported rather than silently dropped.
+    """
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//infomaniak-cli//EN",
+        "CALSCALE:GREGORIAN",
+    ]
+    skipped: list[str] = []
+    for event in events:
+        body = _vevent_body(event.get("raw_ics"))
+        if body is None:
+            skipped.append(str(event.get("uid") or event.get("id") or "<unknown>"))
+            continue
+        lines.extend(body)
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n", skipped
+
+
+def _vevent_body(raw_ics: Any) -> list[str] | None:
+    """Extract the VEVENT block (inclusive) from a raw iCalendar resource."""
+    if not raw_ics or not isinstance(raw_ics, str):
+        return None
+    lines = raw_ics.replace("\r\n", "\n").split("\n")
+    try:
+        first = next(i for i, line in enumerate(lines) if line.strip().upper() == "BEGIN:VEVENT")
+        last = len(lines) - 1 - next(
+            i for i, line in enumerate(reversed(lines)) if line.strip().upper() == "END:VEVENT"
+        )
+    except StopIteration:
+        return None
+    if last < first:
+        return None
+    return lines[first : last + 1]
+
+
+def _validated_reminders(reminders: list[int] | None) -> list[int]:
+    """Validate create-time reminder minutes, preserving caller order."""
+    if not reminders:
+        return []
+    seen: set[int] = set()
+    for minutes in reminders:
+        if minutes < 0:
+            raise CalendarError("--reminder-minutes must be zero or greater.")
+        if minutes in seen:
+            raise CalendarError(f"duplicate --reminder-minutes value: {minutes}")
+        seen.add(minutes)
+    return list(reminders)
 
 
 def patch_event_ics(

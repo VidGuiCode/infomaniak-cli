@@ -32,7 +32,9 @@ from .services.account import (
 )
 from .services.calendar import (
     CalendarClient,
+    CalendarConflictError,
     CalendarError,
+    build_calendar_export_ics,
     build_event_ics,
     find_event,
     parse_ics_events,
@@ -1185,7 +1187,137 @@ def _calendar_profile_and_client(args: argparse.Namespace) -> tuple[Any, Calenda
             f"Run `ik --profile {profile.name} auth calendar --username <sync-username> --stdin` first."
         )
 
-    return profile, CalendarClient(profile.calendar_url, profile.calendar_username, calendar_store.load_password(name))
+    password = calendar_store.load_password(name)
+    url = _repaired_calendar_url(profile.calendar_url, profile.calendar_username, password)
+    return profile, CalendarClient(url, profile.calendar_username, password)
+
+
+def _repaired_calendar_url(url: str, username: str, password: str) -> str:
+    """Recover a usable collection when the saved URL is only the service root.
+
+    A profile whose calendar URL was never resolved past ``sync.infomaniak.com/``
+    otherwise fails every read. Discovery is attempted once and is best-effort:
+    on any failure the saved URL is returned unchanged so the normal read error
+    still surfaces. This never raises and never persists anything.
+    """
+    if _looks_like_dav_collection(url):
+        return url
+    try:
+        collections = discover_calendars(url, username, password)
+    except DavDiscoveryError as exc:
+        print(
+            f"note: calendar URL {url} is not a collection and auto-discovery failed "
+            f"({redact_secret(str(exc), secrets=[password])}). "
+            f"Run `ik calendar repair` or `ik auth calendar --url <collection-url>`.",
+            file=sys.stderr,
+        )
+        return url
+    if not collections:
+        print(
+            f"note: calendar URL {url} is not a collection and no calendar was discovered. "
+            f"Run `ik calendar repair` or `ik auth calendar --url <collection-url>`.",
+            file=sys.stderr,
+        )
+        return url
+    resolved = str(collections[0].get("url") or url)
+    ambiguity = (
+        f" {len(collections)} calendars were discovered; using the first."
+        if len(collections) > 1
+        else ""
+    )
+    print(
+        f"note: using an auto-discovered calendar collection for this run.{ambiguity} "
+        f"Run `ik calendar repair` to save it to the profile.",
+        file=sys.stderr,
+    )
+    return resolved
+
+
+def cmd_calendar_repair(args: argparse.Namespace) -> int:
+    """Resolve and persist the profile's real CalDAV collection URL.
+
+    Local profile config only: this never writes to the Calendar service.
+    """
+    manager = ProfileManager()
+    name = _resolve_profile_name(manager, args.profile)
+    profile = manager.get(name)
+    if not profile.calendar_url or not profile.calendar_username:
+        raise ValueError(
+            f"No calendar configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth calendar --username <sync-username> --stdin` first."
+        )
+
+    store = CalendarPasswordStore()
+    if not store.has_password(name):
+        raise ValueError(
+            f"No calendar password configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth calendar --username <sync-username> --stdin` first."
+        )
+    password = store.load_password(name)
+
+    current = profile.calendar_url
+    if args.url:
+        resolved = args.url.strip()
+    else:
+        try:
+            collections = discover_calendars(current, profile.calendar_username, password)
+        except DavDiscoveryError as exc:
+            raise ValueError(
+                "Calendar discovery failed: "
+                f"{redact_secret(str(exc), secrets=[password])}. "
+                "Pass --url <collection-url> to set it explicitly."
+            ) from exc
+        if not collections:
+            raise ValueError(
+                f"No calendar collection was discovered from {current}. "
+                "Pass --url <collection-url> to set it explicitly."
+            )
+        if len(collections) > 1:
+            # Never silently pick a first match on a write, even a config write.
+            choices = "\n".join(
+                f"  {item.get('name') or '-'}: {item.get('url')}" for item in collections
+            )
+            raise ValueError(
+                f"{len(collections)} calendar collections were discovered; refusing to guess.\n"
+                f"{choices}\n"
+                "Re-run with --url <collection-url> to choose one."
+            )
+        resolved = str(collections[0].get("url") or current)
+
+    plan = {
+        "profile": profile.name,
+        "before": current,
+        "after": resolved,
+        "changed": resolved != current,
+    }
+
+    if args.dry_run:
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "saved": False}, args)
+        else:
+            print(f"Profile: {profile.name}")
+            print(f"Before: {current}")
+            print(f"After: {resolved}")
+            print("Dry run: the profile was not changed.")
+        return 0
+
+    _require_explicit_profile_for_yes(args, "repair the calendar URL")
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Before: {current}")
+        print(f"After: {resolved}")
+        print("(This only updates local profile config; no calendar data is changed.)")
+    if not _confirm(args, "Save this calendar URL? [y/N] ", action="calendar repair"):
+        print("Calendar repair cancelled.")
+        return 2
+
+    manager.create_or_update(name, calendar_url=resolved)
+    readback = manager.get(name).calendar_url
+    if _machine_output(args):
+        print_machine({**plan, "saved": True, "readback": readback}, args)
+    else:
+        print(f"Saved calendar URL for profile {profile.name}.")
+    return 0
 
 
 def _chat_profile_and_client(args: argparse.Namespace) -> tuple[Any, ChatClient]:
@@ -3127,8 +3259,33 @@ def cmd_calendar_today(args: argparse.Namespace) -> int:
 
 def cmd_calendar_search(args: argparse.Namespace) -> int:
     profile, client = _calendar_profile_and_client(args)
+
+    all_day = None
+    if getattr(args, "all_day", False):
+        all_day = True
+    elif getattr(args, "timed", False):
+        all_day = False
+    filters = {
+        "attendee": getattr(args, "attendee", None),
+        "uid": getattr(args, "uid", None),
+        "status": getattr(args, "status", None),
+        "description": getattr(args, "description", None),
+        "all_day": all_day,
+    }
+    if not args.query and all(value is None for value in filters.values()):
+        raise ValueError(
+            "calendar search needs a query or at least one filter "
+            "(--attendee, --uid, --status, --description, --all-day/--timed)."
+        )
+
     start, end, days = _calendar_range(args, default_days=30)
-    events = search_events(client.list_events(calendar=args.calendar, start=start, end=end), args.query, limit=args.limit)
+    events = search_events(
+        client.list_events(calendar=args.calendar, start=start, end=end),
+        args.query,
+        limit=args.limit,
+        **filters,
+    )
+    applied = {key: value for key, value in filters.items() if value is not None}
 
     if _machine_output(args):
         output_events = events if _raw_output(args) else slim_events(events)
@@ -3137,6 +3294,7 @@ def cmd_calendar_search(args: argparse.Namespace) -> int:
                 "profile": profile.name,
                 "calendar": args.calendar,
                 "query": args.query,
+                "filters": applied,
                 "days": days,
                 "from": _iso_utc(start),
                 "to": _iso_utc(end),
@@ -3149,13 +3307,79 @@ def cmd_calendar_search(args: argparse.Namespace) -> int:
         print(f"Profile: {profile.name}")
         if args.calendar:
             print(f"Calendar: {args.calendar}")
-        print(f"Query: {args.query}")
+        if args.query:
+            print(f"Query: {args.query}")
+        for key, value in applied.items():
+            print(f"Filter {key}: {value}")
         print(f"Range: {_iso_utc(start)} to {_iso_utc(end)}")
         print(f"Events: {len(events)}")
         if not events:
             print("No matching events found.")
         for event in events:
             print(_display_event(event))
+    return 0
+
+
+def cmd_calendar_export(args: argparse.Namespace) -> int:
+    """Read-only export of a resolved date range, as ICS or JSON."""
+    profile, client = _calendar_profile_and_client(args)
+    start, end, days = _calendar_range(args, default_days=30)
+    events = client.list_events(calendar=args.calendar, start=start, end=end)
+    if args.limit is not None:
+        events = events[: args.limit]
+
+    skipped: list[str] = []
+    if args.format == "ics":
+        body, skipped = build_calendar_export_ics(events)
+    else:
+        body = pretty_json(events if _raw_output(args) else slim_events(events))
+
+    destination = None
+    if args.output:
+        destination = Path(normalize_local_path(args.output))
+        if destination.exists() and not args.force:
+            raise ValueError(
+                f"Refusing to overwrite an existing export file: {destination}. Pass --force to replace it."
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(body, encoding="utf-8", newline="")
+
+    summary = {
+        "profile": profile.name,
+        "calendar": args.calendar,
+        "format": args.format,
+        "days": days,
+        "from": _iso_utc(start),
+        "to": _iso_utc(end),
+        "count": len(events) - len(skipped),
+        "skipped": skipped,
+        "output": str(destination) if destination else None,
+    }
+
+    if destination is None:
+        if _machine_output(args):
+            # Structured output stays structured: the export rides inside the
+            # envelope rather than replacing it.
+            print_machine({**summary, "body": body}, args)
+            return 0
+        # Otherwise the export itself is the payload on stdout.
+        print(body, end="" if body.endswith("\n") else "\n")
+        if skipped:
+            print(
+                f"note: {len(skipped)} event(s) had no parseable VEVENT and were skipped: "
+                f"{', '.join(skipped)}",
+                file=sys.stderr,
+            )
+        return 0
+
+    if _machine_output(args):
+        print_machine(summary, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Range: {summary['from']} to {summary['to']}")
+        print(f"Exported {summary['count']} event(s) as {args.format} to {destination}")
+        if skipped:
+            print(f"Skipped {len(skipped)} event(s) with no parseable VEVENT: {', '.join(skipped)}")
     return 0
 
 
@@ -3196,7 +3420,27 @@ def _print_calendar_create_preview(profile: Any, target: str, plan: Mapping[str,
         print(f"Location: {plan['location']}")
     if plan.get("description"):
         print(f"Description: {plan['description']}")
+    if plan.get("reminders"):
+        minutes = ", ".join(f"{value} min before" for value in plan["reminders"])
+        print(f"Reminders: {minutes}")
+    print(f"UID: {plan['uid']}" + ("  (caller-supplied)" if plan.get("uid_explicit") else ""))
+    if plan.get("if_missing"):
+        print("Mode: --if-missing (an existing event with this UID is left untouched)")
     print("(No attendees are invited; this only writes to your own calendar.)")
+
+
+def _validated_event_uid(value: str) -> str:
+    """Validate a caller-supplied UID; it becomes a CalDAV URL path segment."""
+    clean = value.strip()
+    if not clean:
+        raise ValueError("--uid must not be empty.")
+    if any(char in clean for char in ("\r", "\n")):
+        raise ValueError("--uid must not contain line breaks.")
+    if "/" in clean or "\\" in clean:
+        raise ValueError("--uid must not contain a path separator.")
+    if len(clean) > 255:
+        raise ValueError("--uid must be 255 characters or fewer.")
+    return clean
 
 
 def cmd_calendar_create(args: argparse.Namespace) -> int:
@@ -3218,7 +3462,22 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
     if end <= start:
         raise ValueError(f"--end ({args.end or end}) must be after --start ({args.start}).")
 
-    uid = f"{uuid.uuid4()}@infomaniak-cli"
+    if_missing = getattr(args, "if_missing", False)
+    explicit_uid = getattr(args, "uid", None)
+    if if_missing and explicit_uid is None:
+        raise ValueError(
+            "--if-missing needs a deterministic --uid. Without one, every run generates a new "
+            "UID and can never match an existing event."
+        )
+    # `is not None`, not truthiness: an explicitly empty --uid must be rejected,
+    # never silently replaced by a random one.
+    uid = (
+        _validated_event_uid(explicit_uid)
+        if explicit_uid is not None
+        else f"{uuid.uuid4()}@infomaniak-cli"
+    )
+
+    reminders = list(getattr(args, "reminder_minutes", None) or [])
     dtstamp = datetime.datetime.now(datetime.UTC)
     ics = build_event_ics(
         uid=uid,
@@ -3229,6 +3488,7 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
         all_day=all_day,
         description=args.description,
         location=args.location,
+        reminders=reminders,
     )
 
     target = args.calendar or profile.calendar_url
@@ -3242,6 +3502,9 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
         "location": args.location,
         "description": args.description,
         "uid": uid,
+        "uid_explicit": bool(explicit_uid),
+        "reminders": reminders,
+        "if_missing": if_missing,
     }
 
     if getattr(args, "dry_run", False):
@@ -3267,10 +3530,21 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
         print("Event creation cancelled.")
         return 2
 
-    result = client.create_event(ics, uid, calendar=args.calendar)
+    try:
+        result = client.create_event(ics, uid, calendar=args.calendar)
+    except CalendarConflictError:
+        if not if_missing:
+            raise
+        # --if-missing: an event with this UID already exists, so the desired
+        # state is already in place. Report a no-op rather than an error.
+        if _machine_output(args):
+            print_machine({**plan, "created": False, "existed": True}, args)
+        else:
+            print(f"Event with uid {uid} already exists; nothing was created.")
+        return 0
 
     if _machine_output(args):
-        print_machine({**plan, "created": True, "event": result}, args)
+        print_machine({**plan, "created": True, "existed": False, "event": result}, args)
     else:
         print(f"Created event '{summary}' (uid {uid}).")
         print(f"Location: {result.get('url')}")
@@ -4262,7 +4536,17 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_today.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
     calendar_today.set_defaults(func=cmd_calendar_today)
     calendar_search = calendar_sub.add_parser("search", help="Search calendar events")
-    calendar_search.add_argument("query", help="Case-insensitive event search query.")
+    calendar_search.add_argument(
+        "query", nargs="?",
+        help="Case-insensitive event search query. Optional when a filter is supplied.",
+    )
+    calendar_search.add_argument("--attendee", help="Filter by attendee (case-insensitive substring).")
+    calendar_search.add_argument("--uid", help="Filter by exact event UID.")
+    calendar_search.add_argument("--status", help="Filter by exact status, e.g. CONFIRMED or CANCELLED.")
+    calendar_search.add_argument("--description", help="Filter by description (case-insensitive substring).")
+    calendar_search_when = calendar_search.add_mutually_exclusive_group()
+    calendar_search_when.add_argument("--all-day", action="store_true", dest="all_day", help="Only all-day events.")
+    calendar_search_when.add_argument("--timed", action="store_true", help="Only timed (non all-day) events.")
     calendar_search.add_argument(
         "--days", type=int,
         help="Days to search from now. Defaults to 30 when no explicit range is given.",
@@ -4281,6 +4565,48 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_search.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     calendar_search.add_argument("--raw", action="store_true", help="With --json, emit the full raw event payload.")
     calendar_search.set_defaults(func=cmd_calendar_search)
+    calendar_repair = calendar_sub.add_parser(
+        "repair", help="Resolve and save the profile's real CalDAV collection URL (local config only)"
+    )
+    calendar_repair.add_argument("--url", help="Set this collection URL explicitly instead of discovering it.")
+    calendar_repair.add_argument("--dry-run", action="store_true", help="Show the change without saving it.")
+    calendar_repair.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    calendar_repair.add_argument("--json", action="store_true")
+    calendar_repair.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    calendar_repair.set_defaults(func=cmd_calendar_repair)
+
+    calendar_export = calendar_sub.add_parser(
+        "export", help="Export a date range of events as ICS or JSON (read-only)"
+    )
+    calendar_export.add_argument(
+        "--format", choices=("ics", "json"), default="ics", help="Export format. Defaults to ics.",
+    )
+    calendar_export.add_argument("--output", help="Write to this file instead of stdout.")
+    calendar_export.add_argument(
+        "--force", action="store_true", help="Overwrite an existing --output file.",
+    )
+    calendar_export.add_argument(
+        "--days", type=int,
+        help="Days to export from now. Defaults to 30 when no explicit range is given.",
+    )
+    calendar_export.add_argument(
+        "--from", dest="from_value",
+        help="Range start as an ISO date/datetime (UTC when no offset is supplied).",
+    )
+    calendar_export.add_argument(
+        "--to", dest="to_value",
+        help="Range end as an ISO date/datetime (UTC when no offset is supplied).",
+    )
+    calendar_export.add_argument("--calendar", help="Calendar ID or URL to export.")
+    calendar_export.add_argument("--limit", type=int, help="Maximum events to export.")
+    calendar_export.add_argument("--json", action="store_true")
+    calendar_export.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    calendar_export.add_argument("--raw", action="store_true", help="With --format json, emit full raw events.")
+    calendar_export.set_defaults(func=cmd_calendar_export)
+
     calendar_show = calendar_sub.add_parser("show", help="Show one calendar event by ID or UID")
     calendar_show.add_argument("event_id", help="Event ID or UID.")
     calendar_show.add_argument("--calendar", help="Calendar ID or URL to query.")
@@ -4297,6 +4623,18 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_create.add_argument("--location", help="Optional event location.")
     calendar_create.add_argument("--description", help="Optional event description/notes.")
     calendar_create.add_argument("--calendar", help="Target calendar ID or collection URL. Defaults to the profile calendar.")
+    calendar_create.add_argument(
+        "--reminder-minutes", type=int, action="append", dest="reminder_minutes", metavar="MINUTES",
+        help="Display reminder this many minutes before the start. Repeatable.",
+    )
+    calendar_create.add_argument(
+        "--uid",
+        help="Deterministic event UID. Re-running with the same UID cannot create a duplicate.",
+    )
+    calendar_create.add_argument(
+        "--if-missing", action="store_true", dest="if_missing",
+        help="Treat an existing event with the same --uid as a successful no-op. Requires --uid.",
+    )
     calendar_create.add_argument(
         "--yes", "-y", action="store_true",
         help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",

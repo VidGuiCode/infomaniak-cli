@@ -360,8 +360,13 @@ ik calendar upcoming --days 14
 ik calendar upcoming --days 30 --limit 20 --json
 ik calendar search "invoice" --days 30 --json
 ik calendar search "invoice" --from 2026-01-01 --to 2026-02-01 --json
+ik calendar search --status CONFIRMED --json                          # filters, no query needed
+ik calendar search --attendee user@example.com --timed --json
+ik calendar search --uid <event_uid> --json                           # exact UID match
 ik calendar show <event_id> --json
 ik calendar show <event_id> --json --raw
+ik calendar export --days 90 --format ics --output backup.ics
+ik calendar export --from 2026-01-01 --to 2026-12-31 --format json --json
 ```
 
 Protected writes (off by default, confirmation required):
@@ -371,6 +376,12 @@ ik calendar create --summary "Deploy review" --start 2026-08-01T15:00 --end 2026
 ik calendar create --summary "Deploy review" --start 2026-08-01T15:00                       # prompts to confirm
 ik calendar create --summary "Vacation" --start 2026-08-10 --end 2026-08-15 --all-day
 ik --profile work calendar create --summary "Standup" --start 2026-08-01T09:00 --yes
+ik calendar create --summary "Team sync" --start 2026-08-01T09:00 \
+    --reminder-minutes 1440 --reminder-minutes 30 --dry-run          # repeatable reminders
+ik --profile work calendar create --summary "Quarterly review" --start 2026-09-01T09:00 \
+    --uid quarterly-review-2026q3 --if-missing --yes                 # safe to re-run
+ik calendar repair --dry-run --json                                  # local config only
+ik --profile work calendar repair --url <collection_url> --yes
 ik calendar update <event_id> --summary "New title" --reminder-minutes 30 --dry-run --json
 ik --profile work calendar update <event_id> --start 2026-08-01T10:00 --yes
 ik calendar cancel <event_id> --dry-run --json                       # soft cancellation
@@ -381,9 +392,17 @@ ik calendar delete <event_id> --hard --dry-run --json               # hard resou
 
 Search is client-side and matches available summary, description, location, organizer, and attendee fields case-insensitively.
 
+`ik calendar search` also accepts `--attendee`, `--uid`, `--status`, `--description`, and a mutually exclusive `--all-day` / `--timed`. Every supplied criterion must match (AND), and the positional query becomes optional once at least one filter is given. `--uid` and `--status` match exactly (`--status` case-insensitively), while `--attendee` and `--description` are case-insensitive substrings. An event with no `STATUS` property does not match an explicit `--status` filter.
+
+`ik calendar export` is read-only. It resolves a date range exactly like `search` (`--days`, `--from`/`--to`, `--calendar`, `--limit`) and writes `--format ics` (default) or `--format json` to `--output <path>`, or to stdout when `--output` is omitted. ICS output copies each event's original `VEVENT` verbatim inside one `VCALENDAR` envelope, so unmodeled properties survive a backup round trip; any event without a parseable `VEVENT` is reported in `skipped` rather than silently dropped. An existing `--output` file is never overwritten without `--force`. With `--json`/`--compact` and no `--output`, the export travels inside the structured envelope as `body`.
+
+`ik calendar repair` resolves and saves the profile's real CalDAV collection URL. It changes local profile config only and never touches calendar data, but still previews before/after, confirms by default, supports `--dry-run`, and gates `--yes` on an explicit profile. When discovery finds several collections it refuses to guess and lists them so `--url` can select one. Calendar reads also self-heal for the current run when the saved URL is still the service root, printing a note that suggests `calendar repair`.
+
 `ik calendar search` accepts `--from` and `--to` together for explicit historical or future ranges. Bounds accept ISO dates or datetimes; a missing offset is interpreted as UTC. `--days` defaults to 30 only when no explicit range is supplied and cannot be combined with `--from`/`--to`.
 
 `ik calendar create` creates an event by PUTting a minimal iCalendar VEVENT to the collection (`PUT {collection}/{uid}.ics` with `If-None-Match: *`, so it never overwrites an existing uid). It follows the protected-write contract: prints a profile/calendar/summary/start/end preview and requires confirmation. `--dry-run` shows the event and the full iCalendar body without writing. `--start`/`--end` take ISO 8601 datetimes (naive = floating local, offset/`Z` = normalized to UTC); with `--all-day` they take `YYYY-MM-DD` dates. `--end` defaults to +1h (timed) or +1 day (all-day). `--yes` skips the prompt only with an explicit profile (`--profile`/`IK_PROFILE`). `--location`/`--description` are optional. No attendees are invited.
+
+`--reminder-minutes N` is repeatable and writes one display `VALARM` per value at create time, so a reminder no longer requires create-then-update. Negative and duplicate values are refused. `--uid` supplies a deterministic UID instead of a random one, which is what makes a re-run safe; combined with `--if-missing`, an event that already exists is reported as `created: false, existed: true` and exits 0 instead of erroring. `--if-missing` requires `--uid`, because a random UID can never match an existing event. Without `--if-missing`, an existing UID stays an error.
 
 `ik calendar update` resolves the exact resource URL and ETag, preserves all unmodeled ICS content,
 and uses `If-Match` to prevent lost updates. It supports summary, start/end, location, description,

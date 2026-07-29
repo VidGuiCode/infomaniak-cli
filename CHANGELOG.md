@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.13] - 2026-07-29
+### Added
+- **Create-time reminders:** `ik calendar create --reminder-minutes N` is repeatable and emits one
+  display `VALARM` per value, so an administrative reminder no longer needs create-then-update.
+  Negative and duplicate values are refused.
+- **Duplicate-safe creation:** `--uid` supplies a deterministic event UID, and `--if-missing`
+  turns the server's "already exists" response into a successful no-op (`created: false`,
+  `existed: true`). `--if-missing` requires `--uid`, because a random UID can never match. Without
+  `--if-missing`, an existing UID remains an error.
+- **Calendar discovery repair:** a profile whose calendar URL is only the service root now
+  auto-discovers a usable collection for the current read instead of failing, and
+  `ik calendar repair` resolves and saves the real collection to the profile. Repair refuses to
+  guess when several collections are discovered and lists them so `--url` can choose one. It
+  changes local profile config only and never touches calendar data.
+- **Richer search filters:** `ik calendar search` gains `--attendee`, `--uid`, `--status`,
+  `--description`, and a mutually exclusive `--all-day` / `--timed`. Filters combine with the
+  free-text query as AND, and the query is now optional when at least one filter is given.
+  `--uid` and `--status` match exactly; the rest are case-insensitive substrings.
+- **Read-only export:** `ik calendar export` writes a resolved date range as `ics` or `json`, to
+  `--output <path>` or stdout. ICS output copies each event's original `VEVENT` verbatim, so
+  unmodeled properties survive a backup round trip; events without a parseable `VEVENT` are
+  reported as skipped rather than dropped. An existing `--output` file is never overwritten
+  without `--force`.
+
+### Changed
+- `docs/setup-and-profiles.md` now documents the four distinct credentials (Informaniak API token,
+  mailbox password, Contacts/CardDAV password, Calendar/CalDAV password), where the sync passwords
+  are generated, and that Contacts and Calendar passwords are stored separately.
+
+### Fixed
+- The offline test suite no longer reaches the developer's real OS keyring. `conftest`'s mock is
+  in-process only, so tests that shell out could pick up a machine credential for a profile named
+  `work` and turn offline tests into live API calls. Subprocess helpers now pin a failing keyring
+  backend and fall back to the isolated `IK_CONFIG_DIR`.
+
 ## [0.2.12] - 2026-07-29
 ### Added
 - **Single-file kDrive upload:** `ik drive upload <path>` uses the official v3 octet-stream

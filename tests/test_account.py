@@ -33,6 +33,8 @@ def run_ik(tmp_path, *args):
     env = os.environ.copy()
     env["IK_CONFIG_DIR"] = str(tmp_path / "config")
     env["PYTHONPATH"] = "src"
+    # See tests/test_cli.py: keep subprocesses off the real OS keyring.
+    env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.fail.Keyring"
     return subprocess.run(
         [sys.executable, "-m", "infomaniak_cli.cli", *args],
         text=True,

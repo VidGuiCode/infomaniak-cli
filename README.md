@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.2.12-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.13-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -135,7 +135,9 @@ ik calendar list --json
 ik calendar upcoming --days 14 --json
 ik calendar today --json
 ik calendar search "invoice" --from 2026-01-01 --to 2026-02-01 --json
+ik calendar search --status CONFIRMED --timed --json
 ik calendar show <event_id> --json
+ik calendar export --days 90 --format ics --output backup.ics
 
 ik chat teams --json
 ik chat channels --json
@@ -201,6 +203,10 @@ ik calendar upcoming --days 14 --json
 
 From the default DAV base `https://sync.infomaniak.com/`, `ik auth calendar` auto-discovers your calendar collection and saves it; with multiple calendars it picks a default and lists the rest for re-running with `--url <collection-url>`. Pass `--url` to set a collection explicitly, or `--no-discover` to save the URL verbatim. The CLI does not reuse mail or contacts credentials automatically.
 
+If a profile's calendar URL was left as the service root, calendar reads auto-discover a usable collection for that run and print a note. `ik calendar repair` resolves and saves the real collection permanently; it refuses to guess when several calendars are found, so pass `--url <collection-url>` to choose one. Repair changes local profile config only.
+
+The four credentials a profile can hold — API token, mailbox password, Contacts/CardDAV password, Calendar/CalDAV password — are distinct and stored separately. See [docs/setup-and-profiles.md](docs/setup-and-profiles.md#the-four-credentials).
+
 ## kChat setup
 
 kChat uses Mattermost-compatible connection settings:
@@ -237,7 +243,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive mkdir`, `drive download`, `drive upload`, `drive move`, `drive rename`, `drive rm`, `drive trash list/show/restore`, `drive share-state` |
 | Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads`, `mail draft`, `mail send` |
 | Contacts | `contacts list`, `contacts search`, `contacts show`, `contacts create`, `contacts update` |
-| Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`, `calendar create`, `calendar update`, `calendar cancel`, `calendar delete` |
+| Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`, `calendar export`, `calendar create`, `calendar update`, `calendar cancel`, `calendar delete`, `calendar repair` |
 | kChat | `chat teams`, `chat channels`, `chat users`, `chat search`, `chat thread`, `chat post` |
 
 Run `ik <command> --help` for full options on any command.
@@ -297,7 +303,9 @@ ik calendar list --json
 ik calendar upcoming --days 14 --json
 ik calendar today --json
 ik calendar search "invoice" --from 2026-01-01 --to 2026-02-01 --json
+ik calendar search --status CONFIRMED --timed --json
 ik calendar show <event_id> --json
+ik calendar export --days 90 --format ics --output backup.ics
 
 ik chat teams --json
 ik chat channels --json

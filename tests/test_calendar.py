@@ -1,12 +1,17 @@
 import datetime
 import json
 
+import pytest
+
 from infomaniak_cli import cli
 from infomaniak_cli.auth import CalendarPasswordStore
 from infomaniak_cli.profiles import ProfileManager
+from infomaniak_cli.services.dav_discovery import DavDiscoveryError
 from infomaniak_cli.services.calendar import (
     CalendarClient,
+    CalendarConflictError,
     CalendarError,
+    build_calendar_export_ics,
     build_event_ics,
     find_event,
     format_ics_datetime,
@@ -538,6 +543,444 @@ def test_cli_calendar_create_accepts_global_profile_after_subcommand(tmp_path, m
     assert created_clients[0].calls[-1][0] == "create_event"
 
 
+# --- v0.2.13 calendar discovery repair -------------------------------------
+
+
+COLLECTION_URL = "https://sync.example.test/calendars/user/work/"
+
+
+def _root_url_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update(
+        "work",
+        calendar_url="https://sync.infomaniak.com/",
+        calendar_username="VG00000",
+        make_default=True,
+    )
+    CalendarPasswordStore().save_password("work", "secret-calendar-password")
+
+
+def test_calendar_read_auto_discovers_when_the_saved_url_is_only_the_service_root(
+    tmp_path, monkeypatch, capsys
+):
+    _root_url_profile(tmp_path, monkeypatch)
+    seen = []
+
+    def fake_discover(url, username, password):
+        seen.append(url)
+        return [{"url": COLLECTION_URL, "name": "work"}]
+
+    monkeypatch.setattr(cli, "discover_calendars", fake_discover)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main(["calendar", "list", "--json"]) == 0
+
+    assert seen == ["https://sync.infomaniak.com/"]
+    assert "auto-discovered calendar collection" in capsys.readouterr().err
+
+
+def test_calendar_read_does_not_discover_when_the_saved_url_is_already_a_collection(
+    tmp_path, monkeypatch
+):
+    _configured_profile(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(cli, "discover_calendars", lambda *a, **k: calls.append(a) or [])
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main(["calendar", "list", "--json"]) == 0
+    assert calls == []
+
+
+def test_calendar_read_repair_failure_keeps_the_saved_url_and_does_not_raise(
+    tmp_path, monkeypatch, capsys
+):
+    _root_url_profile(tmp_path, monkeypatch)
+
+    def failing_discover(url, username, password):
+        raise DavDiscoveryError("principal not provisioned for secret-calendar-password")
+
+    monkeypatch.setattr(cli, "discover_calendars", failing_discover)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main(["calendar", "list", "--json"]) == 0
+
+    err = capsys.readouterr().err
+    assert "auto-discovery failed" in err
+    assert "secret-calendar-password" not in err
+
+
+def test_cli_calendar_repair_persists_the_discovered_collection(tmp_path, monkeypatch, capsys):
+    _root_url_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        cli, "discover_calendars", lambda *a, **k: [{"url": COLLECTION_URL, "name": "work"}]
+    )
+
+    assert cli.main(["--profile", "work", "calendar", "repair", "--yes", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["saved"] is True
+    assert payload["changed"] is True
+    assert payload["after"] == COLLECTION_URL
+    assert ProfileManager().get("work").calendar_url == COLLECTION_URL
+
+
+def test_cli_calendar_repair_dry_run_changes_nothing(tmp_path, monkeypatch, capsys):
+    _root_url_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        cli, "discover_calendars", lambda *a, **k: [{"url": COLLECTION_URL, "name": "work"}]
+    )
+
+    assert cli.main(["calendar", "repair", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["saved"] is False
+    assert payload["dry_run"] is True
+    assert ProfileManager().get("work").calendar_url == "https://sync.infomaniak.com/"
+
+
+def test_cli_calendar_repair_requires_an_explicit_profile_for_yes(tmp_path, monkeypatch, capsys):
+    _root_url_profile(tmp_path, monkeypatch)
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+    monkeypatch.setattr(
+        cli, "discover_calendars", lambda *a, **k: [{"url": COLLECTION_URL, "name": "work"}]
+    )
+
+    assert cli.main(["calendar", "repair", "--yes"]) == 1
+
+    assert "profile is explicit" in capsys.readouterr().err
+    assert ProfileManager().get("work").calendar_url == "https://sync.infomaniak.com/"
+
+
+def test_cli_calendar_repair_refuses_to_guess_between_several_collections(
+    tmp_path, monkeypatch, capsys
+):
+    _root_url_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "discover_calendars",
+        lambda *a, **k: [
+            {"url": COLLECTION_URL, "name": "work"},
+            {"url": "https://sync.example.test/calendars/user/personal/", "name": "personal"},
+        ],
+    )
+
+    assert cli.main(["--profile", "work", "calendar", "repair", "--yes"]) == 1
+
+    err = capsys.readouterr().err
+    assert "refusing to guess" in err
+    assert "--url" in err
+    # nothing was persisted
+    assert ProfileManager().get("work").calendar_url == "https://sync.infomaniak.com/"
+
+
+def test_cli_calendar_repair_accepts_an_explicit_url_without_discovery(tmp_path, monkeypatch, capsys):
+    _root_url_profile(tmp_path, monkeypatch)
+    called = []
+    monkeypatch.setattr(cli, "discover_calendars", lambda *a, **k: called.append(a) or [])
+
+    assert cli.main([
+        "--profile", "work", "calendar", "repair", "--url", COLLECTION_URL, "--yes", "--json",
+    ]) == 0
+
+    assert json.loads(capsys.readouterr().out)["after"] == COLLECTION_URL
+    assert called == []
+    assert ProfileManager().get("work").calendar_url == COLLECTION_URL
+
+
+def test_cli_calendar_repair_reports_a_discovery_failure_with_redaction(
+    tmp_path, monkeypatch, capsys
+):
+    _root_url_profile(tmp_path, monkeypatch)
+
+    def failing_discover(url, username, password):
+        raise DavDiscoveryError("no principal for secret-calendar-password")
+
+    monkeypatch.setattr(cli, "discover_calendars", failing_discover)
+
+    assert cli.main(["--profile", "work", "calendar", "repair", "--yes"]) == 1
+
+    err = capsys.readouterr().err
+    assert "Calendar discovery failed" in err
+    assert "secret-calendar-password" not in err
+
+
+# --- v0.2.13 read-only export ----------------------------------------------
+
+
+def test_build_calendar_export_ics_preserves_event_bodies_verbatim():
+    ics, skipped = build_calendar_export_ics(EVENTS)
+
+    assert skipped == []
+    assert ics.startswith("BEGIN:VCALENDAR\r\n")
+    assert ics.endswith("END:VCALENDAR\r\n")
+    assert ics.count("BEGIN:VEVENT") == 2
+    # the second event's unmodeled VALARM survives the round trip
+    assert "BEGIN:VALARM" in ics
+    assert "TRIGGER:-PT15M" in ics
+    assert "ATTENDEE:mailto:alice@example.com" in ics
+
+
+def test_build_calendar_export_ics_reports_events_without_a_vevent():
+    ics, skipped = build_calendar_export_ics([{"uid": "uid-broken", "raw_ics": "not-ics"}])
+
+    assert skipped == ["uid-broken"]
+    assert "BEGIN:VEVENT" not in ics
+
+
+def test_cli_calendar_export_writes_an_ics_file(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+    target = tmp_path / "backup" / "events.ics"
+
+    assert cli.main([
+        "calendar", "export", "--output", str(target), "--json",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["format"] == "ics"
+    assert payload["count"] == 2
+    assert payload["skipped"] == []
+    written = target.read_text(encoding="utf-8")
+    assert written.count("BEGIN:VEVENT") == 2
+
+
+def test_cli_calendar_export_refuses_to_overwrite_without_force(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+    target = tmp_path / "events.ics"
+    target.write_text("original", encoding="utf-8")
+
+    assert cli.main(["calendar", "export", "--output", str(target)]) == 1
+    assert "Refusing to overwrite" in capsys.readouterr().err
+    assert target.read_text(encoding="utf-8") == "original"
+
+    assert cli.main(["calendar", "export", "--output", str(target), "--force"]) == 0
+    assert "BEGIN:VCALENDAR" in target.read_text(encoding="utf-8")
+
+
+def test_cli_calendar_export_json_format_to_stdout(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main(["calendar", "export", "--format", "json"]) == 0
+
+    events = json.loads(capsys.readouterr().out)
+    assert [event["uid"] for event in events] == ["uid-1", "uid-2"]
+
+
+def test_cli_calendar_export_without_output_keeps_json_envelope_structured(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main(["calendar", "export", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["output"] is None
+    assert payload["format"] == "ics"
+    assert payload["count"] == 2
+    assert payload["body"].startswith("BEGIN:VCALENDAR")
+
+
+def test_cli_calendar_export_is_read_only_and_never_writes_to_the_service(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main(["calendar", "export", "--format", "json"]) == 0
+
+    calls = [call[0] for client in clients for call in client.calls]
+    assert calls == ["list_events"]
+
+
+# --- v0.2.13 richer search filters -----------------------------------------
+
+
+def test_search_events_filters_are_anded_with_the_free_text_query():
+    assert [e["uid"] for e in search_events(EVENTS, "review")] == ["uid-2"]
+    # the query alone matches uid-2, but the attendee filter excludes it
+    assert search_events(EVENTS, "review", attendee="alice@example.com") == []
+
+
+def test_search_events_attendee_filter_is_a_case_insensitive_substring():
+    assert [e["uid"] for e in search_events(EVENTS, attendee="ALICE")] == ["uid-1"]
+    assert search_events(EVENTS, attendee="nobody@example.com") == []
+
+
+def test_search_events_uid_filter_is_exact_not_substring():
+    assert [e["uid"] for e in search_events(EVENTS, uid="uid-1")] == ["uid-1"]
+    assert search_events(EVENTS, uid="uid") == []
+
+
+def test_search_events_status_filter_is_case_insensitive_exact():
+    assert len(search_events(EVENTS, status="confirmed")) == 2
+    assert search_events(EVENTS, status="CANCELLED") == []
+
+
+def test_search_events_description_filter_matches_a_substring():
+    assert [e["uid"] for e in search_events(EVENTS, description="supplier")] == ["uid-2"]
+
+
+def test_search_events_all_day_filter_separates_timed_from_all_day():
+    assert [e["uid"] for e in search_events(EVENTS, all_day=True)] == ["uid-2"]
+    assert [e["uid"] for e in search_events(EVENTS, all_day=False)] == ["uid-1"]
+
+
+def test_cli_calendar_search_supports_filters_without_a_query(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main(["calendar", "search", "--all-day", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] == 1
+    assert payload["events"][0]["uid"] == "uid-2"
+    assert payload["filters"] == {"all_day": True}
+
+
+def test_cli_calendar_search_requires_a_query_or_a_filter(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    assert cli.main(["calendar", "search", "--json"]) == 1
+
+    assert "needs a query or at least one filter" in capsys.readouterr().err
+
+
+def test_cli_calendar_search_rejects_all_day_together_with_timed(tmp_path, monkeypatch):
+    _configured_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
+
+    with pytest.raises(SystemExit):
+        cli.main(["calendar", "search", "--all-day", "--timed"])
+
+
+# --- v0.2.13 create-time reminders and duplicate-safe creation -------------
+
+
+def test_cli_calendar_create_writes_repeatable_create_time_reminders(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create",
+        "--summary", "Quarterly review",
+        "--start", "2026-07-20T14:00",
+        "--reminder-minutes", "1440",
+        "--reminder-minutes", "30",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["created"] is True
+    assert payload["reminders"] == [1440, 30]
+    ics = clients[0].calls[-1][1]
+    assert ics.count("BEGIN:VALARM") == 2
+    triggers = [line for line in ics.split("\r\n") if line.startswith("TRIGGER:")]
+    assert triggers == ["TRIGGER:-PT1440M", "TRIGGER:-PT30M"]
+
+
+def test_cli_calendar_create_without_reminders_writes_no_alarm(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create", "--summary", "Team sync", "--start", "2026-07-20T14:00",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    assert json.loads(capsys.readouterr().out)["reminders"] == []
+    assert "VALARM" not in clients[0].calls[-1][1]
+
+
+def test_cli_calendar_create_uses_a_caller_supplied_uid_verbatim(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create", "--summary", "Team sync", "--start", "2026-07-20T14:00",
+        "--uid", "quarterly-compliance-2026q3",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["uid"] == "quarterly-compliance-2026q3"
+    assert payload["uid_explicit"] is True
+    assert clients[0].calls[-1][2] == "quarterly-compliance-2026q3"
+
+
+@pytest.mark.parametrize("bad_uid", ["", "   ", "a/b", "a\\b", "a\nb", "x" * 256])
+def test_cli_calendar_create_rejects_an_unsafe_uid_before_writing(
+    tmp_path, monkeypatch, capsys, bad_uid
+):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create", "--summary", "Team sync", "--start", "2026-07-20T14:00",
+        "--uid", bad_uid, "--yes", "--profile", "work",
+    ]) == 1
+
+    assert "--uid must" in capsys.readouterr().err
+    assert not any(call[0] == "create_event" for c in clients for call in c.calls)
+
+
+def test_cli_calendar_create_if_missing_requires_a_deterministic_uid(tmp_path, monkeypatch, capsys):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create", "--summary", "Team sync", "--start", "2026-07-20T14:00",
+        "--if-missing", "--yes", "--profile", "work",
+    ]) == 1
+
+    assert "--if-missing needs a deterministic --uid" in capsys.readouterr().err
+    assert not any(call[0] == "create_event" for c in clients for call in c.calls)
+
+
+def test_cli_calendar_create_if_missing_treats_an_existing_event_as_a_no_op(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+
+    class ConflictingClient(FakeCalendarClient):
+        def create_event(self, ics, uid, *, calendar=None):
+            self.calls.append(("create_event", ics, uid, calendar))
+            raise CalendarConflictError(f"An event with uid {uid} already exists (not overwritten).")
+
+    monkeypatch.setattr(cli, "CalendarClient", ConflictingClient)
+
+    assert cli.main([
+        "calendar", "create", "--summary", "Team sync", "--start", "2026-07-20T14:00",
+        "--uid", "stable-uid", "--if-missing", "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["created"] is False
+    assert payload["existed"] is True
+
+
+def test_cli_calendar_create_conflict_without_if_missing_is_still_an_error(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+
+    class ConflictingClient(FakeCalendarClient):
+        def create_event(self, ics, uid, *, calendar=None):
+            raise CalendarConflictError(f"An event with uid {uid} already exists (not overwritten).")
+
+    monkeypatch.setattr(cli, "CalendarClient", ConflictingClient)
+
+    assert cli.main([
+        "calendar", "create", "--summary", "Team sync", "--start", "2026-07-20T14:00",
+        "--uid", "stable-uid", "--yes", "--profile", "work",
+    ]) == 1
+
+    assert "already exists" in capsys.readouterr().err
+
+
 def test_cli_calendar_show_existing_event(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, "CalendarClient", FakeCalendarClient)
@@ -577,9 +1020,11 @@ def test_calendar_parser_exposes_lifecycle_writes_but_not_rsvp_or_invites():
     choices = calendar_parser._subparsers._group_actions[0].choices
 
     assert set(choices) == {
-        "list", "upcoming", "today", "search", "show", "create", "update", "cancel", "delete"
+        "list", "upcoming", "today", "search", "show", "export",
+        "create", "update", "cancel", "delete", "repair",
     }
-    assert not {"rsvp", "invite", "sync"} & set(choices)
+    # 0.2.14 boundary: collaboration and bulk surfaces must not appear yet.
+    assert not {"rsvp", "invite", "sync", "import"} & set(choices)
 
 
 # --- event ICS building / parsing -----------------------------------------
@@ -623,6 +1068,63 @@ def test_build_event_ics_timed_and_escaping():
     assert "SUMMARY:Lunch\\; with\\, team\\nback-to-back" in ics
     assert "LOCATION:Café\\, HQ" in ics
     assert ics.endswith("END:VCALENDAR\r\n")
+
+
+def test_build_event_ics_emits_no_alarm_without_reminders():
+    ics = build_event_ics(
+        uid="uid-n",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Team sync",
+        start=datetime.datetime(2026, 7, 20, 14, 0),
+        end=datetime.datetime(2026, 7, 20, 15, 0),
+    )
+    assert "VALARM" not in ics
+
+
+def test_build_event_ics_emits_one_valarm_per_reminder_in_order():
+    ics = build_event_ics(
+        uid="uid-r",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Quarterly review",
+        start=datetime.datetime(2026, 7, 20, 14, 0),
+        end=datetime.datetime(2026, 7, 20, 15, 0),
+        reminders=[1440, 30, 0],
+    )
+    assert ics.count("BEGIN:VALARM") == 3
+    assert ics.count("END:VALARM") == 3
+    triggers = [line for line in ics.split("\r\n") if line.startswith("TRIGGER:")]
+    assert triggers == ["TRIGGER:-PT1440M", "TRIGGER:-PT30M", "TRIGGER:-PT0M"]
+    # alarms are nested inside the VEVENT, never after it
+    assert ics.index("BEGIN:VALARM") > ics.index("BEGIN:VEVENT")
+    assert ics.index("END:VALARM") < ics.index("END:VEVENT")
+    assert "ACTION:DISPLAY" in ics
+    assert "DESCRIPTION:Quarterly review" in ics
+
+
+def test_build_event_ics_rejects_negative_and_duplicate_reminders():
+    common = dict(
+        uid="uid-b",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Team sync",
+        start=datetime.datetime(2026, 7, 20, 14, 0),
+        end=datetime.datetime(2026, 7, 20, 15, 0),
+    )
+    with pytest.raises(CalendarError, match="zero or greater"):
+        build_event_ics(**common, reminders=[-5])
+    with pytest.raises(CalendarError, match="duplicate"):
+        build_event_ics(**common, reminders=[30, 30])
+
+
+def test_build_event_ics_escapes_the_alarm_description():
+    ics = build_event_ics(
+        uid="uid-e",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Review; notes, here",
+        start=datetime.datetime(2026, 7, 20, 14, 0),
+        end=datetime.datetime(2026, 7, 20, 15, 0),
+        reminders=[10],
+    )
+    assert "DESCRIPTION:Review\\; notes\\, here" in ics
 
 
 def test_build_event_ics_all_day_uses_value_date():
