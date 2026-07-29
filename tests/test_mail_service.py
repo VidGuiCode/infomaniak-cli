@@ -18,7 +18,11 @@ from infomaniak_cli.services.mail import (
     _decode_header_value,
     _extract_text_body,
     _html_to_text,
+    build_forward,
     build_mail_message,
+    build_reply,
+    extract_attachment,
+    list_attachments,
     slim_message,
 )
 
@@ -906,3 +910,332 @@ class TestIMAPClientListThreads:
         threads = client.list_threads(folder="Archive")
         assert threads == []
 
+
+
+# --- v0.2.15 attachments ---------------------------------------------------
+
+
+def _message_with_attachments() -> email.message.EmailMessage:
+    msg = email.message.EmailMessage(policy=email.policy.SMTP)
+    msg["From"] = "sender@example.com"
+    msg["To"] = "user@example.com"
+    msg["Subject"] = "Report"
+    msg["Message-ID"] = "<orig-1@example.com>"
+    msg.set_content("Body text")
+    msg.add_attachment(b"PDFDATA", maintype="application", subtype="pdf", filename="report.pdf")
+    msg.add_attachment(b"a,b\n1,2", maintype="text", subtype="csv", filename="data.csv")
+    return msg
+
+
+def test_list_attachments_returns_named_parts_only():
+    parts = list_attachments(_message_with_attachments())
+
+    assert [p["filename"] for p in parts] == ["report.pdf", "data.csv"]
+    assert [p["index"] for p in parts] == [0, 1]
+    assert parts[0]["content_type"] == "application/pdf"
+    assert parts[0]["size"] == len(b"PDFDATA")
+
+
+def test_list_attachments_is_empty_for_a_plain_message():
+    msg = email.message.EmailMessage(policy=email.policy.SMTP)
+    msg.set_content("just text")
+
+    assert list_attachments(msg) == []
+
+
+def test_extract_attachment_by_index_returns_bytes_verbatim():
+    name, payload = extract_attachment(_message_with_attachments(), 0)
+
+    assert name == "report.pdf"
+    assert payload == b"PDFDATA"
+
+
+def test_extract_attachment_by_unambiguous_filename():
+    name, payload = extract_attachment(_message_with_attachments(), "data.csv")
+
+    assert name == "data.csv"
+    assert payload == b"a,b\n1,2"
+
+
+def test_extract_attachment_refuses_an_out_of_range_index():
+    with pytest.raises(MailError, match="out of range"):
+        extract_attachment(_message_with_attachments(), 5)
+
+
+def test_extract_attachment_refuses_an_ambiguous_filename():
+    msg = email.message.EmailMessage(policy=email.policy.SMTP)
+    msg.set_content("body")
+    msg.add_attachment(b"one", maintype="application", subtype="pdf", filename="same.pdf")
+    msg.add_attachment(b"two", maintype="application", subtype="pdf", filename="same.pdf")
+
+    with pytest.raises(MailError, match="ambiguous"):
+        extract_attachment(msg, "same.pdf")
+
+
+def test_extract_attachment_refuses_an_unknown_filename():
+    with pytest.raises(MailError, match="no attachment"):
+        extract_attachment(_message_with_attachments(), "missing.txt")
+
+
+# --- v0.2.15 attachment sending -------------------------------------------
+
+
+def test_build_mail_message_attaches_files_with_guessed_types(tmp_path):
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"PDFDATA")
+    # An extension with no registered type must fall back, not raise. Avoid
+    # asserting types that vary by platform registry (e.g. .csv on Windows).
+    blob = tmp_path / "data.unknownext"
+    blob.write_bytes(b"RAWBYTES")
+
+    msg = build_mail_message(
+        sender="user@example.com", to=["recipient@example.com"],
+        subject="Report", body="See attached.", attachments=[pdf, blob],
+    )
+
+    parts = list_attachments(msg)
+    assert [p["filename"] for p in parts] == ["report.pdf", "data.unknownext"]
+    assert parts[0]["content_type"] == "application/pdf"
+    assert parts[1]["content_type"] == "application/octet-stream"
+    assert extract_attachment(msg, 0)[1] == b"PDFDATA"
+    assert extract_attachment(msg, 1)[1] == b"RAWBYTES"
+
+
+def test_build_mail_message_without_attachments_stays_plain_text():
+    msg = build_mail_message(
+        sender="user@example.com", to=["recipient@example.com"],
+        subject="Hello", body="Body",
+    )
+
+    assert list_attachments(msg) == []
+    assert msg.get_content_type() == "text/plain"
+
+
+def test_build_mail_message_refuses_a_missing_or_directory_attachment(tmp_path):
+    with pytest.raises(MailError, match="does not exist"):
+        build_mail_message(
+            sender="user@example.com", to=["recipient@example.com"],
+            subject="s", body="b", attachments=[tmp_path / "absent.pdf"],
+        )
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    with pytest.raises(MailError, match="not a single file"):
+        build_mail_message(
+            sender="user@example.com", to=["recipient@example.com"],
+            subject="s", body="b", attachments=[folder],
+        )
+
+
+def test_build_mail_message_enforces_a_total_attachment_size_cap(tmp_path):
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * 2048)
+
+    with pytest.raises(MailError, match="total attachment size"):
+        build_mail_message(
+            sender="user@example.com", to=["recipient@example.com"],
+            subject="s", body="b", attachments=[big], max_total_bytes=1024,
+        )
+
+
+# --- v0.2.15 reply and forward --------------------------------------------
+
+
+def _original() -> email.message.EmailMessage:
+    msg = email.message.EmailMessage(policy=email.policy.SMTP)
+    msg["From"] = "sender@example.com"
+    msg["To"] = "user@example.com, other@example.com"
+    msg["Cc"] = "cc@example.com"
+    msg["Subject"] = "Quarterly report"
+    msg["Message-ID"] = "<orig-1@example.com>"
+    msg["References"] = "<root-0@example.com>"
+    msg.set_content("Original body")
+    return msg
+
+
+def test_build_reply_preserves_threading_headers():
+    reply = build_reply(_original(), sender="user@example.com", body="Thanks.")
+
+    assert reply["In-Reply-To"] == "<orig-1@example.com>"
+    # References must append, never replace
+    assert "<root-0@example.com>" in reply["References"]
+    assert "<orig-1@example.com>" in reply["References"]
+    assert reply["To"] == "sender@example.com"
+    assert reply["Subject"] == "Re: Quarterly report"
+
+
+def test_build_reply_does_not_stack_the_re_prefix():
+    original = _original()
+    del original["Subject"]
+    original["Subject"] = "Re: Quarterly report"
+
+    reply = build_reply(original, sender="user@example.com", body="Thanks.")
+
+    assert reply["Subject"] == "Re: Quarterly report"
+
+
+def test_build_reply_all_includes_others_but_never_our_own_address():
+    reply = build_reply(_original(), sender="user@example.com", body="Thanks.", reply_all=True)
+
+    recipients = f"{reply['To']} {reply.get('Cc') or ''}"
+    assert "sender@example.com" in recipients
+    assert "other@example.com" in recipients
+    assert "cc@example.com" in recipients
+    assert "user@example.com" not in recipients
+
+
+def test_build_forward_preserves_references_and_requires_recipients():
+    fwd = build_forward(_original(), sender="user@example.com", to=["third@example.com"], body="FYI")
+
+    assert fwd["To"] == "third@example.com"
+    assert fwd["Subject"] == "Fwd: Quarterly report"
+    assert "<orig-1@example.com>" in fwd["References"]
+
+    with pytest.raises(MailError, match="at least one"):
+        build_forward(_original(), sender="user@example.com", to=[], body="FYI")
+
+
+def test_build_forward_does_not_stack_the_fwd_prefix():
+    original = _original()
+    del original["Subject"]
+    original["Subject"] = "Fwd: Quarterly report"
+
+    fwd = build_forward(original, sender="user@example.com", to=["third@example.com"], body="FYI")
+
+    assert fwd["Subject"] == "Fwd: Quarterly report"
+
+
+# --- v0.2.15 message lifecycle (flags, move, draft delete) -----------------
+
+
+def _lifecycle_client(responses=None):
+    fake = FakeIMAP(responses or {})
+    client = IMAPClient(
+        "mail.example.test", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+    )
+    return fake, client
+
+
+def test_mark_read_uses_a_read_write_select_and_adds_the_seen_flag():
+    fake, client = _lifecycle_client()
+
+    result = client.mark_read("42", folder="INBOX")
+
+    assert result == {"uid": "42", "folder": "INBOX", "flag": r"\Seen", "added": True}
+    selects = [c for c in fake.calls if c[0] == "select"]
+    assert selects and selects[-1][1] == ("INBOX", False)  # readonly=False
+    stores = [c for c in fake.calls if c[0] == "uid" and c[1][0] == "STORE"]
+    assert stores[-1][1] == ("STORE", "42", "+FLAGS", r"(\Seen)")
+
+
+def test_mark_unread_removes_the_seen_flag():
+    fake, client = _lifecycle_client()
+
+    client.mark_unread("42")
+
+    stores = [c for c in fake.calls if c[0] == "uid" and c[1][0] == "STORE"]
+    assert stores[-1][1] == ("STORE", "42", "-FLAGS", r"(\Seen)")
+
+
+def test_flag_and_unflag_toggle_the_flagged_flag():
+    fake, client = _lifecycle_client()
+
+    client.flag_message("7")
+    client.unflag_message("7")
+
+    stores = [c[1] for c in fake.calls if c[0] == "uid" and c[1][0] == "STORE"]
+    assert stores[0] == ("STORE", "7", "+FLAGS", r"(\Flagged)")
+    assert stores[1] == ("STORE", "7", "-FLAGS", r"(\Flagged)")
+
+
+def test_reading_paths_never_take_the_read_write_select():
+    """Regression: introducing mutations must not make reads mutate state."""
+    fake, client = _lifecycle_client({"search": ("OK", [b""])})
+
+    client.list_messages(folder="INBOX")
+
+    assert not [c for c in fake.calls if c[0] == "select" and c[1][1] is False]
+    assert [c for c in fake.calls if c[0] == "examine"]
+
+
+def test_move_message_prefers_uid_move():
+    fake, client = _lifecycle_client()
+
+    result = client.move_message("42", "Archive", folder="INBOX")
+
+    assert result["method"] == "MOVE"
+    assert result["to"] == "Archive"
+    moves = [c for c in fake.calls if c[0] == "uid" and c[1][0] == "MOVE"]
+    assert moves and moves[-1][1] == ("MOVE", "42", "Archive")
+
+
+def test_move_message_refuses_a_mailbox_wide_expunge_when_uid_expunge_is_unavailable():
+    class NoMoveNoUidExpunge(FakeIMAP):
+        def uid(self, command, *args):
+            self.calls.append(("uid", (command, *args)))
+            if command in {"MOVE", "EXPUNGE"}:
+                raise imaplib.IMAP4.error(f"{command} not supported")
+            return ("OK", [b""])
+
+    fake = NoMoveNoUidExpunge({})
+    client = IMAPClient(
+        "mail.example.test", 993, "user@example.com", "pw", imap_factory=lambda h, p: fake
+    )
+
+    with pytest.raises(MailError, match="Refusing a mailbox-wide EXPUNGE"):
+        client.move_message("42", "Archive")
+
+
+def test_message_flags_reads_without_mutating():
+    fake, client = _lifecycle_client(
+        {"uid FETCH 42 (FLAGS)": ("OK", [rb"1 (UID 42 FLAGS (\Seen \Flagged))"])}
+    )
+
+    flags = client.message_flags("42")
+
+    assert flags == [r"\Seen", r"\Flagged"]
+    assert not [c for c in fake.calls if c[0] == "select" and c[1][1] is False]
+
+
+def _parsed_with_folded_subject() -> email.message.Message:
+    """A message as it actually arrives from the wire, with a folded subject.
+
+    Folding is how long subjects are transmitted (RFC 5322 section 2.2.3), so
+    the decoded value legitimately contains CR/LF plus continuation whitespace.
+    """
+    raw = (
+        b"From: sender@example.com\r\n"
+        b"To: user@example.com\r\n"
+        b"Subject: Quarterly report\r\n and supporting figures\r\n"
+        b"Message-ID: <orig-1@example.com>\r\n"
+        b"References: <root-0@example.com>\r\n"
+        b"\r\n"
+        b"Original body\r\n"
+    )
+    return email.message_from_bytes(raw)
+
+
+def test_build_reply_collapses_a_folded_subject_header():
+    """Regression: a folded real-world subject must not produce a newline.
+
+    Leaving the fold in makes the header-injection guard reject the reply, which
+    broke replying to any message with a long subject.
+    """
+    reply = build_reply(
+        _parsed_with_folded_subject(), sender="user@example.com", body="Thanks."
+    )
+
+    assert "\n" not in reply["Subject"]
+    assert "\r" not in reply["Subject"]
+    assert reply["Subject"] == "Re: Quarterly report and supporting figures"
+
+
+def test_build_forward_collapses_a_folded_subject_header():
+    fwd = build_forward(
+        _parsed_with_folded_subject(),
+        sender="user@example.com",
+        to=["third@example.com"],
+        body="FYI",
+    )
+
+    assert "\n" not in fwd["Subject"]
+    assert fwd["Subject"] == "Fwd: Quarterly report and supporting figures"

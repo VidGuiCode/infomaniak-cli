@@ -14,8 +14,10 @@ import email.message
 import email.policy
 import email.utils
 import imaplib
+import mimetypes
 import re
 import smtplib
+from pathlib import Path
 from typing import Any
 
 
@@ -58,8 +60,16 @@ def build_mail_message(
     body: str,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
+    attachments: list[Any] | None = None,
+    max_total_bytes: int = 25 * 1024 * 1024,
 ) -> email.message.EmailMessage:
-    """Build one plain-text RFC message after rejecting header injection."""
+    """Build one plain-text RFC message after rejecting header injection.
+
+    ``attachments`` are local file paths. Each is read, typed with
+    ``mimetypes.guess_type`` and added as a real attachment part; the combined
+    size is capped locally so an oversized message fails here with a clear error
+    instead of being rejected mid-SMTP.
+    """
     recipients = list(to or [])
     copies = list(cc or [])
     blind_copies = list(bcc or [])
@@ -77,14 +87,227 @@ def build_mail_message(
     message["Date"] = email.utils.formatdate(localtime=True)
     message["Message-ID"] = email.utils.make_msgid()
     message.set_content(str(body))
+    _attach_files(message, attachments, max_total_bytes=max_total_bytes)
     return message
+
+
+def _attach_files(
+    message: email.message.EmailMessage,
+    attachments: list[Any] | None,
+    *,
+    max_total_bytes: int,
+) -> None:
+    """Attach local files to a message, refusing bad paths and oversized totals."""
+    if not attachments:
+        return
+    total = 0
+    for raw in attachments:
+        path = Path(raw)
+        if not path.exists():
+            raise MailError(f"Attachment does not exist: {path}")
+        if not path.is_file():
+            raise MailError(f"Attachment is not a single file: {path}")
+        payload = path.read_bytes()
+        total += len(payload)
+        if total > max_total_bytes:
+            raise MailError(
+                f"Refusing to send: total attachment size {total} bytes exceeds the "
+                f"{max_total_bytes} byte limit."
+            )
+        guessed, _ = mimetypes.guess_type(path.name)
+        maintype, _, subtype = (guessed or "application/octet-stream").partition("/")
+        message.add_attachment(
+            payload, maintype=maintype, subtype=subtype or "octet-stream", filename=path.name
+        )
+
+
+def _prefixed_subject(original: str | None, prefix: str) -> str:
+    """Add a Re:/Fwd: prefix without stacking one that is already present.
+
+    Real subjects arrive folded across lines (RFC 5322 header folding), so the
+    decoded value can contain CR/LF and continuation whitespace. Those are
+    collapsed to single spaces here: leaving them in produces a subject that the
+    header-injection guard rightly rejects, which would make replying to any
+    long-subject message fail.
+    """
+    decoded = _decode_header_value(original) or ""
+    subject = " ".join(decoded.split())
+    if subject.casefold().startswith(f"{prefix.casefold()}:"):
+        return subject
+    return f"{prefix}: {subject}".strip()
+
+
+def _address_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [addr for _, addr in email.utils.getaddresses([value]) if addr]
+
+
+def build_reply(
+    original: email.message.Message,
+    *,
+    sender: str,
+    body: str,
+    reply_all: bool = False,
+    attachments: list[Any] | None = None,
+) -> email.message.EmailMessage:
+    """Build a reply to one resolved message, preserving threading headers.
+
+    ``In-Reply-To`` is the original ``Message-ID`` and ``References`` appends to
+    the original chain rather than replacing it, so clients keep the thread.
+    """
+    original_id = (original.get("Message-ID") or "").strip()
+    to = _address_list(original.get("Reply-To")) or _address_list(original.get("From"))
+    cc: list[str] = []
+    if reply_all:
+        own = sender.casefold()
+        extra = _address_list(original.get("To")) + _address_list(original.get("Cc"))
+        seen = {addr.casefold() for addr in to}
+        for addr in extra:
+            key = addr.casefold()
+            if key == own or key in seen:
+                continue
+            seen.add(key)
+            cc.append(addr)
+
+    quoted = "\n".join(f"> {line}" for line in (_body_text(original) or "").splitlines())
+    message = build_mail_message(
+        sender=sender,
+        to=to,
+        subject=_prefixed_subject(original.get("Subject"), "Re"),
+        body=f"{body}\n\n{quoted}".rstrip() + "\n",
+        cc=cc or None,
+        attachments=attachments,
+    )
+    _apply_threading(message, original, original_id)
+    return message
+
+
+def build_forward(
+    original: email.message.Message,
+    *,
+    sender: str,
+    to: list[str],
+    body: str,
+    with_attachments: bool = False,
+) -> email.message.EmailMessage:
+    """Build a forward of one resolved message to explicit recipients."""
+    if not to:
+        raise MailError("forward requires at least one --to recipient")
+    original_id = (original.get("Message-ID") or "").strip()
+    quoted = "\n".join(f"> {line}" for line in (_body_text(original) or "").splitlines())
+    header = (
+        f"---------- Forwarded message ----------\n"
+        f"From: {_decode_header_value(original.get('From')) or ''}\n"
+        f"Subject: {_decode_header_value(original.get('Subject')) or ''}\n"
+    )
+    message = build_mail_message(
+        sender=sender,
+        to=to,
+        subject=_prefixed_subject(original.get("Subject"), "Fwd"),
+        body=f"{body}\n\n{header}\n{quoted}".rstrip() + "\n",
+    )
+    if with_attachments:
+        for name, payload in (
+            (item["filename"], extract_attachment(original, item["index"])[1])
+            for item in list_attachments(original)
+        ):
+            guessed, _ = mimetypes.guess_type(name)
+            maintype, _, subtype = (guessed or "application/octet-stream").partition("/")
+            message.add_attachment(
+                payload, maintype=maintype, subtype=subtype or "octet-stream", filename=name
+            )
+    _apply_threading(message, original, original_id)
+    return message
+
+
+def _apply_threading(
+    message: email.message.EmailMessage,
+    original: email.message.Message,
+    original_id: str,
+) -> None:
+    """Set In-Reply-To and append to References so threading survives."""
+    if not original_id:
+        return
+    message["In-Reply-To"] = original_id
+    prior = (original.get("References") or "").split()
+    chain = [ref for ref in prior if ref] + [original_id]
+    message["References"] = " ".join(dict.fromkeys(chain))
+
+
+def list_attachments(msg: email.message.Message) -> list[dict[str, Any]]:
+    """List the named attachment parts of a message, in document order.
+
+    Only parts that are real attachments are returned: a part is included when it
+    carries a filename, or when its Content-Disposition is ``attachment``. Inline
+    body parts and multipart containers are skipped, so the returned index is a
+    stable handle for :func:`extract_attachment`.
+    """
+    parts: list[dict[str, Any]] = []
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        filename = part.get_filename()
+        disposition = (part.get_content_disposition() or "").casefold()
+        if not filename and disposition != "attachment":
+            continue
+        payload = part.get_payload(decode=True) or b""
+        parts.append(
+            {
+                "index": len(parts),
+                "filename": _decode_header_value(filename) or f"part-{len(parts)}",
+                "content_type": part.get_content_type(),
+                "size": len(payload),
+            }
+        )
+    return parts
+
+
+def extract_attachment(
+    msg: email.message.Message, target: int | str
+) -> tuple[str, bytes]:
+    """Return ``(filename, bytes)`` for one exactly-resolved attachment.
+
+    ``target`` is either the index from :func:`list_attachments` or a filename.
+    A filename that matches several parts is refused rather than guessed, so a
+    save never silently writes the wrong attachment.
+    """
+    payloads: list[tuple[str, bytes]] = []
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        filename = part.get_filename()
+        disposition = (part.get_content_disposition() or "").casefold()
+        if not filename and disposition != "attachment":
+            continue
+        name = _decode_header_value(filename) or f"part-{len(payloads)}"
+        payloads.append((name, part.get_payload(decode=True) or b""))
+
+    if isinstance(target, int):
+        if target < 0 or target >= len(payloads):
+            raise MailError(
+                f"Attachment index {target} is out of range; the message has {len(payloads)}."
+            )
+        return payloads[target]
+
+    matches = [item for item in payloads if item[0] == target]
+    if not matches:
+        raise MailError(f"There is no attachment named {target!r} on this message.")
+    if len(matches) > 1:
+        raise MailError(
+            f"Attachment name {target!r} is ambiguous ({len(matches)} parts share it); "
+            "use the index from `ik mail attachments` instead."
+        )
+    return matches[0]
 
 
 class IMAPClient:
     """Injectable IMAP client for mailbox access.
 
-    Read commands use EXAMINE/BODY.PEEK. The sole write method is the explicit
-    protected-draft APPEND operation.
+    Read commands use EXAMINE/BODY.PEEK and never change server-side state.
+    Mutations are confined to the small set of methods that call
+    :meth:`_select_writable` — flag changes, move, and draft delete — plus the
+    protected-draft APPEND. Adding a new read path must use :meth:`_examine`.
 
     Parameters
     ----------
@@ -348,6 +571,119 @@ class IMAPClient:
         result["body_preview"] = _body_preview(msg)
         result["body_html"] = _body_html(msg)
         return result
+
+    def fetch_raw(self, uid: str, folder: str = "INBOX") -> bytes:
+        """Fetch one message's raw bytes using BODY.PEEK so \\Seen is not set."""
+        self._examine(folder)
+        typ, data = self._conn.uid("FETCH", uid, "(BODY.PEEK[])")
+        if typ != "OK" or not data or not data[0]:
+            raise MailError(f"Message UID {uid} not found in {folder}")
+        raw = data[0][1] if isinstance(data[0], tuple) else data[0]
+        if not isinstance(raw, (bytes, bytearray)):
+            raise MailError(f"Unexpected IMAP payload for UID {uid}")
+        return bytes(raw)
+
+    def _select_writable(self, mailbox: str) -> None:
+        """Read-write SELECT, used ONLY by mutating operations.
+
+        Read paths keep using :meth:`_examine`, so listing, searching and reading
+        can never change server-side state such as ``\\Seen``.
+        """
+        self._connect()
+        typ, data = self._conn.select(mailbox, readonly=False)
+        if typ != "OK":
+            raise MailError(f"IMAP select failed for {mailbox}: {_format_imap_response(data)}")
+
+    def _store_flag(self, uid: str, flag: str, *, add: bool, folder: str) -> dict[str, Any]:
+        self._select_writable(folder)
+        command = "+FLAGS" if add else "-FLAGS"
+        typ, data = self._conn.uid("STORE", uid, command, f"({flag})")
+        if typ != "OK":
+            raise MailError(
+                f"IMAP flag update failed for UID {uid} in {folder}: {_format_imap_response(data)}"
+            )
+        return {"uid": uid, "folder": folder, "flag": flag, "added": add}
+
+    def mark_read(self, uid: str, folder: str = "INBOX") -> dict[str, Any]:
+        return self._store_flag(uid, r"\Seen", add=True, folder=folder)
+
+    def mark_unread(self, uid: str, folder: str = "INBOX") -> dict[str, Any]:
+        return self._store_flag(uid, r"\Seen", add=False, folder=folder)
+
+    def flag_message(self, uid: str, folder: str = "INBOX") -> dict[str, Any]:
+        return self._store_flag(uid, r"\Flagged", add=True, folder=folder)
+
+    def unflag_message(self, uid: str, folder: str = "INBOX") -> dict[str, Any]:
+        return self._store_flag(uid, r"\Flagged", add=False, folder=folder)
+
+    def message_flags(self, uid: str, folder: str = "INBOX") -> list[str]:
+        """Read the flags of one message without changing them."""
+        self._examine(folder)
+        typ, data = self._conn.uid("FETCH", uid, "(FLAGS)")
+        if typ != "OK" or not data or not data[0]:
+            raise MailError(f"Message UID {uid} not found in {folder}")
+        raw = data[0] if isinstance(data[0], bytes) else data[0][0]
+        text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        match = re.search(r"FLAGS \(([^)]*)\)", text)
+        return match.group(1).split() if match else []
+
+    def move_message(self, uid: str, destination: str, folder: str = "INBOX") -> dict[str, Any]:
+        """Move one message, preferring UID MOVE and falling back to COPY+EXPUNGE."""
+        self._select_writable(folder)
+        try:
+            typ, data = self._conn.uid("MOVE", uid, destination)
+            if typ == "OK":
+                return {"uid": uid, "from": folder, "to": destination, "method": "MOVE"}
+        except Exception:
+            # Server does not implement RFC 6851 MOVE; fall through to COPY.
+            pass
+
+        typ, data = self._conn.uid("COPY", uid, destination)
+        if typ != "OK":
+            raise MailError(
+                f"IMAP move failed for UID {uid} to {destination}: {_format_imap_response(data)}"
+            )
+        typ, data = self._conn.uid("STORE", uid, "+FLAGS", r"(\Deleted)")
+        if typ != "OK":
+            raise MailError(
+                f"IMAP move copied UID {uid} but could not mark the original deleted: "
+                f"{_format_imap_response(data)}"
+            )
+        self._expunge_uid(uid)
+        return {"uid": uid, "from": folder, "to": destination, "method": "COPY+EXPUNGE"}
+
+    def _expunge_uid(self, uid: str) -> None:
+        """Expunge exactly one UID, never the whole mailbox, when possible."""
+        try:
+            typ, data = self._conn.uid("EXPUNGE", uid)
+            if typ == "OK":
+                return
+        except Exception:
+            pass
+        # UIDPLUS unavailable: the \Deleted flag is left set and the message is
+        # hidden from listings, but we refuse a mailbox-wide EXPUNGE because it
+        # would remove other messages the caller never named.
+        raise MailError(
+            f"UID {uid} was copied and marked deleted, but this server does not support "
+            "UID EXPUNGE. Refusing a mailbox-wide EXPUNGE, which would affect other messages. "
+            "Remove the original from your mail client."
+        )
+
+    def delete_draft(self, uid: str, folder: str | None = None) -> dict[str, Any]:
+        """Delete exactly one draft by UID from the Drafts folder."""
+        target = folder or self.drafts_folder()
+        self._select_writable(target)
+        typ, data = self._conn.uid("STORE", uid, "+FLAGS", r"(\Deleted)")
+        if typ != "OK":
+            raise MailError(
+                f"IMAP draft delete failed for UID {uid}: {_format_imap_response(data)}"
+            )
+        self._expunge_uid(uid)
+        return {"uid": uid, "folder": target, "status": "deleted"}
+
+    def drafts_folder(self) -> str:
+        drafts = next((item for item in self.list_folders() if item.get("role") == "drafts"), None)
+        return str(drafts.get("name")) if drafts else "Drafts"
 
     def append_draft(
         self,

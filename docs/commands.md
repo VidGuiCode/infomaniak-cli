@@ -158,6 +158,9 @@ ik mail unread --folder Sent --since 2026-06-01 --json
 ik mail search "invoice" --days 30 --json
 ik mail read <uid> --folder Spam --json
 ik mail threads --folder Sent --days 7 --json
+ik mail attachments <uid> --json
+ik mail attachment-save <uid> 0 --output ./downloads/
+ik mail drafts list --json
 ```
 
 `ik mail mailboxes` lists configured/discovered mailbox addresses. Without an API token it can still show the profile's configured default mailbox. With a main Informaniak API token and a discovered mail hosting ID, it uses the confirmed read-only `GET /1/mail_hostings/{mail_hosting_id}/mailboxes` endpoint. `ik mail accounts` is an alias.
@@ -177,13 +180,58 @@ ik mail draft --to recipient@example.com --subject "Review" --body "Draft body" 
 ik mail draft --to recipient@example.com --subject "Review" --body "Draft body" --profile work
 ik mail send --to recipient@example.com --subject "Hello" --body "Message body" --dry-run --profile work
 ik mail send --to recipient@example.com --subject "Hello" --body "Message body" --profile work
+ik mail send --to recipient@example.com --subject "Report" --body "See attached." \
+    --attach ./report.pdf --dry-run --profile work
+ik mail reply <uid> --body "Acknowledged." --dry-run --profile work
+ik mail reply <uid> --body "Acknowledged." --all --profile work
+ik mail forward <uid> --to third@example.com --body "FYI" --with-attachments --dry-run
+ik mail mark-read <uid> --dry-run --profile work
+ik mail flag <uid> --profile work
+ik mail move <uid> Archive --dry-run --profile work
+ik mail drafts delete <uid> --dry-run --profile work
 ```
 
 Both commands preview profile, mailbox/from, recipients, subject, and body; confirm by default;
 support `--json`/`--compact`; and permit `--yes` only with explicit `--profile` or `IK_PROFILE`.
 `--to`, `--cc`, and `--bcc` are repeatable. Drafts use IMAP APPEND with `\Draft`; sends use
-authenticated SMTP SSL on port 465. Attachments, HTML, bulk sends, mark-as-read, delete, move,
-and archive are not implemented.
+authenticated SMTP SSL on port 465.
+
+### Attachments
+
+`ik mail attachments <uid>` lists a message's attachment parts with a stable `index`, `filename`,
+`content_type` and `size`. `ik mail attachment-save <uid> <index|filename>` writes one attachment
+to `--output` (a file or directory, defaulting to the attachment's own name). A filename matching
+several parts is refused rather than guessed — use the index instead. An existing local file is
+never overwritten without `--force`. Both commands use the non-mutating `BODY.PEEK` fetch, so
+listing or saving never marks a message read. Because the filename comes from the sender, it is
+reduced to a safe basename before writing, so a crafted name cannot escape your output directory.
+
+`ik mail send` and `ik mail draft` accept repeatable `--attach <path>`. Content types are guessed
+from the file name, the combined size is capped at 25 MB locally so an oversized message fails with
+a clear error instead of part-way through SMTP, and the preview lists every attachment with its
+name and size plus a total before you confirm.
+
+### Reply, forward, and message lifecycle
+
+`ik mail reply <uid>` and `ik mail forward <uid> --to ...` build from one exactly-resolved message.
+`In-Reply-To` is set to the original `Message-ID` and `References` is **appended** to the original
+chain, so threading survives in every client. `Re:`/`Fwd:` prefixes are never stacked, and folded
+subject headers are collapsed to a single line. `--all` replies to the original recipients while
+excluding your own address; forward always requires an explicit `--to` and can carry the original
+attachments with `--with-attachments`.
+
+`mail mark-read`, `mail mark-unread`, `mail flag`, `mail unflag`, and `mail move <uid> <folder>`
+each act on exactly one resolved UID. They preview folder, UID, subject, action and current flags,
+confirm by default, support `--dry-run`, gate `--yes` on an explicit profile, and read the flags
+back afterwards. `move` verifies the destination folder exists first (run `ik mail folders` for the
+exact names) and prefers IMAP `MOVE`, falling back to `COPY`. If a server lacks `UID EXPUNGE`, the
+move reports an error rather than performing a mailbox-wide `EXPUNGE` that would affect messages
+you never named.
+
+`ik mail drafts list` is read-only; `ik mail drafts delete <uid>` is irreversible and protected.
+
+Not implemented: scheduled send (no reliable native contract exists over IMAP/SMTP), HTML
+composition, bulk delete, purge, spam reporting, and any multi-message or recursive mutation.
 
 ## kDrive
 

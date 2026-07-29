@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.2.14-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.15-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -124,6 +124,8 @@ ik mail search --from infomaniak --subject invoice --json
 ik mail read <uid> --json
 ik mail read <uid> --html
 ik mail threads --folder Sent --days 7 --json
+ik mail attachments <uid> --json
+ik mail attachment-save <uid> 0 --output ./downloads/
 
 ik contacts list --json
 ik contacts search "accountant" --json
@@ -171,7 +173,14 @@ ik mail send --to recipient@example.com --subject "Hello" --body "Message body" 
 ```
 
 Drafts are appended over IMAP with the `\Draft` flag. Sends use authenticated SMTP-over-SSL on
-port 465. Attachments, HTML, bulk sends, delete, move, and mark-as-read remain excluded.
+port 465. Repeatable `--attach <path>` adds attachments to a send or draft, capped at 25 MB total.
+
+`ik mail reply` and `ik mail forward` build from one resolved UID and preserve `In-Reply-To` and
+`References` so threading survives. `mail mark-read`, `mark-unread`, `flag`, `unflag`, and
+`move` each act on exactly one UID with preview, confirmation, `--dry-run` and readback.
+`mail drafts list` is read-only and `mail drafts delete` is protected and irreversible.
+
+HTML composition, scheduled send, bulk delete, purge, and spam reporting remain excluded.
 
 Use the full email address as the mailbox username.
 
@@ -241,7 +250,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | Profile | `profile list`, `show`, `use`, `rename`, `delete` |
 | Discovery | `account list`, `products`, `services` |
 | kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive mkdir`, `drive download`, `drive upload`, `drive move`, `drive rename`, `drive rm`, `drive trash list/show/restore`, `drive share-state` |
-| Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads`, `mail draft`, `mail send` |
+| Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads`, `mail attachments`, `mail attachment-save`, `mail draft`, `mail drafts list/delete`, `mail send`, `mail reply`, `mail forward`, `mail mark-read/mark-unread`, `mail flag/unflag`, `mail move` |
 | Contacts | `contacts list`, `contacts search`, `contacts show`, `contacts create`, `contacts update` |
 | Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`, `calendar export`, `calendar create`, `calendar create-series`, `calendar update`, `calendar cancel`, `calendar delete`, `calendar repair` |
 | kChat | `chat teams`, `chat channels`, `chat users`, `chat search`, `chat thread`, `chat post` |
@@ -292,6 +301,8 @@ ik mail search --from infomaniak --subject invoice --json
 ik mail read <uid> --json
 ik mail read <uid> --html
 ik mail threads --folder Sent --days 7 --json
+ik mail attachments <uid> --json
+ik mail attachment-save <uid> 0 --output ./downloads/
 
 ik contacts list --json
 ik contacts search "accountant" --json

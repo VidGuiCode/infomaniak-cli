@@ -1607,3 +1607,263 @@ def test_mail_write_default_preview_can_be_cancelled_without_password_or_transpo
     assert "This body must be visible before confirmation." in output
     assert "cancelled" in output.lower()
 
+
+
+# --- v0.2.15 attachments and message lifecycle ----------------------------
+
+
+def _attachment_message_bytes() -> bytes:
+    import email.message
+    import email.policy
+
+    msg = email.message.EmailMessage(policy=email.policy.SMTP)
+    msg["From"] = "sender@example.com"
+    msg["To"] = "user@example.com"
+    msg["Subject"] = "Quarterly report"
+    msg["Message-ID"] = "<orig-1@example.com>"
+    msg["References"] = "<root-0@example.com>"
+    msg.set_content("Original body")
+    msg.add_attachment(b"PDFDATA", maintype="application", subtype="pdf", filename="report.pdf")
+    return msg.as_bytes()
+
+
+class _LifecycleIMAP:
+    """Minimal IMAP double covering the v0.2.15 CLI paths."""
+
+    def __init__(self, *args, **kwargs):
+        self.calls: list[tuple] = []
+        self.flags = ["\\Seen"]
+
+    def fetch_raw(self, uid, folder="INBOX"):
+        self.calls.append(("fetch_raw", uid, folder))
+        return _attachment_message_bytes()
+
+    def fetch_message(self, uid, folder="INBOX"):
+        self.calls.append(("fetch_message", uid, folder))
+        return {"uid": uid, "subject": "Quarterly report"}
+
+    def message_flags(self, uid, folder="INBOX"):
+        self.calls.append(("message_flags", uid, folder))
+        return list(self.flags)
+
+    def mark_read(self, uid, folder="INBOX"):
+        self.calls.append(("mark_read", uid, folder))
+        return {"uid": uid, "folder": folder, "flag": "\\Seen", "added": True}
+
+    def flag_message(self, uid, folder="INBOX"):
+        self.calls.append(("flag_message", uid, folder))
+        self.flags.append("\\Flagged")
+        return {"uid": uid, "folder": folder, "flag": "\\Flagged", "added": True}
+
+    def list_folders(self):
+        self.calls.append(("list_folders",))
+        return [{"name": "INBOX"}, {"name": "Archive"}, {"name": "Drafts", "role": "drafts"}]
+
+    def move_message(self, uid, destination, folder="INBOX"):
+        self.calls.append(("move_message", uid, destination, folder))
+        return {"uid": uid, "from": folder, "to": destination, "method": "MOVE"}
+
+    def drafts_folder(self):
+        return "Drafts"
+
+    def list_messages(self, folder="INBOX", limit=None, **kw):
+        self.calls.append(("list_messages", folder, limit))
+        return [{"uid": "9", "subject": "Half-written", "from": "user@example.com"}]
+
+    def delete_draft(self, uid, folder=None):
+        self.calls.append(("delete_draft", uid, folder))
+        return {"uid": uid, "folder": folder, "status": "deleted"}
+
+    def close(self):
+        self.calls.append(("close",))
+
+
+def _lifecycle_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+    MailPasswordStore().save_password("work", "pw")
+    created = []
+
+    def factory(*args, **kwargs):
+        client = _LifecycleIMAP()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "IMAPClient", factory)
+    return created
+
+
+def test_mail_attachments_lists_parts_read_only(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_profile(tmp_path, monkeypatch)
+
+    assert cli.main(["mail", "attachments", "42", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] == 1
+    assert payload["attachments"][0]["filename"] == "report.pdf"
+    # read-only: uses the BODY.PEEK raw fetch, never a mutation
+    assert [c[0] for c in clients[0].calls] == ["fetch_raw", "close"]
+
+
+def test_mail_attachment_save_writes_bytes_and_refuses_overwrite(tmp_path, monkeypatch, capsys):
+    _lifecycle_profile(tmp_path, monkeypatch)
+    target = tmp_path / "out" / "report.pdf"
+
+    assert cli.main(["mail", "attachment-save", "42", "0", "--output", str(target), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["saved"] is True
+    assert target.read_bytes() == b"PDFDATA"
+
+    assert cli.main(["mail", "attachment-save", "42", "0", "--output", str(target)]) == 1
+    assert "Refusing to overwrite" in capsys.readouterr().err
+
+    assert cli.main(["mail", "attachment-save", "42", "0", "--output", str(target), "--force"]) == 0
+
+
+def test_mail_reply_dry_run_preserves_threading_and_sends_nothing(tmp_path, monkeypatch, capsys):
+    _lifecycle_profile(tmp_path, monkeypatch)
+
+    def no_send(*args, **kwargs):
+        raise AssertionError("dry-run must not construct an SMTP transport")
+
+    monkeypatch.setattr(cli, "SMTPClient", no_send)
+
+    assert cli.main(["mail", "reply", "42", "--body", "Thanks.", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sent"] is False
+    assert payload["dry_run"] is True
+    assert payload["to"] == ["sender@example.com"]
+    assert payload["subject"] == "Re: Quarterly report"
+    assert payload["in_reply_to"] == "<orig-1@example.com>"
+    assert "<root-0@example.com>" in payload["references"]
+
+
+def test_mail_forward_requires_recipients_and_previews_them(tmp_path, monkeypatch, capsys):
+    _lifecycle_profile(tmp_path, monkeypatch)
+
+    def no_send(*args, **kwargs):
+        raise AssertionError("dry-run must not construct an SMTP transport")
+
+    monkeypatch.setattr(cli, "SMTPClient", no_send)
+
+    assert cli.main([
+        "mail", "forward", "42", "--to", "third@example.com", "--body", "FYI",
+        "--dry-run", "--json",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["to"] == ["third@example.com"]
+    assert payload["subject"] == "Fwd: Quarterly report"
+    assert payload["sent"] is False
+
+
+def test_mail_mark_read_dry_run_changes_nothing(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_profile(tmp_path, monkeypatch)
+
+    assert cli.main(["mail", "mark-read", "42", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed"] is False
+    assert payload["dry_run"] is True
+    assert not any(c[0] == "mark_read" for c in clients[0].calls)
+
+
+def test_mail_flag_applies_and_reads_flags_back(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_profile(tmp_path, monkeypatch)
+
+    assert cli.main(["--profile", "work", "mail", "flag", "42", "--yes", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed"] is True
+    assert "\\Flagged" in payload["flags_after"]
+    assert any(c[0] == "flag_message" for c in clients[0].calls)
+
+
+def test_mail_move_refuses_a_missing_destination_folder(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_profile(tmp_path, monkeypatch)
+
+    assert cli.main(["--profile", "work", "mail", "move", "42", "Nope", "--yes"]) == 1
+
+    assert "Destination folder does not exist" in capsys.readouterr().err
+    assert not any(c[0] == "move_message" for c in clients[0].calls)
+
+
+def test_mail_move_to_an_existing_folder_reports_the_method(tmp_path, monkeypatch, capsys):
+    _lifecycle_profile(tmp_path, monkeypatch)
+
+    assert cli.main(["--profile", "work", "mail", "move", "42", "Archive", "--yes", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["moved"] is True
+    assert payload["result"]["method"] == "MOVE"
+
+
+def test_mail_drafts_list_and_protected_delete(tmp_path, monkeypatch, capsys):
+    clients = _lifecycle_profile(tmp_path, monkeypatch)
+
+    assert cli.main(["mail", "drafts", "list", "--json"]) == 0
+    listing = json.loads(capsys.readouterr().out)
+    assert listing["count"] == 1
+
+    assert cli.main(["mail", "drafts", "delete", "9", "--dry-run", "--json"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["deleted"] is False
+    assert not any(c[0] == "delete_draft" for c in clients[-1].calls)
+
+    assert cli.main(["--profile", "work", "mail", "drafts", "delete", "9", "--yes", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["deleted"] is True
+
+
+def test_mail_lifecycle_writes_require_an_explicit_profile_for_yes(tmp_path, monkeypatch, capsys):
+    _lifecycle_profile(tmp_path, monkeypatch)
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+
+    assert cli.main(["mail", "flag", "42", "--yes"]) == 1
+    assert "profile is explicit" in capsys.readouterr().err
+
+
+def test_mail_parser_exposes_lifecycle_but_no_bulk_destruction():
+    parser = cli.build_parser()
+    mail_parser = parser._subparsers._group_actions[0].choices["mail"]
+    choices = set(mail_parser._subparsers._group_actions[0].choices)
+
+    assert {"attachments", "attachment-save", "reply", "forward", "mark-read",
+            "mark-unread", "flag", "unflag", "move", "drafts"} <= choices
+    assert not {"purge", "empty", "delete-all", "spam", "report-spam"} & choices
+
+
+def test_mail_attachment_save_refuses_a_path_traversal_filename(tmp_path, monkeypatch, capsys):
+    """Attachment names come from the sender, so they are attacker-controlled."""
+    monkeypatch.setenv("IK_CONFIG_DIR", str(tmp_path / "config"))
+    ProfileManager().create_or_update("work", default_mailbox="user@example.com", make_default=True)
+    MailPasswordStore().save_password("work", "pw")
+
+    import email.message
+    import email.policy
+
+    def evil_bytes():
+        msg = email.message.EmailMessage(policy=email.policy.SMTP)
+        msg["From"] = "attacker@example.com"
+        msg["Subject"] = "Nasty"
+        msg.set_content("body")
+        msg.add_attachment(
+            b"OWNED", maintype="application", subtype="octet-stream",
+            filename="../../escaped.txt",
+        )
+        return msg.as_bytes()
+
+    class EvilIMAP(_LifecycleIMAP):
+        def fetch_raw(self, uid, folder="INBOX"):
+            self.calls.append(("fetch_raw", uid, folder))
+            return evil_bytes()
+
+    monkeypatch.setattr(cli, "IMAPClient", lambda *a, **k: EvilIMAP())
+
+    outdir = tmp_path / "safe"
+    outdir.mkdir()
+    assert cli.main(["mail", "attachment-save", "42", "0", "--output", str(outdir), "--json"]) == 0
+
+    # the file must land inside the chosen directory, never above it
+    assert (outdir / "escaped.txt").read_bytes() == b"OWNED"
+    assert not (tmp_path.parent / "escaped.txt").exists()

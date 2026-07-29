@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import email
+import email.utils
 import os
 import sys
 import urllib.parse
@@ -96,7 +98,17 @@ from .services.drive import (
     trash_file,
     upload_file,
 )
-from .services.mail import IMAPClient, MailError, SMTPClient, build_mail_message, slim_message
+from .services.mail import (
+    IMAPClient,
+    MailError,
+    SMTPClient,
+    build_forward,
+    build_mail_message,
+    build_reply,
+    extract_attachment,
+    list_attachments,
+    slim_message,
+)
 from .services.mail_discovery import (
     list_mail_hostings,
     list_mailboxes,
@@ -1707,7 +1719,21 @@ def cmd_mail_threads(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolved_attachments(args: argparse.Namespace) -> list[Path]:
+    """Normalize repeatable --attach paths through the shared local-path helper."""
+    return [Path(normalize_local_path(raw)) for raw in (getattr(args, "attachments", None) or [])]
+
+
+def _attachment_summary(paths: list[Path]) -> list[dict[str, Any]]:
+    summary = []
+    for path in paths:
+        size = path.stat().st_size if path.is_file() else None
+        summary.append({"path": str(path), "name": path.name, "bytes": size})
+    return summary
+
+
 def _mail_write_plan(args: argparse.Namespace, profile: Any, action: str) -> tuple[dict[str, Any], Any]:
+    attachments = _resolved_attachments(args)
     message = build_mail_message(
         sender=profile.default_mailbox,
         to=list(args.to_addrs),
@@ -1715,6 +1741,7 @@ def _mail_write_plan(args: argparse.Namespace, profile: Any, action: str) -> tup
         bcc=list(args.bcc_addrs or []),
         subject=args.subject,
         body=args.body,
+        attachments=attachments or None,
     )
     plan = {
         "profile": profile.name,
@@ -1726,6 +1753,7 @@ def _mail_write_plan(args: argparse.Namespace, profile: Any, action: str) -> tup
         "bcc": list(args.bcc_addrs or []),
         "subject": args.subject,
         "body": args.body,
+        "attachments": _attachment_summary(attachments),
     }
     return plan, message
 
@@ -1741,6 +1769,11 @@ def _print_mail_write_preview(plan: Mapping[str, Any]) -> None:
     if plan["bcc"]:
         print(f"Bcc: {', '.join(plan['bcc'])}")
     print(f"Subject: {plan['subject']}")
+    if plan.get("attachments"):
+        total = sum(item["bytes"] or 0 for item in plan["attachments"])
+        print(f"Attachments ({len(plan['attachments'])}, {total} bytes total):")
+        for item in plan["attachments"]:
+            print(f"  {item['name']}  ({item['bytes']} bytes)")
     body = str(plan["body"])
     preview = body if len(body) <= 500 else f"{body[:500]}…"
     print("Body preview:")
@@ -1815,6 +1848,376 @@ def cmd_mail_send(args: argparse.Namespace) -> int:
         print_machine({**plan, "sent": True, "result": result}, args)
     else:
         print(f"Sent message to {', '.join(plan['to'])}.")
+    return 0
+
+
+def _imap_client(profile: Any) -> Any:
+    host = profile.imap_host or "mail.infomaniak.com"
+    port = profile.imap_port or 993
+    return IMAPClient(host, port, profile.default_mailbox, _mail_password(profile))
+
+
+def _fetch_raw_message(client: Any, uid: str, folder: str) -> Any:
+    """Fetch one message as an email object using the non-mutating BODY.PEEK path."""
+    raw = client.fetch_raw(uid, folder=folder)
+    return email.message_from_bytes(raw)
+
+
+def cmd_mail_attachments(args: argparse.Namespace) -> int:
+    profile = _mail_profile(args)
+    client = _imap_client(profile)
+    try:
+        msg = _fetch_raw_message(client, str(args.uid), args.folder)
+    finally:
+        client.close()
+    items = list_attachments(msg)
+    payload = {
+        "profile": profile.name,
+        "mailbox": profile.default_mailbox,
+        "folder": args.folder,
+        "uid": str(args.uid),
+        "count": len(items),
+        "attachments": items,
+    }
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Folder: {args.folder}")
+        print(f"Attachments: {len(items)}")
+        for item in items:
+            print(f"  [{item['index']}] {item['filename']}  {item['content_type']}  {item['size']} bytes")
+    return 0
+
+
+def _safe_attachment_name(filename: str) -> str:
+    """Reduce an attachment filename to a safe basename.
+
+    The name comes from the message, so it is attacker-controlled: a sender can
+    craft ``../../.ssh/authorized_keys``. Strip any directory component and
+    refuse names that resolve to nothing usable, so a save can never escape the
+    directory the caller chose.
+    """
+    candidate = str(filename).replace("\\", "/").split("/")[-1].strip()
+    candidate = candidate.lstrip(".") if candidate in {".", ".."} else candidate
+    if not candidate or candidate in {".", ".."}:
+        raise ValueError(
+            f"Refusing to save an attachment with an unsafe filename: {filename!r}. "
+            "Pass --output <path> to choose the destination explicitly."
+        )
+    return candidate
+
+
+def cmd_mail_attachment_save(args: argparse.Namespace) -> int:
+    profile = _mail_profile(args)
+    client = _imap_client(profile)
+    try:
+        msg = _fetch_raw_message(client, str(args.uid), args.folder)
+    finally:
+        client.close()
+
+    target: Any = args.target
+    if isinstance(target, str) and target.isdigit():
+        target = int(target)
+    filename, payload = extract_attachment(msg, target)
+    safe_name = _safe_attachment_name(filename)
+
+    destination = Path(normalize_local_path(args.output)) if args.output else Path(safe_name)
+    if destination.is_dir():
+        destination = destination / safe_name
+    if destination.exists() and not args.force:
+        raise ValueError(
+            f"Refusing to overwrite an existing file: {destination}. Pass --force to replace it."
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+
+    result = {
+        "profile": profile.name,
+        "folder": args.folder,
+        "uid": str(args.uid),
+        "filename": filename,
+        "bytes": len(payload),
+        "output": str(destination),
+        "saved": True,
+    }
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Saved {filename} ({len(payload)} bytes) to {destination}")
+    return 0
+
+
+def _mail_reply_forward(args: argparse.Namespace, *, forward: bool) -> int:
+    profile = _mail_profile(args)
+    client = _imap_client(profile)
+    try:
+        original = _fetch_raw_message(client, str(args.uid), args.folder)
+    finally:
+        client.close()
+
+    attachments = _resolved_attachments(args)
+    if forward:
+        message = build_forward(
+            original,
+            sender=profile.default_mailbox,
+            to=list(args.to_addrs or []),
+            body=args.body,
+            with_attachments=getattr(args, "with_attachments", False),
+        )
+    else:
+        message = build_reply(
+            original,
+            sender=profile.default_mailbox,
+            body=args.body,
+            reply_all=getattr(args, "reply_all", False),
+            attachments=attachments or None,
+        )
+
+    verb = "forward" if forward else "reply to"
+    plan = {
+        "profile": profile.name,
+        "mailbox": profile.default_mailbox,
+        "action": f"{verb} one message",
+        "from": profile.default_mailbox,
+        "folder": args.folder,
+        "uid": str(args.uid),
+        "to": _header_addresses(message, "To"),
+        "cc": _header_addresses(message, "Cc"),
+        "bcc": [],
+        "subject": message["Subject"],
+        "body": args.body,
+        "in_reply_to": message["In-Reply-To"],
+        "references": message["References"],
+        "attachments": _attachment_summary(attachments),
+    }
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "sent": False}, args)
+        else:
+            _print_mail_write_preview(plan)
+            print(f"Threading: In-Reply-To {plan['in_reply_to']}")
+            print("Dry run: no message was sent.")
+        return 0
+
+    _validate_mail_write_yes(args, f"{verb} a message")
+    if not _machine_output(args):
+        _print_mail_write_preview(plan)
+    if not _confirm(args, f"Send this {'forward' if forward else 'reply'}? [y/N] ", action=f"mail {'forward' if forward else 'reply'}"):
+        print("Send cancelled.")
+        return 2
+
+    smtp_host = profile.imap_host or "mail.infomaniak.com"
+    smtp = SMTPClient(smtp_host, 465, profile.default_mailbox, _mail_password(profile))
+    result = smtp.send_message(message)
+    if _machine_output(args):
+        print_machine({**plan, "sent": True, "result": result}, args)
+    else:
+        print(f"Sent {'forward' if forward else 'reply'} to {', '.join(plan['to'])}.")
+    return 0
+
+
+def _header_addresses(message: Any, header: str) -> list[str]:
+    value = message.get(header)
+    if not value:
+        return []
+    return [addr for _, addr in email.utils.getaddresses([value]) if addr]
+
+
+def cmd_mail_reply(args: argparse.Namespace) -> int:
+    return _mail_reply_forward(args, forward=False)
+
+
+def cmd_mail_forward(args: argparse.Namespace) -> int:
+    return _mail_reply_forward(args, forward=True)
+
+
+def _mail_flag_command(args: argparse.Namespace, *, action: str, method: str) -> int:
+    profile = _mail_profile(args)
+    uid = str(args.uid)
+    client = _imap_client(profile)
+    try:
+        header = client.fetch_message(uid, folder=args.folder)
+        before = client.message_flags(uid, folder=args.folder)
+        plan = {
+            "profile": profile.name,
+            "mailbox": profile.default_mailbox,
+            "folder": args.folder,
+            "uid": uid,
+            "subject": header.get("subject"),
+            "action": action,
+            "flags_before": before,
+        }
+
+        if getattr(args, "dry_run", False):
+            if _machine_output(args):
+                print_machine({**plan, "dry_run": True, "changed": False}, args)
+            else:
+                _print_mail_message_action_preview(plan)
+                print("Dry run: nothing was changed.")
+            return 0
+
+        _validate_mail_write_yes(args, action)
+        if not _machine_output(args):
+            _print_mail_message_action_preview(plan)
+        if not _confirm(args, f"Apply '{action}' to this message? [y/N] ", action=f"mail {action}"):
+            print("Cancelled.")
+            return 2
+
+        result = getattr(client, method)(uid, folder=args.folder)
+        after = client.message_flags(uid, folder=args.folder)
+    finally:
+        client.close()
+
+    payload = {**plan, "changed": True, "result": result, "flags_after": after}
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Applied '{action}' to UID {uid}. Flags now: {', '.join(after) or 'none'}")
+    return 0
+
+
+def _print_mail_message_action_preview(plan: Mapping[str, Any]) -> None:
+    print(f"Profile: {plan['profile']}")
+    print(f"Mailbox: {plan['mailbox']}")
+    print(f"Folder: {plan['folder']}")
+    print(f"UID: {plan['uid']}")
+    print(f"Subject: {plan.get('subject') or '-'}")
+    print(f"Action: {plan['action']}")
+    if plan.get("flags_before") is not None:
+        print(f"Flags before: {', '.join(plan['flags_before']) or 'none'}")
+    if plan.get("destination"):
+        print(f"Destination folder: {plan['destination']}")
+
+
+def cmd_mail_mark_read(args: argparse.Namespace) -> int:
+    return _mail_flag_command(args, action="mark-read", method="mark_read")
+
+
+def cmd_mail_mark_unread(args: argparse.Namespace) -> int:
+    return _mail_flag_command(args, action="mark-unread", method="mark_unread")
+
+
+def cmd_mail_flag(args: argparse.Namespace) -> int:
+    return _mail_flag_command(args, action="flag", method="flag_message")
+
+
+def cmd_mail_unflag(args: argparse.Namespace) -> int:
+    return _mail_flag_command(args, action="unflag", method="unflag_message")
+
+
+def cmd_mail_move(args: argparse.Namespace) -> int:
+    profile = _mail_profile(args)
+    uid = str(args.uid)
+    client = _imap_client(profile)
+    try:
+        header = client.fetch_message(uid, folder=args.folder)
+        folders = {str(item.get("name")) for item in client.list_folders()}
+        if args.destination not in folders:
+            raise ValueError(
+                f"Destination folder does not exist: {args.destination}. "
+                "Run `ik mail folders` to see the exact names."
+            )
+        plan = {
+            "profile": profile.name,
+            "mailbox": profile.default_mailbox,
+            "folder": args.folder,
+            "uid": uid,
+            "subject": header.get("subject"),
+            "action": "move",
+            "destination": args.destination,
+        }
+
+        if getattr(args, "dry_run", False):
+            if _machine_output(args):
+                print_machine({**plan, "dry_run": True, "moved": False}, args)
+            else:
+                _print_mail_message_action_preview(plan)
+                print("Dry run: nothing was moved.")
+            return 0
+
+        _validate_mail_write_yes(args, "move a message")
+        if not _machine_output(args):
+            _print_mail_message_action_preview(plan)
+        if not _confirm(args, "Move this message? [y/N] ", action="mail move"):
+            print("Move cancelled.")
+            return 2
+
+        result = client.move_message(uid, args.destination, folder=args.folder)
+    finally:
+        client.close()
+
+    payload = {**plan, "moved": True, "result": result}
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Moved UID {uid} to {args.destination} (via {result['method']}).")
+    return 0
+
+
+def cmd_mail_draft_list(args: argparse.Namespace) -> int:
+    profile = _mail_profile(args)
+    client = _imap_client(profile)
+    try:
+        folder = args.folder or client.drafts_folder()
+        messages = client.list_messages(folder=folder, limit=args.limit)
+    finally:
+        client.close()
+    items = [slim_message(msg) for msg in messages]
+    if _machine_output(args):
+        print_machine(
+            {"profile": profile.name, "folder": folder, "count": len(items), "drafts": items}, args
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Drafts folder: {folder}")
+        print(f"Drafts: {len(items)}")
+        for item in items:
+            print(f"  [{item.get('uid')}] {item.get('subject') or '(no subject)'}")
+    return 0
+
+
+def cmd_mail_draft_delete(args: argparse.Namespace) -> int:
+    profile = _mail_profile(args)
+    uid = str(args.uid)
+    client = _imap_client(profile)
+    try:
+        folder = args.folder or client.drafts_folder()
+        header = client.fetch_message(uid, folder=folder)
+        plan = {
+            "profile": profile.name,
+            "mailbox": profile.default_mailbox,
+            "folder": folder,
+            "uid": uid,
+            "subject": header.get("subject"),
+            "action": "delete draft (irreversible)",
+        }
+
+        if getattr(args, "dry_run", False):
+            if _machine_output(args):
+                print_machine({**plan, "dry_run": True, "deleted": False}, args)
+            else:
+                _print_mail_message_action_preview(plan)
+                print("Dry run: nothing was deleted.")
+            return 0
+
+        _validate_mail_write_yes(args, "delete a draft")
+        if not _machine_output(args):
+            _print_mail_message_action_preview(plan)
+            print("This permanently removes the draft and cannot be undone.")
+        if not _confirm(args, "Delete this draft? [y/N] ", action="mail draft delete"):
+            print("Draft deletion cancelled.")
+            return 2
+
+        result = client.delete_draft(uid, folder=folder)
+    finally:
+        client.close()
+
+    if _machine_output(args):
+        print_machine({**plan, "deleted": True, "result": result}, args)
+    else:
+        print(f"Deleted draft UID {uid} from {folder}.")
     return 0
 
 
@@ -4615,6 +5018,101 @@ def build_parser() -> argparse.ArgumentParser:
     mail_send.add_argument("--json", action="store_true")
     mail_send.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_send.set_defaults(func=cmd_mail_send)
+
+    mail_draft.add_argument(
+        "--attach", dest="attachments", action="append", metavar="PATH",
+        help="Attach a local file; repeatable.",
+    )
+    mail_send.add_argument(
+        "--attach", dest="attachments", action="append", metavar="PATH",
+        help="Attach a local file; repeatable.",
+    )
+
+    mail_attachments = mail_sub.add_parser("attachments", help="List a message's attachments (read-only)")
+    mail_attachments.add_argument("uid", help="Message UID.")
+    mail_attachments.add_argument("--folder", default="INBOX", help="IMAP folder. Defaults to INBOX.")
+    mail_attachments.add_argument("--json", action="store_true")
+    mail_attachments.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_attachments.set_defaults(func=cmd_mail_attachments)
+
+    mail_att_save = mail_sub.add_parser("attachment-save", help="Save one attachment to a local file")
+    mail_att_save.add_argument("uid", help="Message UID.")
+    mail_att_save.add_argument("target", help="Attachment index (from `mail attachments`) or exact filename.")
+    mail_att_save.add_argument("--folder", default="INBOX", help="IMAP folder. Defaults to INBOX.")
+    mail_att_save.add_argument("--output", help="Destination file or directory. Defaults to the attachment name.")
+    mail_att_save.add_argument("--force", action="store_true", help="Overwrite an existing local file.")
+    mail_att_save.add_argument("--json", action="store_true")
+    mail_att_save.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_att_save.set_defaults(func=cmd_mail_attachment_save)
+
+    mail_reply = mail_sub.add_parser("reply", help="Reply to one message (protected write)")
+    mail_reply.add_argument("uid", help="Message UID to reply to.")
+    mail_reply.add_argument("--body", required=True, help="Plain-text reply body.")
+    mail_reply.add_argument("--all", dest="reply_all", action="store_true", help="Reply to all original recipients.")
+    mail_reply.add_argument("--folder", default="INBOX", help="IMAP folder holding the original.")
+    mail_reply.add_argument("--attach", dest="attachments", action="append", metavar="PATH", help="Attach a local file; repeatable.")
+    mail_reply.add_argument("--dry-run", action="store_true", help="Preview without sending.")
+    mail_reply.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    mail_reply.add_argument("--json", action="store_true")
+    mail_reply.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_reply.set_defaults(func=cmd_mail_reply)
+
+    mail_forward = mail_sub.add_parser("forward", help="Forward one message (protected write)")
+    mail_forward.add_argument("uid", help="Message UID to forward.")
+    mail_forward.add_argument("--to", dest="to_addrs", action="append", required=True, help="Recipient; repeatable.")
+    mail_forward.add_argument("--body", required=True, help="Plain-text note to prepend.")
+    mail_forward.add_argument("--folder", default="INBOX", help="IMAP folder holding the original.")
+    mail_forward.add_argument(
+        "--with-attachments", dest="with_attachments", action="store_true",
+        help="Carry the original message's attachments.",
+    )
+    mail_forward.add_argument("--dry-run", action="store_true", help="Preview without sending.")
+    mail_forward.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    mail_forward.add_argument("--json", action="store_true")
+    mail_forward.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_forward.set_defaults(func=cmd_mail_forward)
+
+    for name, helptext, handler in (
+        ("mark-read", "Mark one message read (protected write)", cmd_mail_mark_read),
+        ("mark-unread", "Mark one message unread (protected write)", cmd_mail_mark_unread),
+        ("flag", "Flag one message (protected write)", cmd_mail_flag),
+        ("unflag", "Unflag one message (protected write)", cmd_mail_unflag),
+    ):
+        parser_obj = mail_sub.add_parser(name, help=helptext)
+        parser_obj.add_argument("uid", help="Message UID.")
+        parser_obj.add_argument("--folder", default="INBOX", help="IMAP folder. Defaults to INBOX.")
+        parser_obj.add_argument("--dry-run", action="store_true", help="Preview without changing anything.")
+        parser_obj.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+        parser_obj.add_argument("--json", action="store_true")
+        parser_obj.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+        parser_obj.set_defaults(func=handler)
+
+    mail_move = mail_sub.add_parser("move", help="Move one message to another folder (protected write)")
+    mail_move.add_argument("uid", help="Message UID.")
+    mail_move.add_argument("destination", help="Exact destination folder name.")
+    mail_move.add_argument("--folder", default="INBOX", help="Source IMAP folder. Defaults to INBOX.")
+    mail_move.add_argument("--dry-run", action="store_true", help="Preview without moving.")
+    mail_move.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    mail_move.add_argument("--json", action="store_true")
+    mail_move.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_move.set_defaults(func=cmd_mail_move)
+
+    mail_drafts = mail_sub.add_parser("drafts", help="List or delete saved drafts")
+    mail_drafts_sub = mail_drafts.add_subparsers(dest="mail_drafts_command", required=True)
+    mail_drafts_list = mail_drafts_sub.add_parser("list", help="List saved drafts (read-only)")
+    mail_drafts_list.add_argument("--folder", help="Drafts folder. Defaults to the special-use Drafts folder.")
+    mail_drafts_list.add_argument("--limit", type=int, help="Maximum drafts to list.")
+    mail_drafts_list.add_argument("--json", action="store_true")
+    mail_drafts_list.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_drafts_list.set_defaults(func=cmd_mail_draft_list)
+    mail_drafts_delete = mail_drafts_sub.add_parser("delete", help="Delete one saved draft (irreversible)")
+    mail_drafts_delete.add_argument("uid", help="Draft UID.")
+    mail_drafts_delete.add_argument("--folder", help="Drafts folder. Defaults to the special-use Drafts folder.")
+    mail_drafts_delete.add_argument("--dry-run", action="store_true", help="Preview without deleting.")
+    mail_drafts_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation; requires explicit profile.")
+    mail_drafts_delete.add_argument("--json", action="store_true")
+    mail_drafts_delete.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_drafts_delete.set_defaults(func=cmd_mail_draft_delete)
 
     contacts = sub.add_parser("contacts", help="CardDAV contacts commands")
     contacts_sub = contacts.add_subparsers(dest="contacts_command", required=True)

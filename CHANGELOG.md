@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.2.15] - 2026-07-29
+### Added
+- **Attachments, read side:** `ik mail attachments <uid>` lists a message's attachment parts with a
+  stable index, filename, content type and size. `ik mail attachment-save <uid> <index|filename>`
+  writes one attachment to disk. A filename that matches several parts is refused rather than
+  guessed, and an existing local file is never overwritten without `--force`. Both use the
+  non-mutating `BODY.PEEK` fetch, so listing or saving never marks a message read.
+- **Attachments, send side:** `ik mail send` and `ik mail draft` accept repeatable `--attach <path>`.
+  Types are guessed with the standard library, the combined size is capped locally (25 MB) so an
+  oversized message fails with a clear error instead of mid-SMTP, and the preview lists every
+  attachment with its name, size and a total before confirmation.
+- **Reply and forward:** `ik mail reply <uid>` and `ik mail forward <uid> --to ...` build from one
+  resolved message. `In-Reply-To` is set and `References` is **appended** to the original chain, so
+  threading survives. `Re:`/`Fwd:` prefixes are not stacked. `--all` replies to the original
+  recipients while excluding your own address; forward always requires explicit `--to` and can
+  carry the original attachments with `--with-attachments`.
+- **Message lifecycle:** `mail mark-read`, `mail mark-unread`, `mail flag`, `mail unflag`, and
+  `mail move <uid> <folder>` act on exactly one resolved UID, preview folder/UID/subject/action and
+  current flags, and read the flags back after the change. `move` verifies the destination folder
+  exists first and prefers IMAP `MOVE`, falling back to `COPY`.
+- **Draft lifecycle:** `ik mail drafts list` (read-only) and `ik mail drafts delete <uid>`
+  (irreversible, protected) around the existing draft-creation path.
+
+### Changed
+- Reads and writes are now explicitly separated at the IMAP layer: every read path uses `EXAMINE`
+  with `BODY.PEEK`, and only flag changes, move and draft delete take a read-write `SELECT`. A
+  regression test asserts reads never take the read-write path.
+- If a server lacks `UID EXPUNGE`, a move reports an error instead of falling back to a
+  mailbox-wide `EXPUNGE`, which would remove messages the caller never named.
+
+### Fixed
+- Replying to or forwarding a message whose subject header is **folded** across lines (how long
+  subjects are actually transmitted) produced a subject containing CR/LF, which the header
+  injection guard then rejected. Derived subjects now collapse folding whitespace.
+- Saving an attachment used the sender-supplied filename directly, so a crafted name such as
+  `../../evil` could escape the chosen output directory. Filenames are now reduced to a safe
+  basename before any write.
+
+### Not included
+- Scheduled send. IMAP and SMTP expose no reliable native scheduled-send contract, and simulating
+  one client-side would require a background process this CLI does not have. Investigated and
+  declined rather than silently dropped.
+- Bulk delete, purge, spam reporting, and any multi-message or recursive mutation.
+
 ## [0.2.14] - 2026-07-29
 ### Added
 - **Recurrence on create:** `ik calendar create --rrule "FREQ=MONTHLY;INTERVAL=3;COUNT=4"` adds a
