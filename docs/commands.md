@@ -380,6 +380,12 @@ ik calendar create --summary "Team sync" --start 2026-08-01T09:00 \
     --reminder-minutes 1440 --reminder-minutes 30 --dry-run          # repeatable reminders
 ik --profile work calendar create --summary "Quarterly review" --start 2026-09-01T09:00 \
     --uid quarterly-review-2026q3 --if-missing --yes                 # safe to re-run
+ik calendar create --summary "Quarterly deadline" --start 2026-03-31T09:00 \
+    --rrule "FREQ=MONTHLY;INTERVAL=3;COUNT=4" --dry-run          # recurring, no attendees
+ik --profile work calendar create-series --summary "Quarterly deadline" \
+    --date 2026-03-31T09:00 --date 2026-06-30T09:00 \
+    --date 2026-09-30T09:00 --date 2026-12-31T09:00 \
+    --uid-prefix quarterly-2026 --if-missing --yes               # safe to re-run
 ik calendar repair --dry-run --json                                  # local config only
 ik --profile work calendar repair --url <collection_url> --yes
 ik calendar update <event_id> --summary "New title" --reminder-minutes 30 --dry-run --json
@@ -395,6 +401,12 @@ Search is client-side and matches available summary, description, location, orga
 `ik calendar search` also accepts `--attendee`, `--uid`, `--status`, `--description`, and a mutually exclusive `--all-day` / `--timed`. Every supplied criterion must match (AND), and the positional query becomes optional once at least one filter is given. `--uid` and `--status` match exactly (`--status` case-insensitively), while `--attendee` and `--description` are case-insensitive substrings. An event with no `STATUS` property does not match an explicit `--status` filter.
 
 `ik calendar export` is read-only. It resolves a date range exactly like `search` (`--days`, `--from`/`--to`, `--calendar`, `--limit`) and writes `--format ics` (default) or `--format json` to `--output <path>`, or to stdout when `--output` is omitted. ICS output copies each event's original `VEVENT` verbatim inside one `VCALENDAR` envelope, so unmodeled properties survive a backup round trip; any event without a parseable `VEVENT` is reported in `skipped` rather than silently dropped. An existing `--output` file is never overwritten without `--force`. With `--json`/`--compact` and no `--output`, the export travels inside the structured envelope as `body`.
+
+`--rrule` adds a single recurrence rule to a created event, e.g. `FREQ=MONTHLY;INTERVAL=3;COUNT=4`. The rule is validated and normalized locally — only `KEY=VALUE` parts, only known RFC 5545 part names, a known `FREQ`, no repeated parts, and no embedded line breaks — so a malformed rule is refused before any request rather than failing the whole `PUT`, and a rule can never inject an extra iCalendar property. Recurrence adds no attendees and notifies nobody.
+
+`ik calendar create-series` creates one event per explicit `--date`, for the administrative case of a fixed list of deadlines. Each event's UID is `<--uid-prefix>-<date>`, so the whole series is deterministic and re-running with `--if-missing` is a no-op instead of a second set of events. Duplicate `--date` values and colliding derived UIDs are refused before any request; `--duration-minutes` cannot be combined with `--all-day`. The preview lists every event with its resolved start, end and UID, and one confirmation covers the batch. Because a series is a batch of independent writes, a failure partway through prints the failing UID and the UIDs already created, and points at `--if-missing` to finish the remainder without duplicating them.
+
+Attendees, invitations, RSVP, and `calendar import` are **not implemented**. Infomaniak's CalDAV server advertises a scheduling outbox, so an attendee write would likely email real people; that surface stays disabled until the notification behavior is verified live. Events with attendees are still refused by `calendar update`, `cancel`, and `delete`.
 
 `ik calendar repair` resolves and saves the profile's real CalDAV collection URL. It changes local profile config only and never touches calendar data, but still previews before/after, confirms by default, supports `--dry-run`, and gates `--yes` on an explicit profile. When discovery finds several collections it refuses to guess and lists them so `--url` can select one. Calendar reads also self-heal for the current run when the saved URL is still the service root, printing a note that suggests `calendar repair`.
 
