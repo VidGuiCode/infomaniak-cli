@@ -895,6 +895,43 @@ def test_cli_calendar_create_without_reminders_writes_no_alarm(tmp_path, monkeyp
     assert "VALARM" not in clients[0].calls[-1][1]
 
 
+def test_cli_calendar_create_writes_a_recurrence_rule_without_attendees(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create", "--summary", "Quarterly deadline", "--start", "2026-07-20T09:00",
+        "--rrule", "FREQ=MONTHLY;INTERVAL=3;COUNT=4",
+        "--yes", "--json", "--profile", "work",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["created"] is True
+    assert payload["rrule"] == "FREQ=MONTHLY;INTERVAL=3;COUNT=4"
+    ics = clients[0].calls[-1][1]
+    assert "RRULE:FREQ=MONTHLY;INTERVAL=3;COUNT=4" in ics
+    # recurrence must never smuggle in a third-party notification
+    assert "ATTENDEE" not in ics
+    assert "ORGANIZER" not in ics
+
+
+def test_cli_calendar_create_rejects_a_malformed_rrule_before_writing(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_profile(tmp_path, monkeypatch)
+    clients = _make_recording_client(monkeypatch)
+
+    assert cli.main([
+        "calendar", "create", "--summary", "Team sync", "--start", "2026-07-20T09:00",
+        "--rrule", "INTERVAL=3", "--yes", "--profile", "work",
+    ]) == 1
+
+    assert "--rrule must include FREQ" in capsys.readouterr().err
+    assert not any(call[0] == "create_event" for c in clients for call in c.calls)
+
+
 def test_cli_calendar_create_uses_a_caller_supplied_uid_verbatim(tmp_path, monkeypatch, capsys):
     _configured_profile(tmp_path, monkeypatch)
     clients = _make_recording_client(monkeypatch)
@@ -1125,6 +1162,60 @@ def test_build_event_ics_escapes_the_alarm_description():
         reminders=[10],
     )
     assert "DESCRIPTION:Review\\; notes\\, here" in ics
+
+
+def test_build_event_ics_emits_no_rrule_by_default():
+    ics = build_event_ics(
+        uid="uid-nr",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Team sync",
+        start=datetime.datetime(2026, 7, 20, 14, 0),
+        end=datetime.datetime(2026, 7, 20, 15, 0),
+    )
+    assert "RRULE" not in ics
+
+
+def test_build_event_ics_emits_a_normalized_rrule_inside_the_vevent():
+    ics = build_event_ics(
+        uid="uid-rr",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Quarterly deadline",
+        start=datetime.datetime(2026, 7, 20, 14, 0),
+        end=datetime.datetime(2026, 7, 20, 15, 0),
+        rrule="freq=monthly;interval=3;count=4",
+    )
+    assert "RRULE:FREQ=MONTHLY;INTERVAL=3;COUNT=4" in ics
+    assert ics.index("RRULE:") > ics.index("BEGIN:VEVENT")
+    assert ics.index("RRULE:") < ics.index("END:VEVENT")
+
+
+def test_build_event_ics_rrule_is_emitted_before_any_alarm():
+    ics = build_event_ics(
+        uid="uid-ra",
+        dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+        summary="Quarterly deadline",
+        start=datetime.datetime(2026, 7, 20, 14, 0),
+        end=datetime.datetime(2026, 7, 20, 15, 0),
+        rrule="FREQ=WEEKLY",
+        reminders=[30],
+    )
+    assert ics.index("RRULE:") < ics.index("BEGIN:VALARM")
+
+
+@pytest.mark.parametrize(
+    "bad_rule",
+    ["", "   ", "INTERVAL=3", "FREQ=MONTHLY\r\nSUMMARY:injected", "FREQ=MONTHLY;BOGUS", "FREQ=NEVER"],
+)
+def test_build_event_ics_rejects_a_malformed_rrule(bad_rule):
+    with pytest.raises(CalendarError):
+        build_event_ics(
+            uid="uid-bad",
+            dtstamp=datetime.datetime(2026, 7, 1, 8, 0, tzinfo=datetime.UTC),
+            summary="Team sync",
+            start=datetime.datetime(2026, 7, 20, 14, 0),
+            end=datetime.datetime(2026, 7, 20, 15, 0),
+            rrule=bad_rule,
+        )
 
 
 def test_build_event_ics_all_day_uses_value_date():

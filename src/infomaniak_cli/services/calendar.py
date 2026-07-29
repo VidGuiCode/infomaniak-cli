@@ -366,13 +366,16 @@ def build_event_ics(
     description: str | None = None,
     location: str | None = None,
     reminders: list[int] | None = None,
+    rrule: str | None = None,
 ) -> str:
     """Build a minimal RFC 5545 VEVENT calendar object (no attendees/invites).
 
     ``reminders`` are minutes before start; each one emits a display VALARM with a
-    relative TRIGGER, in the order given, nested inside the VEVENT.
+    relative TRIGGER, in the order given, nested inside the VEVENT. ``rrule`` adds
+    a single recurrence rule; it never adds attendees, so it notifies nobody.
     """
     triggers = _validated_reminders(reminders)
+    recurrence = _validated_rrule(rrule)
     value_date = ";VALUE=DATE" if all_day else ""
     lines = [
         "BEGIN:VCALENDAR",
@@ -390,6 +393,8 @@ def build_event_ics(
         lines.append(f"LOCATION:{_escape_ics_text(location)}")
     if description:
         lines.append(f"DESCRIPTION:{_escape_ics_text(description)}")
+    if recurrence:
+        lines.append(f"RRULE:{recurrence}")
     for minutes in triggers:
         lines += [
             "BEGIN:VALARM",
@@ -443,6 +448,54 @@ def _vevent_body(raw_ics: Any) -> list[str] | None:
     if last < first:
         return None
     return lines[first : last + 1]
+
+
+_RRULE_FREQ = {"SECONDLY", "MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"}
+_RRULE_PARTS = {
+    "FREQ", "UNTIL", "COUNT", "INTERVAL", "BYSECOND", "BYMINUTE", "BYHOUR",
+    "BYDAY", "BYMONTHDAY", "BYYEARDAY", "BYWEEKNO", "BYMONTH", "BYSETPOS", "WKST",
+}
+
+
+def _validated_rrule(rrule: str | None) -> str | None:
+    """Validate and normalize one RFC 5545 recurrence rule.
+
+    Rejects a malformed rule locally instead of letting the server reject the
+    whole PUT, and refuses embedded line breaks so a rule can never inject an
+    extra iCalendar property.
+    """
+    if rrule is None:
+        return None
+    clean = rrule.strip()
+    if not clean:
+        raise CalendarError("--rrule must not be empty.")
+    if any(char in clean for char in ("\r", "\n")):
+        raise CalendarError("--rrule must not contain line breaks.")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for part in clean.split(";"):
+        if not part:
+            continue
+        if "=" not in part:
+            raise CalendarError(f"--rrule part is not KEY=VALUE: {part}")
+        key, _, value = part.partition("=")
+        key = key.strip().upper()
+        value = value.strip()
+        if key not in _RRULE_PARTS:
+            raise CalendarError(f"--rrule has an unknown part: {key}")
+        if key in seen:
+            raise CalendarError(f"--rrule repeats the part: {key}")
+        if not value:
+            raise CalendarError(f"--rrule part has no value: {key}")
+        if key == "FREQ" and value.upper() not in _RRULE_FREQ:
+            raise CalendarError(f"--rrule FREQ must be one of {sorted(_RRULE_FREQ)}: {value}")
+        seen.add(key)
+        normalized.append(f"{key}={value.upper()}")
+
+    if "FREQ" not in seen:
+        raise CalendarError("--rrule must include FREQ, e.g. FREQ=MONTHLY;INTERVAL=3.")
+    return ";".join(normalized)
 
 
 def _validated_reminders(reminders: list[int] | None) -> list[int]:

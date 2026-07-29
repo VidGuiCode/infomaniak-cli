@@ -3423,6 +3423,8 @@ def _print_calendar_create_preview(profile: Any, target: str, plan: Mapping[str,
     if plan.get("reminders"):
         minutes = ", ".join(f"{value} min before" for value in plan["reminders"])
         print(f"Reminders: {minutes}")
+    if plan.get("rrule"):
+        print(f"Recurrence: {plan['rrule']}")
     print(f"UID: {plan['uid']}" + ("  (caller-supplied)" if plan.get("uid_explicit") else ""))
     if plan.get("if_missing"):
         print("Mode: --if-missing (an existing event with this UID is left untouched)")
@@ -3478,6 +3480,7 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
     )
 
     reminders = list(getattr(args, "reminder_minutes", None) or [])
+    rrule = getattr(args, "rrule", None)
     dtstamp = datetime.datetime.now(datetime.UTC)
     ics = build_event_ics(
         uid=uid,
@@ -3489,6 +3492,7 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
         description=args.description,
         location=args.location,
         reminders=reminders,
+        rrule=rrule,
     )
 
     target = args.calendar or profile.calendar_url
@@ -3504,6 +3508,7 @@ def cmd_calendar_create(args: argparse.Namespace) -> int:
         "uid": uid,
         "uid_explicit": bool(explicit_uid),
         "reminders": reminders,
+        "rrule": rrule,
         "if_missing": if_missing,
     }
 
@@ -4626,6 +4631,10 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_create.add_argument(
         "--reminder-minutes", type=int, action="append", dest="reminder_minutes", metavar="MINUTES",
         help="Display reminder this many minutes before the start. Repeatable.",
+    )
+    calendar_create.add_argument(
+        "--rrule", metavar="RULE",
+        help="Recurrence rule, e.g. FREQ=MONTHLY;INTERVAL=3;COUNT=4. Adds no attendees.",
     )
     calendar_create.add_argument(
         "--uid",
