@@ -81,32 +81,36 @@ patch version, never a `.postN` release.
   contacts/calendar reads now distinguish a real-but-empty collection from a
   misconfigured or unprovisioned CardDAV/CalDAV URL with an actionable error.
 
-## Next (`0.2.x`)
+## Shipped (`0.2.13` – `0.2.21`)
 
-- **`0.2.13` — Calendar administrative essentials:** create-time reminders, duplicate-safe
-  (idempotent) event creation, automatic repair when the saved CalDAV URL is only the service root,
-  richer `calendar search` filters, and read-only `ics`/`json` export for audit and backup. No
-  third-party notification effect, so it ships on the existing protected-write contract.
-- **`0.2.14` — Calendar collaboration:** attendees, invitations, recurrence (`--rrule` and explicit
-  date series), contact-name resolution for attendees, and bulk event import. Attendee and invite
-  writes stay disabled until Infomaniak's CalDAV notification behavior is verified live, because
-  they email real people; recurrence edits need exact single-instance targeting first.
-- **`0.2.15` — Mail attachments and lifecycle:** attachment save/send, UID-based reply/forward,
-  mark/flag, move/archive, and draft management with normalized local paths.
-- **`0.2.16` — kChat conversation lifecycle:** thread replies, reactions, own-post editing,
-  attachments, and exact-target own-post deletion. Workspace administration stays out.
-- **`0.2.17` — Contacts transfer/lifecycle:** full-fidelity export, richer fields, duplicate/merge
-  previews, collision-safe import, and exact-target single-contact deletion.
-- **`0.2.18` — Shared write safety/readiness:** stable JSON action/result schemas, result readback,
-  before/after diffs, idempotency keys, explicit partial-failure and notification-sent reporting,
-  common path normalization, and write-capability checks in doctor.
-- **`0.2.19` — Bootstrap multi-service selection:** deterministic interactive and non-interactive
-  selection when discovery finds multiple drives or other same-family services.
+The `0.2.x` line is complete in intent: all five services (drive, mail, calendar, contacts, chat)
+have reads plus protected-write lifecycles.
+
+- **`0.2.13`** — Calendar administrative essentials: create-time reminders, duplicate-safe create,
+  discovery repair, richer search filters, read-only export.
+- **`0.2.14`** — Calendar recurrence: `--rrule` on create and `create-series` with deterministic
+  per-date UIDs. Attendees/invitations were split out and stay gated on a live notification probe.
+- **`0.2.15`** — Mail attachments and message lifecycle (reply/forward, mark/flag, move, drafts).
+- **`0.2.16`** — kChat conversation lifecycle (reply, reactions, edit, attachments, own-post delete).
+- **`0.2.17`** — Contacts transfer and lifecycle (export, duplicates/merge, import, delete).
+- **`0.2.18`** — Shared write-safety contract, machine-enforced by parser-introspecting tests.
+- **`0.2.19`** — Bootstrap multi-service selection: no more silent first-match defaults.
+- **`0.2.20`** — Opt-in DAV credential reuse and address-book selection.
+- **`0.2.21`** — Help-text accuracy: no group may claim read-only while exposing writes.
+
+## Current (`0.3.x`) — admin/Manager layer
+
+- **`0.3.0` — Admin discovery, read-only:** the `ik admin` group — `status`, `users`, `hostings`,
+  `mailbox list/show` (aliases, forwarding, signature summary). Built only on live-verified
+  endpoints; ships **no admin write of any kind**.
+- **`0.3.1+`** — reversible, single-resource mail-admin writes (aliases, forwarding) are designed
+  only after their reads are live-verified, and each requires explicit maintainer sign-off before
+  implementation because it changes mail routing.
+- User creation/deletion, invitations, DNS, filters, auto-reply, and every bulk or recursive admin
+  operation remain excluded until individually designed and explicitly approved.
 
 ## Later
 
-- **`0.3.x`** adds a true admin/Manager layer, read-only first, for operations that genuinely
-  require company-admin rights.
 - **`0.4.x`** may add an optional MCP wrapper around stable CLI functions.
 - Irreversible, recursive, bulk, and admin-scoped operations remain excluded until individually
   designed and explicitly approved; planned single-resource cleanup commands retain full guardrails.

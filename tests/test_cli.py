@@ -215,7 +215,12 @@ def test_public_docs_advertise_only_implemented_mail_write_commands():
 
     assert "ik auth login" not in docs
     assert "ik auth refresh" not in docs
-    assert "ik admin" not in docs
+    # 0.3.0 implemented the read-only admin inventory, so the docs must
+    # advertise exactly that surface and no admin write.
+    assert "ik admin status" in docs
+    assert "ik admin users" in docs
+    assert "ik admin create" not in docs
+    assert "ik admin delete" not in docs
     assert "ik mail send" in docs
     assert "ik mail draft" in docs
 

@@ -24,6 +24,23 @@ from .local_paths import normalize_local_path
 from .pathcheck import plan_path_fix
 from .profiles import ProfileManager
 from .readiness import build_readiness
+from .services.admin import (
+    get_account_admin,
+    get_mailbox_admin,
+    get_mailbox_aliases,
+    get_mailbox_forwarding,
+    get_mailbox_signatures,
+    list_account_users,
+    list_mail_hostings_admin,
+    mailbox_key,
+    slim_account_overview,
+    slim_admin_hosting,
+    slim_admin_mailbox,
+    slim_admin_user,
+    slim_aliases,
+    slim_forwarding,
+    summarize_signatures,
+)
 from .services.account import (
     list_accounts,
     list_products,
@@ -5420,6 +5437,236 @@ def cmd_chat_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def _admin_hosting_id_or_error(args: argparse.Namespace, profile: Any, client: Any) -> str:
+    """Resolve the mail hosting for admin mailbox commands, never by first-match."""
+    if args.hosting_id:
+        return str(args.hosting_id)
+    if profile.mail_hosting_id:
+        return str(profile.mail_hosting_id)
+    hostings = list_mail_hostings_admin(client)
+    if not hostings:
+        raise ValueError(
+            f"No mail hosting visible to this token for profile: {profile.name}. "
+            "Run `ik admin hostings` to check admin access."
+        )
+    if len(hostings) == 1:
+        hosting_id = hostings[0].get("id")
+        if hosting_id is None:
+            raise ValueError("The discovered mail hosting has no id; rerun with --hosting-id <id>.")
+        return str(hosting_id)
+    candidates = ", ".join(
+        f"{hosting.get('id')} ({hosting.get('customer_name') or hosting.get('main_fqdn') or 'unnamed'})"
+        for hosting in hostings
+    )
+    raise ValueError(
+        f"Several mail hostings are visible; rerun with --hosting-id <id>. Candidates: {candidates}"
+    )
+
+
+def cmd_admin_status(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    account_id = _account_id_or_error(args, profile)
+
+    account_info = None
+    account_error = None
+    try:
+        account_data = get_account_admin(client, account_id)
+        if account_data:
+            account_info = slim_account_overview(account_data)
+    except InformaniakAPIError as exc:
+        account_error = exc.status_code
+
+    try:
+        users_section: dict[str, Any] = {"readable": True, "count": len(list_account_users(client, account_id))}
+    except InformaniakAPIError as exc:
+        users_section = {"readable": False, "error_status": exc.status_code}
+
+    try:
+        hostings_section: dict[str, Any] = {"readable": True, "count": len(list_mail_hostings_admin(client))}
+    except InformaniakAPIError as exc:
+        hostings_section = {"readable": False, "error_status": exc.status_code}
+
+    result: dict[str, Any] = {
+        "profile": profile.name,
+        "account_id": account_id,
+        "account": account_info,
+        "users": users_section,
+        "mail_hostings": hostings_section,
+        "admin_read_access": bool(users_section.get("readable") or hostings_section.get("readable")),
+        "account_error_status": account_error,
+        "writes": "none",
+    }
+
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Account ID: {account_id}")
+        if account_info:
+            print(f"Account: {account_info.get('name')} (users: {account_info.get('nb_users')})")
+        print(f"Admin read access: {'yes' if result['admin_read_access'] else 'no'}")
+        if users_section.get("readable"):
+            print(f"Account users readable: yes ({users_section.get('count')} users)")
+        else:
+            print(f"Account users readable: no (HTTP {users_section.get('error_status')})")
+        if hostings_section.get("readable"):
+            print(f"Mail hostings readable: yes ({hostings_section.get('count')} hostings)")
+        else:
+            print(f"Mail hostings readable: no (HTTP {hostings_section.get('error_status')})")
+        print("Admin writes: none — the admin group is read-only in this release.")
+    return 0
+
+
+def cmd_admin_users(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    account_id = _account_id_or_error(args, profile)
+    users = list_account_users(client, account_id)
+    slim_users_list = [slim_admin_user(user) for user in users]
+
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "account_id": account_id,
+                "count": len(users),
+                "users": users if _raw_output(args) else slim_users_list,
+            },
+            args,
+        )
+    elif getattr(args, "table", False):
+        print(render_table(slim_users_list, [
+            ("email", "Email"),
+            ("display_name", "Name"),
+            ("role_type", "Role"),
+            ("state_in_account", "State"),
+            ("user_status", "Status"),
+        ]))
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Account ID: {account_id}")
+        print(f"Users: {len(users)}")
+        for user in slim_users_list:
+            print(f"- {user.get('email')} ({user.get('role_type')}, {user.get('state_in_account')})")
+    return 0
+
+
+def cmd_admin_hostings(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hostings = list_mail_hostings_admin(client)
+    slim_hostings = [slim_admin_hosting(hosting) for hosting in hostings]
+
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "count": len(hostings),
+                "hostings": hostings if _raw_output(args) else slim_hostings,
+            },
+            args,
+        )
+    elif getattr(args, "table", False):
+        print(render_table(slim_hostings, [
+            ("id", "ID"),
+            ("customer_name", "Name"),
+            ("main_fqdn", "Domain"),
+            ("is_locked", "Locked"),
+            ("dns_error", "DNS error"),
+        ]))
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Mail hostings: {len(hostings)}")
+        for hosting in slim_hostings:
+            print(f"- {hosting.get('id')}: {hosting.get('customer_name') or hosting.get('main_fqdn')}")
+    return 0
+
+
+def cmd_admin_mailbox_list(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hosting_id = _admin_hosting_id_or_error(args, profile, client)
+    mailboxes = list_mailboxes(client, hosting_id)
+    slim_mailboxes = [slim_admin_mailbox(mailbox) for mailbox in mailboxes]
+
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "mail_hosting_id": hosting_id,
+                "count": len(mailboxes),
+                "mailboxes": mailboxes if _raw_output(args) else slim_mailboxes,
+            },
+            args,
+        )
+    elif getattr(args, "table", False):
+        print(render_table(slim_mailboxes, [
+            ("mailbox", "Mailbox"),
+            ("mailbox_name", "Name"),
+            ("type", "Type"),
+            ("is_limited", "Limited"),
+            ("is_used_for_account", "Account mailbox"),
+        ]))
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Mail hosting ID: {hosting_id}")
+        print(f"Mailboxes: {len(mailboxes)}")
+        for mailbox in slim_mailboxes:
+            print(f"- {mailbox.get('mailbox')} (name: {mailbox.get('mailbox_name')})")
+    return 0
+
+
+def cmd_admin_mailbox_show(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hosting_id = _admin_hosting_id_or_error(args, profile, client)
+    mailbox_name = mailbox_key(args.mailbox_name)
+
+    try:
+        mailbox = get_mailbox_admin(client, hosting_id, mailbox_name)
+    except InformaniakAPIError as exc:
+        if exc.status_code == 404:
+            raise ValueError(
+                f"Mailbox not found on hosting {hosting_id}: {args.mailbox_name}. "
+                "Run `ik admin mailbox list` to see mailbox names."
+            ) from exc
+        raise
+    aliases = get_mailbox_aliases(client, hosting_id, mailbox_name)
+    forwarding = get_mailbox_forwarding(client, hosting_id, mailbox_name)
+    signatures = get_mailbox_signatures(client, hosting_id, mailbox_name)
+
+    slim_box = slim_admin_mailbox(mailbox)
+    slim_alias = slim_aliases(aliases)
+    slim_fwd = slim_forwarding(forwarding)
+    signature_summary = summarize_signatures(signatures)
+
+    raw = _raw_output(args)
+    result = {
+        "profile": profile.name,
+        "mail_hosting_id": hosting_id,
+        "mailbox_name": mailbox_name,
+        "mailbox": dict(mailbox) if raw else slim_box,
+        "aliases": dict(aliases) if raw else slim_alias,
+        "forwarding": dict(forwarding) if raw else slim_fwd,
+        "signatures": dict(signatures) if raw else signature_summary,
+    }
+
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        alias_list = slim_alias["aliases"]
+        print(f"Profile: {profile.name}")
+        print(f"Mail hosting ID: {hosting_id}")
+        print(f"Mailbox: {slim_box.get('mailbox')} (name: {mailbox_name})")
+        print(f"Aliases: {len(alias_list)}" + (f" — {', '.join(str(a) for a in alias_list)}" if alias_list else ""))
+        forward_targets = slim_fwd.get("redirect_addresses") or []
+        print(f"Forwarding enabled: {slim_fwd.get('is_enabled')}"
+              + (f" — {', '.join(str(a) for a in forward_targets)}" if forward_targets else ""))
+        print(f"Signatures: {signature_summary.get('count')} (forced: {signature_summary.get('is_forced')})")
+    return 0
+
+
 def cmd_debug_probe(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     result = probe_profile(profile.name, profile.account_id, client)
@@ -5518,6 +5765,54 @@ def build_parser() -> argparse.ArgumentParser:
     account_services.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     account_services.add_argument("--raw", action="store_true", help="With --json, emit the full raw service payload.")
     account_services.set_defaults(func=cmd_account_services)
+
+    admin = sub.add_parser(
+        "admin",
+        help="Read-only Manager/admin inventory (account users, mail hostings, mailboxes)",
+    )
+    admin_sub = admin.add_subparsers(dest="admin_command", required=True)
+    admin_status = admin_sub.add_parser(
+        "status", help="Report whether the token can read Manager/admin surfaces (read-only)"
+    )
+    admin_status.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
+    admin_status.add_argument("--json", action="store_true")
+    admin_status.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    admin_status.set_defaults(func=cmd_admin_status)
+    admin_users = admin_sub.add_parser("users", help="List account users with their roles (read-only)")
+    admin_users.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
+    admin_users.add_argument("--json", action="store_true")
+    admin_users.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    admin_users.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
+    admin_users.add_argument("--raw", action="store_true", help="With --json, emit the full raw user payload.")
+    admin_users.set_defaults(func=cmd_admin_users)
+    admin_hostings = admin_sub.add_parser("hostings", help="List mail hostings with admin fields (read-only)")
+    admin_hostings.add_argument("--json", action="store_true")
+    admin_hostings.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    admin_hostings.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
+    admin_hostings.add_argument("--raw", action="store_true", help="With --json, emit the full raw hosting payload.")
+    admin_hostings.set_defaults(func=cmd_admin_hostings)
+    admin_mailbox = admin_sub.add_parser("mailbox", help="Inspect mailboxes at the hosting level (read-only)")
+    admin_mailbox_sub = admin_mailbox.add_subparsers(dest="admin_mailbox_command", required=True)
+    admin_mailbox_list = admin_mailbox_sub.add_parser("list", help="List mailboxes on a mail hosting (read-only)")
+    admin_mailbox_list.add_argument(
+        "--hosting-id", help="Mail hosting ID. Defaults to the profile's mail hosting, else a single discovered one."
+    )
+    admin_mailbox_list.add_argument("--json", action="store_true")
+    admin_mailbox_list.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    admin_mailbox_list.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
+    admin_mailbox_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw mailbox payload.")
+    admin_mailbox_list.set_defaults(func=cmd_admin_mailbox_list)
+    admin_mailbox_show = admin_mailbox_sub.add_parser(
+        "show", help="Show one mailbox with aliases, forwarding, and signature summary (read-only)"
+    )
+    admin_mailbox_show.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    admin_mailbox_show.add_argument(
+        "--hosting-id", help="Mail hosting ID. Defaults to the profile's mail hosting, else a single discovered one."
+    )
+    admin_mailbox_show.add_argument("--json", action="store_true")
+    admin_mailbox_show.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    admin_mailbox_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw payloads.")
+    admin_mailbox_show.set_defaults(func=cmd_admin_mailbox_show)
 
     drive = sub.add_parser("drive", help="kDrive reads and protected file writes")
     drive_sub = drive.add_subparsers(dest="drive_command", required=True)

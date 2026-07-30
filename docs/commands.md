@@ -9,13 +9,13 @@ Use these command layers consistently:
 - `setup` / `bootstrap` / `whoami` / `doctor`: configure and diagnose the local profile.
 - `account`: discover the logged-in user's accessible Informaniak environment.
 - `mail`, `drive`, `chat`, `meet`, `calendar`, `contacts`: use a service as the selected profile.
-- Manager/admin operations are deferred until a separate, explicit surface is designed and implemented.
+- `admin`: read-only Manager/company-admin inventory (users, mail hostings, mailboxes). No admin writes.
 
 Important naming rule:
 
 ```text
 Discovery of what the current user can access belongs under `account`.
-Company/account administration is not implemented in this CLI yet.
+Company/account administration lives under `admin` and is read-only in this release.
 ```
 
 ## Setup and diagnostics
@@ -151,19 +151,40 @@ normal drive/mail/calendar/contacts/chat workflows should not depend on it.
 
 Reserve `admin` for true company/account administration — the things normally done by an Informaniak Manager admin, not normal employee service usage.
 
-Current state:
+The `admin` group is **entirely read-only** in this release: no subcommand accepts `--yes` or
+`--dry-run` because none of them can change anything, locally or remotely. It requires a token with
+Manager-level access; without it, `ik admin status` reports which surfaces are unreadable instead
+of failing.
 
-```text
-No Manager/admin commands are implemented yet.
+```bash
+ik admin status --json                 # can this token read Manager surfaces at all?
+ik admin users --table                 # account users with roles and state
+ik admin hostings --json               # mail hostings with lock/DNS state
+ik admin mailbox list --json           # mailboxes on the selected mail hosting
+ik admin mailbox show <name> --json    # one mailbox + aliases, forwarding, signature summary
 ```
 
-Rules:
+Behavior notes:
+
+- Every command prints the active profile and resolved account/hosting context first.
+- `admin mailbox list|show` resolve the mail hosting from `--hosting-id`, else the profile's
+  configured mail hosting, else a **single** discovered hosting. With several hostings and no
+  explicit choice, they refuse and list the candidates — never first-match.
+- `admin mailbox show` accepts the mailbox name (local part) or the full address.
+- Forwarding output normalizes the upstream field spelling to `redirect_addresses`; `--raw`
+  preserves the API's original payloads.
+- Signatures are summarized (count, defaults, forced) — bodies are only visible with `--raw`.
+
+Rules (unchanged for the rest of the `0.3.x` line):
 
 - start read-only;
 - require actual account/admin rights;
 - clearly show active profile and selected account;
-- protect all writes with confirmation;
+- protect all future writes with confirmation, `--dry-run`, and explicit-profile-gated `--yes`;
 - do not use `admin` for generic bootstrap/discovery commands.
+
+No admin **write** is implemented. User creation/deletion, invitations, alias or forwarding
+changes, DNS, sieve filters, and auto-reply are not available in this release.
 
 ## Mail
 

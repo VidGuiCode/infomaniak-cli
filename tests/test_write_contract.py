@@ -272,6 +272,51 @@ def test_every_dry_run_that_reports_notified_reports_false():
             )
 
 
+# Groups that promise to be entirely read-only. A subcommand growing --yes or
+# --dry-run under one of these is a design change that must be made here
+# deliberately, not slipped in.
+READ_ONLY_GROUPS = {
+    "admin": "0.3.0 ships the Manager/admin layer read-only by design (A10a)",
+}
+
+
+def test_read_only_groups_expose_no_write_machinery():
+    parser = cli.build_parser()
+    top_level = {
+        name: sub
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+        for name, sub in action.choices.items()
+    }
+
+    for group_name in READ_ONLY_GROUPS:
+        assert group_name in top_level, f"declared read-only group missing: {group_name}"
+        offenders = [
+            (path, flag)
+            for path, sub in _walk_subcommands(top_level[group_name], group_name)
+            for flag in ("--yes", "--dry-run")
+            if flag in _option_strings(sub)
+        ]
+        assert offenders == [], (
+            f"group '{group_name}' is declared read-only but exposes write machinery: {offenders}"
+        )
+
+
+def test_read_only_groups_say_so_in_their_help():
+    parser = cli.build_parser()
+    help_by_name = {
+        choice.dest: choice.help or ""
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+        for choice in action._choices_actions
+    }
+
+    for group_name in READ_ONLY_GROUPS:
+        assert "read-only" in help_by_name.get(group_name, "").casefold(), (
+            f"group '{group_name}' is declared read-only but its help does not say so"
+        )
+
+
 def test_no_command_group_claims_read_only_while_exposing_writes():
     """Help text must not understate what a group can do.
 

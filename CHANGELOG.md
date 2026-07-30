@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.3.0] - 2026-07-30
+### Added
+- **`ik admin` — the first Manager/admin surface, entirely read-only.** Every command is built on
+  an endpoint that was live-verified read-only before implementation; no admin command in this
+  release accepts `--yes` or `--dry-run` because none of them can change anything:
+  - `ik admin status` — reports whether the stored token can read Manager surfaces (account users,
+    mail hostings), with counts. A forbidden surface is reported as unreadable with its HTTP status
+    instead of failing the whole command, and the result states `writes: "none"`.
+  - `ik admin users` — account users with `role_type`, `state_in_account`, `user_status`, billing
+    access and workspace-only flags (`--table`, `--raw` supported).
+  - `ik admin hostings` — mail hostings with lock and DNS-error state.
+  - `ik admin mailbox list` — mailboxes on a mail hosting (`--table`, `--raw` supported).
+  - `ik admin mailbox show <name>` — one mailbox plus its aliases, forwarding state
+    (normalized to `redirect_addresses`; `--raw` preserves the upstream spelling), and a signature
+    **summary** (count/defaults/forced — bodies only with `--raw`).
+- `admin mailbox list|show` resolve the mail hosting from `--hosting-id`, else the profile's
+  configured mail hosting, else a single discovered hosting — with several candidates they refuse
+  and list them rather than guessing (the `0.2.19` no-first-match rule).
+
+### Notes
+- The admin group requires a token with Manager-level access. `ik admin status` is the diagnostic
+  for that; it degrades honestly instead of erroring when scope is missing.
+- No admin **write** ships in `0.3.0`, by design. User creation/deletion, invitations, alias and
+  forwarding changes, DNS, filters and auto-reply are not implemented; reversible single-resource
+  admin writes are considered for later `0.3.x` releases only after their endpoints are verified
+  and with explicit maintainer sign-off.
+
 ## [0.2.21] - 2026-07-30
 ### Fixed
 - **Top-level `ik --help` described Calendar and kChat as "read-only"** even though both expose
