@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.1] - 2026-07-30
+### Added
+- **`ik admin mailbox alias add|remove <mailbox> <alias>` — the first admin write**, shipped with
+  explicit maintainer sign-off because an alias changes which addresses deliver to a mailbox.
+  Endpoints: `POST .../mailboxes/{name}/aliases` and `DELETE .../aliases/{alias}` (documented
+  contract, live-verified with a single throwaway alias add+remove before release).
+- Full protected-write contract: preview with the current alias list, confirmation by default,
+  `--dry-run`, explicit-profile-gated `--yes`/`-y`, `--json`/`--compact`, a `changed` diff,
+  `notified: false` (an alias change emails nobody), and post-write **readback** — the alias list
+  is re-fetched and the result reports `confirmed_present`/`confirmed_absent`.
+- Idempotent supervised re-runs: adding an existing alias or removing an absent one is a reported
+  no-op (`added/removed: false`, `existed`) that sends no request and exits 0.
+- Aliases are validated as local parts (values containing `@` are refused with guidance) and
+  percent-encoded into the request path like every other caller-supplied segment.
+
+### Changed
+- The `admin` group is no longer described as read-only: its help now states reads and protected
+  mailbox-alias writes, and `admin` left the `READ_ONLY_GROUPS` contract set deliberately — the
+  generic protected-write contract tests cover the new commands instead.
+
+### Notes
+- Still not implemented: forwarding changes (next, `0.3.2`), signature writes, mailbox settings,
+  user creation/deletion, invitations, DNS, filters, auto-reply, and all bulk admin operations.
+
 ## [0.3.0] - 2026-07-30
 ### Added
 - **`ik admin` — the first Manager/admin surface, entirely read-only.** Every command is built on

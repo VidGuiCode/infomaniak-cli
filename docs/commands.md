@@ -9,7 +9,7 @@ Use these command layers consistently:
 - `setup` / `bootstrap` / `whoami` / `doctor`: configure and diagnose the local profile.
 - `account`: discover the logged-in user's accessible Informaniak environment.
 - `mail`, `drive`, `chat`, `meet`, `calendar`, `contacts`: use a service as the selected profile.
-- `admin`: read-only Manager/company-admin inventory (users, mail hostings, mailboxes). No admin writes.
+- `admin`: Manager/company-admin inventory reads and protected mailbox-alias writes.
 
 Important naming rule:
 
@@ -151,10 +151,9 @@ normal drive/mail/calendar/contacts/chat workflows should not depend on it.
 
 Reserve `admin` for true company/account administration — the things normally done by an Informaniak Manager admin, not normal employee service usage.
 
-The `admin` group is **entirely read-only** in this release: no subcommand accepts `--yes` or
-`--dry-run` because none of them can change anything, locally or remotely. It requires a token with
-Manager-level access; without it, `ik admin status` reports which surfaces are unreadable instead
-of failing.
+The `admin` group is inventory reads plus exactly one protected write surface: mailbox aliases.
+It requires a token with Manager-level access; without it, `ik admin status` reports which
+surfaces are unreadable instead of failing.
 
 ```bash
 ik admin status --json                 # can this token read Manager surfaces at all?
@@ -162,7 +161,16 @@ ik admin users --table                 # account users with roles and state
 ik admin hostings --json               # mail hostings with lock/DNS state
 ik admin mailbox list --json           # mailboxes on the selected mail hosting
 ik admin mailbox show <name> --json    # one mailbox + aliases, forwarding, signature summary
+ik --profile work admin mailbox alias add <name> <alias> --dry-run    # protected write
+ik --profile work admin mailbox alias remove <name> <alias> --dry-run
 ```
+
+`admin mailbox alias add|remove` changes which addresses deliver to a mailbox, so it carries the
+full protected-write contract: preview with the current alias list, confirmation by default,
+`--dry-run`, explicit-profile-gated `--yes`, a `changed` diff, `notified: false` (an alias change
+emails nobody), and post-write readback (`confirmed_present`/`confirmed_absent`). Re-runs are
+idempotent: adding an existing alias or removing an absent one is a reported no-op that sends no
+request. Aliases are the local part only (the hosting's domains define the rest).
 
 Behavior notes:
 
@@ -183,8 +191,9 @@ Rules (unchanged for the rest of the `0.3.x` line):
 - protect all future writes with confirmation, `--dry-run`, and explicit-profile-gated `--yes`;
 - do not use `admin` for generic bootstrap/discovery commands.
 
-No admin **write** is implemented. User creation/deletion, invitations, alias or forwarding
-changes, DNS, sieve filters, and auto-reply are not available in this release.
+The only admin **write** is the single-alias add/remove above. User creation/deletion,
+invitations, forwarding changes, DNS, sieve filters, and auto-reply are not available in this
+release.
 
 ## Mail
 

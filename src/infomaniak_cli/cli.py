@@ -25,6 +25,9 @@ from .pathcheck import plan_path_fix
 from .profiles import ProfileManager
 from .readiness import build_readiness
 from .services.admin import (
+    add_mailbox_alias,
+    alias_local_part,
+    delete_mailbox_alias,
     get_account_admin,
     get_mailbox_admin,
     get_mailbox_aliases,
@@ -5667,6 +5670,149 @@ def cmd_admin_mailbox_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _admin_alias_change(args: argparse.Namespace, action: str) -> int:
+    """Shared add/remove implementation for `admin mailbox alias`.
+
+    Idempotent by design: adding an existing alias or removing an absent one is
+    a reported no-op (exit 0, no request), so a repeated supervised run is safe.
+    """
+    _validate_output_modes(args)
+    _require_explicit_profile_for_yes(args, f"{action} a mailbox alias")
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hosting_id = _admin_hosting_id_or_error(args, profile, client)
+    mailbox_name = mailbox_key(args.mailbox_name)
+    alias = alias_local_part(args.alias)
+
+    # The hosting's domain is the blast radius; an opaque numeric id is not
+    # enough for a human to confirm a mail-routing change against.
+    hosting_label = None
+    try:
+        hosting = slim_admin_hosting(_unwrap_success_data(client.get(f"/1/mail_hostings/{hosting_id}")))
+        hosting_label = hosting.get("customer_name") or hosting.get("main_fqdn")
+    except InformaniakAPIError:
+        hosting_label = None
+
+    before = slim_aliases(get_mailbox_aliases(client, hosting_id, mailbox_name))
+    # Mail local parts are case-insensitive in practice; match on the server's
+    # own spelling so remove targets the real entry and add cannot duplicate.
+    server_match = next(
+        (a for a in before["aliases"] if a.lower() == alias.lower()), None
+    )
+    exists = server_match is not None
+    adding = action == "add"
+
+    domain_note = None
+    if "@" in str(args.mailbox_name):
+        ignored = str(args.mailbox_name).split("@", 1)[1]
+        domain_note = (
+            f"domain part '{ignored}' ignored; targeting mailbox '{mailbox_name}' on "
+            f"hosting {hosting_id}" + (f" ({hosting_label})" if hosting_label else "")
+        )
+
+    result: dict[str, Any] = {
+        "profile": profile.name,
+        "mail_hosting_id": hosting_id,
+        "mail_hosting_name": hosting_label,
+        "mailbox_name": mailbox_name,
+        "action": f"alias {action}",
+        "alias": alias,
+        "aliases_before": before["aliases"],
+        "alias_delivery_enabled": before["enabled_alias"],
+        "existed": exists,
+        "notified": False,
+    }
+    if domain_note:
+        result["note"] = domain_note
+
+    if adding == exists:  # add + already there, or remove + not there
+        result.update({
+            "added" if adding else "removed": False,
+            "changed": {},
+            "dry_run": bool(args.dry_run),
+        })
+        if exists and server_match != alias:
+            result["server_spelling"] = server_match
+        if _machine_output(args):
+            print_machine(result, args)
+        else:
+            prefix = "[dry-run] " if args.dry_run else ""
+            spelled = f" (server spelling: {server_match})" if exists and server_match != alias else ""
+            state = "already present" if adding else "not present"
+            print(f"{prefix}Alias {state} on {mailbox_name}: {alias}{spelled} (nothing to do).")
+        return 0
+
+    target = server_match if not adding else alias
+    after_preview = [*before["aliases"], alias] if adding else [a for a in before["aliases"] if a != server_match]
+    result["changed"] = _diff_fields({"aliases": before["aliases"]}, {"aliases": after_preview})
+
+    if args.dry_run:
+        result.update({"added" if adding else "removed": False, "dry_run": True})
+        if _machine_output(args):
+            print_machine(result, args)
+        else:
+            where = f"hosting {hosting_id}" + (f" ({hosting_label})" if hosting_label else "")
+            print(f"[dry-run] Would {action} alias {target} on mailbox {mailbox_name} ({where}).")
+            if domain_note:
+                print(f"Note: {domain_note}")
+            print(f"Aliases before: {', '.join(before['aliases']) or '(none)'}")
+            print(f"Aliases after:  {', '.join(after_preview) or '(none)'}")
+        return 0
+
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Mail hosting: {hosting_id}" + (f" ({hosting_label})" if hosting_label else ""))
+        print(f"Mailbox: {mailbox_name}")
+        print(f"Action: {action} alias {target}")
+        if domain_note:
+            print(f"Note: {domain_note}")
+        print(f"Aliases before: {', '.join(before['aliases']) or '(none)'}")
+        if adding and not before["enabled_alias"]:
+            print("Note: this mailbox's alias-delivery flag is off; the alias may not deliver until enabled.")
+        print("This changes which addresses deliver to this mailbox.")
+    if not _confirm(args, f"{action.capitalize()} this alias? [y/N] ", action=f"admin mailbox alias {action}"):
+        print(f"Alias {action} cancelled.")
+        return 2
+
+    if adding:
+        add_mailbox_alias(client, hosting_id, mailbox_name, alias)
+    else:
+        delete_mailbox_alias(client, hosting_id, mailbox_name, target)
+
+    # Readback: report what the server now shows rather than assuming success.
+    readback = slim_aliases(get_mailbox_aliases(client, hosting_id, mailbox_name))
+    lowered = [a.lower() for a in readback["aliases"]]
+    confirmed = (alias.lower() in lowered) if adding else (target.lower() not in lowered)
+    result.update({
+        "added" if adding else "removed": True,
+        "dry_run": False,
+        "aliases_after": readback["aliases"],
+        "confirmed_present" if adding else "confirmed_absent": confirmed,
+    })
+    result["changed"] = _diff_fields({"aliases": before["aliases"]}, {"aliases": readback["aliases"]})
+
+    if not confirmed:
+        print(
+            f"warning: the server accepted the {action} but the readback does not confirm it; "
+            f"check `ik admin mailbox show {mailbox_name}`.",
+            file=sys.stderr,
+        )
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        verb = "Added" if adding else "Removed"
+        print(f"{verb} alias {target} on mailbox {mailbox_name} (confirmed: {confirmed}).")
+        print(f"Aliases now: {', '.join(readback['aliases']) or '(none)'}")
+    return 0
+
+
+def cmd_admin_mailbox_alias_add(args: argparse.Namespace) -> int:
+    return _admin_alias_change(args, "add")
+
+
+def cmd_admin_mailbox_alias_remove(args: argparse.Namespace) -> int:
+    return _admin_alias_change(args, "remove")
+
+
 def cmd_debug_probe(args: argparse.Namespace) -> int:
     profile, client = _profile_and_client(args.profile, args.base_url)
     result = probe_profile(profile.name, profile.account_id, client)
@@ -5768,7 +5914,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     admin = sub.add_parser(
         "admin",
-        help="Read-only Manager/admin inventory (account users, mail hostings, mailboxes)",
+        help="Manager/admin inventory reads and protected mailbox-alias writes",
     )
     admin_sub = admin.add_subparsers(dest="admin_command", required=True)
     admin_status = admin_sub.add_parser(
@@ -5813,6 +5959,31 @@ def build_parser() -> argparse.ArgumentParser:
     admin_mailbox_show.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     admin_mailbox_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw payloads.")
     admin_mailbox_show.set_defaults(func=cmd_admin_mailbox_show)
+    admin_alias = admin_mailbox_sub.add_parser(
+        "alias", help="Add or remove one mailbox alias (protected write)"
+    )
+    admin_alias_sub = admin_alias.add_subparsers(dest="admin_alias_command", required=True)
+    for _alias_action, _alias_handler in (
+        ("add", cmd_admin_mailbox_alias_add),
+        ("remove", cmd_admin_mailbox_alias_remove),
+    ):
+        _alias_parser = admin_alias_sub.add_parser(
+            _alias_action,
+            help=f"{_alias_action.capitalize()} one alias on one mailbox (changes mail delivery)",
+        )
+        _alias_parser.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+        _alias_parser.add_argument("alias", help="Alias local part (the part before the @)")
+        _alias_parser.add_argument(
+            "--hosting-id", help="Mail hosting ID. Defaults to the profile's mail hosting, else a single discovered one."
+        )
+        _alias_parser.add_argument("--dry-run", action="store_true", help="Preview the change without writing.")
+        _alias_parser.add_argument(
+            "--yes", "-y", action="store_true",
+            help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+        )
+        _alias_parser.add_argument("--json", action="store_true")
+        _alias_parser.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+        _alias_parser.set_defaults(func=_alias_handler)
 
     drive = sub.add_parser("drive", help="kDrive reads and protected file writes")
     drive_sub = drive.add_subparsers(dest="drive_command", required=True)

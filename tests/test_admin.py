@@ -2,11 +2,16 @@
 
 import json
 
+import pytest
+
 from infomaniak_cli import cli
 from infomaniak_cli.api import InformaniakAPIError
 from infomaniak_cli.auth import TokenStore
 from infomaniak_cli.profiles import ProfileManager
 from infomaniak_cli.services.admin import (
+    add_mailbox_alias,
+    alias_local_part,
+    delete_mailbox_alias,
     get_account_admin,
     get_mailbox_admin,
     list_account_users,
@@ -482,6 +487,200 @@ def test_cli_admin_mailbox_show_raw_keeps_upstream_payloads(tmp_path, monkeypatc
     assert output["signatures"]["signatures"][0]["content"] == "body"
 
 
-# The admin group's read-only contract (no --yes/--dry-run anywhere, help says
-# read-only) is enforced in tests/test_write_contract.py next to the other
-# parser-introspecting safety contracts, so future groups inherit it.
+# --- admin mailbox alias add/remove (0.3.1, first admin write) ---
+# The generic protected-write contract for these lives in
+# tests/test_write_contract.py; admin left READ_ONLY_GROUPS deliberately there.
+
+
+class AliasWriteAPI(FakeAPI):
+    """Stateful fake: GET reflects the alias list, POST/DELETE mutate it."""
+
+    def __init__(self, aliases):
+        super().__init__({})
+        self.state = list(aliases)
+        self.posts = []
+        self.deletes = []
+
+    def get(self, path, params=None):
+        self.calls.append((path, params))
+        if path.endswith("/aliases"):
+            return {"result": "success", "data": {"aliases": list(self.state), "enabled_alias": True}}
+        if path == "/1/mail_hostings/111":
+            return {"result": "success", "data": RAW_HOSTING}
+        raise InformaniakAPIError(404, f"GET {path} failed: not found")
+
+    def post(self, path, json=None):
+        self.posts.append((path, json))
+        self.state.append(json["alias"])
+        return {"result": "success", "data": True}
+
+    def delete(self, path, params=None):
+        self.deletes.append(path)
+        alias = path.rsplit("/", 1)[-1]
+        if alias in self.state:
+            self.state.remove(alias)
+        return {"result": "success", "data": True}
+
+
+def test_alias_service_functions_use_documented_paths_and_quote_segments():
+    api = AliasWriteAPI([])
+
+    add_mailbox_alias(api, "111", "user", "sales")
+    delete_mailbox_alias(api, "111", "user", "sa les")
+
+    assert api.posts == [("/1/mail_hostings/111/mailboxes/user/aliases", {"alias": "sales"})]
+    assert api.deletes == ["/1/mail_hostings/111/mailboxes/user/aliases/sa%20les"]
+
+
+def test_quote_refuses_dot_segments():
+    from infomaniak_cli.services.admin import _quote
+
+    for bad in ("", ".", ".."):
+        with pytest.raises(ValueError):
+            _quote(bad)
+
+
+def test_alias_local_part_validation():
+    assert alias_local_part(" sales ") == "sales"
+    with pytest.raises(ValueError):
+        alias_local_part("")
+    with pytest.raises(ValueError):
+        alias_local_part("sales@example.com")
+    with pytest.raises(ValueError):
+        alias_local_part("sa les")
+    with pytest.raises(ValueError):
+        alias_local_part("a/b")
+
+
+def test_cli_alias_matching_is_case_insensitive_on_add(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI(["Sales"])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "add", "user", "sales", "--yes", "--profile", "work", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["added"] is False
+    assert output["existed"] is True
+    assert output["server_spelling"] == "Sales"
+    assert api.posts == []
+
+
+def test_cli_alias_remove_targets_the_server_spelling(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI(["Sales"])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "remove", "user", "sales", "--yes", "--profile", "work", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["removed"] is True
+    assert output["confirmed_absent"] is True
+    assert api.deletes == ["/1/mail_hostings/111/mailboxes/user/aliases/Sales"]
+
+
+def test_cli_alias_add_writes_reads_back_and_diffs(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI(["old"])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "add", "user", "sales", "--yes", "--profile", "work", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["added"] is True
+    assert output["notified"] is False
+    assert output["confirmed_present"] is True
+    assert output["aliases_before"] == ["old"]
+    assert sorted(output["aliases_after"]) == ["old", "sales"]
+    assert "aliases" in output["changed"]
+    assert len(api.posts) == 1
+
+
+def test_cli_alias_remove_writes_and_confirms_absent(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI(["old", "sales"])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "remove", "user", "sales", "--yes", "--profile", "work", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["removed"] is True
+    assert output["confirmed_absent"] is True
+    assert output["aliases_after"] == ["old"]
+    assert api.deletes == ["/1/mail_hostings/111/mailboxes/user/aliases/sales"]
+
+
+def test_cli_alias_add_existing_is_a_reported_noop(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI(["sales"])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "add", "user", "sales", "--yes", "--profile", "work", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["added"] is False
+    assert output["existed"] is True
+    assert api.posts == []
+
+
+def test_cli_alias_remove_absent_is_a_reported_noop(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI(["old"])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "remove", "user", "ghost", "--yes", "--profile", "work", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["removed"] is False
+    assert output["existed"] is False
+    assert api.deletes == []
+
+
+def test_cli_alias_add_dry_run_never_posts(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI(["old"])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "add", "user", "sales", "--dry-run", "--profile", "work", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["dry_run"] is True
+    assert output["added"] is False
+    assert output["changed"]["aliases"]["after"] == ["old", "sales"]
+    assert api.posts == []
+    assert api.state == ["old"]
+
+
+def test_cli_alias_yes_requires_explicit_profile(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI([])
+    _install(monkeypatch, api)
+    monkeypatch.delenv("IK_PROFILE", raising=False)
+
+    assert cli.main(["admin", "mailbox", "alias", "add", "user", "sales", "--yes", "--json"]) == 1
+
+    assert "explicit" in capsys.readouterr().err
+    assert api.posts == []
+
+
+def test_cli_alias_full_address_alias_is_refused(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    api = AliasWriteAPI([])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "add", "user", "sales@example.com", "--yes", "--profile", "work", "--json"]) == 1
+
+    assert "local part" in capsys.readouterr().err
+    assert api.posts == []
+
+
+def test_cli_alias_without_yes_never_writes_under_automation(tmp_path, monkeypatch, capsys):
+    _setup_profile(tmp_path, monkeypatch, mail_hosting_id="111")
+    monkeypatch.setenv("IK_NO_INTERACTIVE", "1")
+    api = AliasWriteAPI(["old"])
+    _install(monkeypatch, api)
+
+    assert cli.main(["admin", "mailbox", "alias", "add", "user", "sales", "--profile", "work"]) == 1
+
+    assert api.posts == []
+    assert api.state == ["old"]

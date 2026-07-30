@@ -1,12 +1,14 @@
-"""Read-only Infomaniak Manager/admin inventory services.
+"""Infomaniak Manager/admin services: inventory reads plus protected writes.
 
-Every function here performs a GET against an endpoint live-confirmed in
-context/LIVE_API_FINDINGS.md (2026-07-30). No admin write of any kind belongs
-in this module while the 0.3.x line is read-only.
+Reads are GETs against endpoints live-confirmed in context/LIVE_API_FINDINGS.md
+(2026-07-30). Writes are added one reversible, single-resource operation at a
+time, each behind the shared protected-write contract and explicit maintainer
+sign-off (A10c). Current writes: mailbox alias add/remove (0.3.1).
 """
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 from typing import Any, Mapping
 
@@ -31,8 +33,12 @@ def mailbox_key(value: str) -> str:
 def _quote(segment: Any) -> str:
     """Percent-encode one URL path segment so a caller-supplied value can
     never extend or redirect the request path (chat/calendar/contacts do the
-    same at their request boundaries)."""
-    return urllib.parse.quote(str(segment), safe="")
+    same at their request boundaries). Dot segments are refused outright:
+    quote() leaves `.` unescaped, and an upstream proxy may normalize them."""
+    text = str(segment)
+    if text in ("", ".", ".."):
+        raise ValueError(f"Invalid URL path segment: {text!r}")
+    return urllib.parse.quote(text, safe="")
 
 
 def list_mail_hostings_admin(client: Any) -> list[Mapping[str, Any]]:
@@ -66,6 +72,42 @@ def get_mailbox_signatures(client: Any, mail_hosting_id: str, mailbox_name: str)
     return _mapping(
         _unwrap(client.get(f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes/{_quote(mailbox_name)}/signatures"))
     )
+
+
+def add_mailbox_alias(client: Any, mail_hosting_id: str, mailbox_name: str, alias: str) -> Any:
+    """POST one alias onto one mailbox (contract in context/LIVE_API_FINDINGS.md)."""
+    return client.post(
+        f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes/{_quote(mailbox_name)}/aliases",
+        json={"alias": alias},
+    )
+
+
+def delete_mailbox_alias(client: Any, mail_hosting_id: str, mailbox_name: str, alias: str) -> Any:
+    """DELETE one alias from one mailbox."""
+    return client.delete(
+        f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes/{_quote(mailbox_name)}/aliases/{_quote(alias)}"
+    )
+
+
+_ALIAS_LOCAL_PART_RE = re.compile(r"^[A-Za-z0-9._%+-]+$")
+
+
+def alias_local_part(value: str) -> str:
+    """Validate a caller-supplied alias: local part only, conservative charset."""
+    alias = str(value).strip()
+    if not alias:
+        raise ValueError("Alias is required")
+    if "@" in alias:
+        raise ValueError(
+            f"Alias must be the local part only (got: {alias}). "
+            "Infomaniak aliases apply to the hosting's domains; pass the part before the @."
+        )
+    if not _ALIAS_LOCAL_PART_RE.match(alias):
+        raise ValueError(
+            f"Alias contains characters that are not valid in a mail local part: {alias}. "
+            "Allowed: letters, digits, and . _ % + -"
+        )
+    return alias
 
 
 def slim_account_overview(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -114,8 +156,13 @@ def slim_admin_mailbox(item: Mapping[str, Any]) -> dict[str, Any]:
 
 def slim_aliases(item: Mapping[str, Any]) -> dict[str, Any]:
     aliases = item.get("aliases")
+    normalized = []
+    if isinstance(aliases, list):
+        # Coerce defensively: a non-string entry must not crash sorting/joining
+        # downstream, and must stay visible to the exists-check on writes.
+        normalized = [a if isinstance(a, str) else str(a) for a in aliases]
     return {
-        "aliases": aliases if isinstance(aliases, list) else [],
+        "aliases": normalized,
         "enabled_alias": item.get("enabled_alias"),
     }
 

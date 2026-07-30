@@ -275,9 +275,12 @@ def test_every_dry_run_that_reports_notified_reports_false():
 # Groups that promise to be entirely read-only. A subcommand growing --yes or
 # --dry-run under one of these is a design change that must be made here
 # deliberately, not slipped in.
-READ_ONLY_GROUPS = {
-    "admin": "0.3.0 ships the Manager/admin layer read-only by design (A10a)",
-}
+#
+# 0.3.0 shipped `admin` read-only; 0.3.1 deliberately removed it from this set
+# when the maintainer-approved mailbox alias add/remove landed (A10c sign-off,
+# 2026-07-30). The admin writes carry the full protected-write contract, which
+# the generic tests above now enforce for them like any other service write.
+READ_ONLY_GROUPS: dict[str, str] = {}
 
 
 def test_read_only_groups_expose_no_write_machinery():

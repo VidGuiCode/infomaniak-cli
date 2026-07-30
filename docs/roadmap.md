@@ -100,12 +100,16 @@ have reads plus protected-write lifecycles.
 
 ## Current (`0.3.x`) — admin/Manager layer
 
-- **`0.3.0` — Admin discovery, read-only:** the `ik admin` group — `status`, `users`, `hostings`,
-  `mailbox list/show` (aliases, forwarding, signature summary). Built only on live-verified
-  endpoints; ships **no admin write of any kind**.
-- **`0.3.1+`** — reversible, single-resource mail-admin writes (aliases, forwarding) are designed
-  only after their reads are live-verified, and each requires explicit maintainer sign-off before
-  implementation because it changes mail routing.
+- **`0.3.0` — Admin discovery, read-only (shipped):** the `ik admin` group — `status`, `users`,
+  `hostings`, `mailbox list/show` (aliases, forwarding, signature summary). Built only on
+  live-verified endpoints; shipped no admin write of any kind.
+- **`0.3.1` — Mailbox alias add/remove (shipped):** the first admin write, reversible and
+  single-resource, with maintainer sign-off, the full protected-write contract, idempotent
+  re-runs, and post-write readback.
+- **`0.3.2` — Forwarding read/toggle (next):** requires maintainer-approved live verification
+  because forwarding changes mail routing.
+- **`0.3.3+`** — read-only admin polish (teams, per-product rights), then signature and mailbox
+  settings writes, each gated the same way.
 - User creation/deletion, invitations, DNS, filters, auto-reply, and every bulk or recursive admin
   operation remain excluded until individually designed and explicitly approved.
 
