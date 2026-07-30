@@ -32,6 +32,10 @@ from .services.admin import (
     delete_signature,
     forwarding_address,
     forwarding_addresses,
+    get_mailbox_settings,
+    mailbox_note,
+    slim_mailbox_settings,
+    update_mailbox_settings,
     set_default_signatures,
     set_mailbox_forwarding,
     signature_items,
@@ -6230,6 +6234,211 @@ def cmd_admin_mailbox_forwarding_disable(args: argparse.Namespace) -> int:
     return _admin_forwarding_write(args, "disable", plan=plan, describe=describe)
 
 
+def _mailbox_settings_state(client: Any, hosting_id: str, mailbox_name: str) -> dict[str, Any]:
+    return slim_mailbox_settings(get_mailbox_settings(client, hosting_id, mailbox_name))
+
+
+def _print_mailbox_settings(state: Mapping[str, Any], *, label: str) -> None:
+    print(f"{label}:")
+    print(f"  Note: {state['note'] or '(none)'}")
+    print(f"  Blocked senders: {len(state['blocked_senders'])}")
+    print(f"  Allowed senders: {len(state['authorized_senders'])}")
+
+
+def cmd_admin_settings_show(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hosting_id = _admin_hosting_id_or_error(args, profile, client)
+    mailbox_name = mailbox_key(args.mailbox_name)
+    state = _mailbox_settings_state(client, hosting_id, mailbox_name)
+
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "mail_hosting_id": hosting_id,
+                "mailbox_name": mailbox_name,
+                "settings": state,
+            },
+            args,
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Mail hosting ID: {hosting_id}")
+        _print_mailbox_settings(state, label=f"Settings for {mailbox_name}")
+    return 0
+
+
+def _admin_settings_write(
+    args: argparse.Namespace,
+    action: str,
+    *,
+    build: Callable[[dict[str, Any]], tuple[dict[str, Any], list[str]]],
+) -> int:
+    """Shared write path for mailbox settings and sender lists.
+
+    `build` receives the current state and returns (fields_to_send, preview_lines).
+    Empty fields mean there is nothing to do, reported as an idempotent no-op.
+    """
+    _validate_output_modes(args)
+    _require_explicit_profile_for_yes(args, f"change mailbox settings ({action})")
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hosting_id = _admin_hosting_id_or_error(args, profile, client)
+    mailbox_name = mailbox_key(args.mailbox_name)
+    before = _mailbox_settings_state(client, hosting_id, mailbox_name)
+    fields, preview_lines = build(before)
+
+    result: dict[str, Any] = {
+        "profile": profile.name,
+        "mail_hosting_id": hosting_id,
+        "mailbox_name": mailbox_name,
+        "action": f"settings {action}",
+        "before": before,
+        "after": before,
+        "changed": {},
+        "fields_sent": sorted(fields),
+        "confirmed": None,
+        "notified": False,
+    }
+
+    if not fields:
+        result.update({"updated": False, "dry_run": bool(args.dry_run)})
+        if _machine_output(args):
+            print_machine(result, args)
+        else:
+            prefix = "[dry-run] " if args.dry_run else ""
+            print(f"{prefix}Already in the requested state for {mailbox_name} (nothing to do).")
+        return 0
+
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Mailbox: {mailbox_name} (hosting {hosting_id})")
+        for line in preview_lines:
+            print(line)
+    if args.dry_run:
+        planned = {**before, **{_SETTINGS_FIELD_TO_SLIM.get(k, k): v for k, v in fields.items()}}
+        result.update({
+            "updated": False,
+            "dry_run": True,
+            "after": planned,
+            "changed": _diff_fields(before, planned),
+        })
+        if _machine_output(args):
+            print_machine(result, args)
+        else:
+            print("[dry-run] Nothing was changed.")
+        return 0
+    if not _confirm(args, "Apply this change? [y/N] ", action=f"admin mailbox settings {action}"):
+        print("Change cancelled.")
+        return 2
+
+    update_mailbox_settings(client, hosting_id, mailbox_name, fields)
+    after = _mailbox_settings_state(client, hosting_id, mailbox_name)
+    confirmed = all(
+        _settings_field_matches(key, value, after) for key, value in fields.items()
+    )
+    result.update({
+        "updated": True,
+        "dry_run": False,
+        "after": after,
+        "changed": _diff_fields(before, after),
+        "confirmed": confirmed,
+    })
+    if not confirmed:
+        print(
+            "warning: the server accepted the change but the readback does not reflect it; "
+            f"check `ik admin mailbox settings show {mailbox_name}`.",
+            file=sys.stderr,
+        )
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Updated settings for {mailbox_name} (confirmed: {confirmed}).")
+        _print_mailbox_settings(after, label="Now")
+    return 0 if confirmed else 1
+
+
+# Maps a sent API field to the slim key it lands in, so the readback compares
+# like for like rather than against the raw payload.
+_SETTINGS_FIELD_TO_SLIM = {
+    "note": "note",
+    "blocked_senders": "blocked_senders",
+    "authorized_senders": "authorized_senders",
+}
+
+
+def _settings_field_matches(key: str, value: Any, after: Mapping[str, Any]) -> bool:
+    slim_key = _SETTINGS_FIELD_TO_SLIM.get(key, key)
+    stored = after.get(slim_key)
+    if isinstance(value, list):
+        return sorted(str(v).casefold() for v in value) == sorted(str(v).casefold() for v in stored or [])
+    # Clearing a value stores it as null; "" and None mean the same thing here,
+    # and a strict compare would report a successful clear as failed.
+    if value in ("", None) and stored in ("", None):
+        return True
+    return _values_match(value, stored)
+
+
+def cmd_admin_settings_set(args: argparse.Namespace) -> int:
+    # Fail before any request: a usage error should not cost two round-trips.
+    if args.note is None:
+        raise ValueError("Nothing to set. Pass --note (the only readable, and therefore writable, setting).")
+    note = mailbox_note(args.note)
+
+    def build(before: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        if note == (before["note"] or ""):
+            return {}, []
+        return (
+            {"note": note},
+            [f"Note: {before['note'] or '(none)'} -> {note or '(none)'}"],
+        )
+
+    return _admin_settings_write(args, "set", build=build)
+
+
+def _sender_list_change(args: argparse.Namespace, *, field: str, slim_key: str, adding: bool, label: str) -> int:
+    address = forwarding_address(args.address)
+
+    def build(before: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        current = list(before[slim_key])
+        present = any(entry.casefold() == address.casefold() for entry in current)
+        if adding == present:
+            return {}, []
+        # The array replaces wholesale, so the complete list is always sent.
+        updated = [*current, address] if adding else [
+            entry for entry in current if entry.casefold() != address.casefold()
+        ]
+        verb = "added to" if adding else "removed from"
+        lines = [f"{address} will be {verb} the {label} list ({len(current)} -> {len(updated)})."]
+        if adding and field == "blocked_senders":
+            lines.append("Mail from this address will stop arriving in this mailbox.")
+        if not updated:
+            lines.append(f"The {label} list will be empty.")
+        return {field: updated}, lines
+
+    return _admin_settings_write(args, f"{label} {'add' if adding else 'remove'}", build=build)
+
+
+def cmd_admin_sender_block(args: argparse.Namespace) -> int:
+    return _sender_list_change(args, field="blocked_senders", slim_key="blocked_senders", adding=True, label="blocked")
+
+
+def cmd_admin_sender_unblock(args: argparse.Namespace) -> int:
+    return _sender_list_change(args, field="blocked_senders", slim_key="blocked_senders", adding=False, label="blocked")
+
+
+def cmd_admin_sender_allow(args: argparse.Namespace) -> int:
+    return _sender_list_change(
+        args, field="authorized_senders", slim_key="authorized_senders", adding=True, label="allowed"
+    )
+
+
+def cmd_admin_sender_unallow(args: argparse.Namespace) -> int:
+    return _sender_list_change(
+        args, field="authorized_senders", slim_key="authorized_senders", adding=False, label="allowed"
+    )
+
+
 def _signature_context(args: argparse.Namespace) -> tuple[Any, Any, str, str, Mapping[str, Any]]:
     """Resolve profile/client/hosting/mailbox and read the signature payload."""
     profile, client = _profile_and_client(args.profile, args.base_url)
@@ -7053,6 +7262,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _sig_common(admin_sig_delete, write=True)
     admin_sig_delete.set_defaults(func=cmd_admin_signature_delete)
+
+    admin_settings = admin_mailbox_sub.add_parser(
+        "settings", help="Show or change one mailbox's settings (protected writes)"
+    )
+    admin_settings_sub = admin_settings.add_subparsers(dest="admin_settings_command", required=True)
+
+    admin_settings_show = admin_settings_sub.add_parser(
+        "show", help="Show a mailbox's spam, filtering, note and sender-list settings (read-only)"
+    )
+    admin_settings_show.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    _sig_common(admin_settings_show, write=False)
+    admin_settings_show.set_defaults(func=cmd_admin_settings_show)
+
+    admin_settings_set = admin_settings_sub.add_parser(
+        "set", help="Change the mailbox's admin note"
+    )
+    admin_settings_set.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    admin_settings_set.add_argument("--note", help="Admin note (max 80 characters; pass '' to clear).")
+    _sig_common(admin_settings_set, write=True)
+    admin_settings_set.set_defaults(func=cmd_admin_settings_set)
+
+    admin_sender = admin_mailbox_sub.add_parser(
+        "sender", help="Block or allow individual senders for one mailbox (protected writes)"
+    )
+    admin_sender_sub = admin_sender.add_subparsers(dest="admin_sender_command", required=True)
+    for _sender_action, _sender_handler, _sender_help in (
+        ("block", cmd_admin_sender_block, "Stop mail from this address reaching the mailbox"),
+        ("unblock", cmd_admin_sender_unblock, "Remove an address from the blocked list"),
+        ("allow", cmd_admin_sender_allow, "Add an address to the allowed list"),
+        ("unallow", cmd_admin_sender_unallow, "Remove an address from the allowed list"),
+    ):
+        _sender_parser = admin_sender_sub.add_parser(_sender_action, help=_sender_help)
+        _sender_parser.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+        _sender_parser.add_argument("address", help="Full sender address, e.g. person@example.com")
+        _sig_common(_sender_parser, write=True)
+        _sender_parser.set_defaults(func=_sender_handler)
 
     drive = sub.add_parser("drive", help="kDrive reads and protected file writes")
     drive_sub = drive.add_subparsers(dest="drive_command", required=True)

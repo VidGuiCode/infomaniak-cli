@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.3.5] - 2026-07-30
+### Added
+- **`ik admin mailbox settings show|set`** — read a mailbox's admin note and sender lists, and set
+  the note (`''` clears it; the 80-character limit is enforced locally, not by a server error).
+- **`ik admin mailbox sender block|unblock|allow|unallow`** — manage the blocked and allowed sender
+  lists one address at a time.
+
+### Safety
+- The two sender lists are **arrays the API replaces wholesale**, so every change is
+  read-modify-write and resends the complete list. Critically, the mailbox read **omits both arrays
+  unless they are explicitly requested** — reading without them and writing back would have deleted
+  every existing entry unrecoverably. `ik` requests them and **refuses to write** if a response
+  arrives without them, rather than replacing a list it never saw.
+- Sender changes are idempotent, match case-insensitively, and blocking states plainly that mail
+  from that address will stop arriving.
+- The lists also have a **read/write shape asymmetry** — entries come back as objects
+  (`{email, locked}`) but must be sent as plain address strings. Echoing the read shape back would
+  store stringified objects and corrupt the list; `ik` maps between the two. This was found by live
+  verification, not by the offline suite, whose fake had assumed the simpler shape.
+- **Only settings this API lets you read back are writable.** The endpoint also accepts
+  spam-handling and category-filtering flags and filtering folders, but none of them appear in any
+  read (`?with=` rejects them; `/settings`, `/spam` and `/filters` do not exist), so they could not
+  be previewed, diffed or confirmed and are not exposed. `has_responder` is excluded for a second
+  reason: enabling it would auto-reply to every incoming sender with content this API does not
+  expose. The service layer refuses any field outside the supported set, and a test drives every
+  write command and asserts the requests only ever carry those fields. Mailbox creation and
+  deletion are likewise out of scope.
+- Both commands carry the protected-write contract: preview, confirmation, `--dry-run` (which now
+  reports the planned diff), explicit-profile-gated `--yes`, `changed` diff, `notified: false`, and
+  a readback that exits non-zero with a stderr warning when it disagrees. Clearing a value is
+  confirmed correctly rather than reported as a failed write.
+
+### Notes
+- This completes the `0.3.x` admin line: discovery (`0.3.0`), aliases (`0.3.1`), forwarding
+  (`0.3.2`), teams and honest counts (`0.3.3`), signatures (`0.3.4`), mailbox settings (`0.3.5`).
+
 ## [0.3.4] - 2026-07-30
 ### Added
 - **`ik admin mailbox signature list|show|create|update|set-default|delete`** — manage the

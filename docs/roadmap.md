@@ -116,7 +116,13 @@ have reads plus protected-write lifecycles.
 - **`0.3.4` — Mailbox signatures (shipped):** read plus protected create/update/set-default/delete.
   The update is a genuine partial update; delete is irreversible and guarded when the signature is
   a current default; bodies stay out of list output because they carry personal data.
-- **`0.3.5`** — mailbox settings writes, gated the same way, subject to endpoint discovery.
+- **`0.3.5` — Mailbox settings (shipped):** the admin note and the blocked/allowed sender lists.
+  Rescoped during review: spam and filtering settings are write-only in this API, so they could not
+  be previewed or confirmed and are not exposed; auto-reply is excluded because enabling it would
+  reply to third parties with content this API does not expose.
+
+This completes the `0.3.x` admin line. Further admin surface (user lifecycle, invitations, DNS,
+sieve filters, auto-reply) needs its own discovery and explicit approval before being planned.
 - User creation/deletion, invitations, DNS, filters, auto-reply, and every bulk or recursive admin
   operation remain excluded until individually designed and explicitly approved.
 

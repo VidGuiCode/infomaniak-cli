@@ -264,6 +264,100 @@ def forwarding_address(value: str) -> str:
     return address
 
 
+# The only fields this CLI will PATCH. The endpoint accepts more (spam and
+# filtering flags, has_responder), but those cannot be read back at all, and a
+# setting that cannot be previewed, diffed or confirmed is not one we write.
+WRITABLE_MAILBOX_FIELDS = frozenset({"note", "blocked_senders", "authorized_senders"})
+
+# Sender lists are absent from the default mailbox read and must be requested.
+MAILBOX_SETTINGS_WITH = "blocked_senders,authorized_senders"
+
+
+def get_mailbox_settings(client: Any, mail_hosting_id: str, mailbox_name: str) -> Mapping[str, Any]:
+    """Read a mailbox INCLUDING its sender lists.
+
+    Without `?with=`, the response omits both arrays entirely. Since the PATCH
+    replaces an array wholesale, reading without them and writing back would
+    destroy every existing entry.
+    """
+    return _mapping(
+        _unwrap(
+            client.get(
+                f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes/{_quote(mailbox_name)}",
+                {"with": MAILBOX_SETTINGS_WITH},
+            )
+        )
+    )
+
+
+def update_mailbox_settings(
+    client: Any, mail_hosting_id: str, mailbox_name: str, fields: Mapping[str, Any]
+) -> Any:
+    """PATCH mailbox settings. Partial per field, but array fields replace wholesale."""
+    unknown = set(fields) - WRITABLE_MAILBOX_FIELDS
+    if unknown:
+        raise ValueError(
+            f"Refusing to write mailbox fields this CLI does not support: {sorted(unknown)}. "
+            "Only fields that can be read back are writable."
+        )
+    return client.request(
+        "PATCH",
+        f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes/{_quote(mailbox_name)}",
+        json=dict(fields),
+    )
+
+
+def sender_list(item: Mapping[str, Any], key: str) -> list[str]:
+    """Return a sender list, refusing to guess when the read omitted it.
+
+    Returning `[]` for an absent key would make a read-modify-write silently
+    replace the real list with a single entry.
+    """
+    if key not in item:
+        raise ValueError(
+            f"The mailbox read did not include `{key}`, so this CLI cannot safely replace the "
+            "list (the API replaces it wholesale). Refusing rather than risk dropping entries."
+        )
+    value = item.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"Unexpected shape for `{key}`: expected a list, got {type(value).__name__}.")
+    # Read/write asymmetry, confirmed live: entries come back as objects
+    # ({email, locked}) but must be sent as plain address strings. Writing the
+    # read shape back would corrupt the list.
+    addresses = []
+    for entry in value:
+        if isinstance(entry, Mapping):
+            address = entry.get("email") or entry.get("email_idn")
+        else:
+            address = entry
+        if address:
+            addresses.append(str(address))
+    return addresses
+
+
+def slim_mailbox_settings(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Project the readable mailbox settings, stating effects rather than flag names."""
+    return {
+        "note": item.get("note"),
+        "blocked_senders": sender_list(item, "blocked_senders"),
+        "authorized_senders": sender_list(item, "authorized_senders"),
+    }
+
+
+MAX_MAILBOX_NOTE = 80
+
+
+def mailbox_note(value: str) -> str:
+    note = str(value)
+    if len(note) > MAX_MAILBOX_NOTE:
+        raise ValueError(
+            f"Note is {len(note)} characters; the API accepts at most {MAX_MAILBOX_NOTE}."
+        )
+    return note
+
+
 def _signatures_path(mail_hosting_id: str, mailbox_name: str) -> str:
     return f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes/{_quote(mailbox_name)}/signatures"
 

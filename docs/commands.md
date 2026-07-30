@@ -257,6 +257,35 @@ so the guardrails are lighter than forwarding — but still the full protected-w
 - When the mailbox has a forced signature policy (`is_forced`), reads and previews say so, since an
   admin policy may override what you set.
 
+### Mailbox settings and sender lists
+
+```bash
+ik admin mailbox settings show <mailbox> --json                      # read-only
+ik --profile work admin mailbox settings set <mailbox> --note "Shared inbox" --dry-run
+ik --profile work admin mailbox sender block <mailbox> spam@example.com --dry-run
+ik --profile work admin mailbox sender unblock <mailbox> spam@example.com --dry-run
+ik --profile work admin mailbox sender allow|unallow <mailbox> person@example.com --dry-run
+```
+
+- The blocked and allowed sender lists are **arrays the API replaces wholesale**, so `sender
+  block/unblock/allow/unallow` are read-modify-write and always resend the complete list. They are
+  idempotent, match addresses case-insensitively, and blocking says plainly that mail from that
+  address will stop arriving.
+- The mailbox read **omits both arrays unless they are explicitly requested**, so `ik` asks for
+  them and **refuses to write** if a response comes back without them — replacing a list it never
+  saw would delete every existing entry. There is no conditional write on this endpoint, so a
+  change made elsewhere between the read and the write would still be overwritten.
+- `settings set --note` accepts `''` to clear the note, and the 80-character limit is enforced
+  locally rather than by a server error.
+
+**Only settings this API lets you read back are writable.** The endpoint also accepts spam-handling
+flags, category-filtering flags and filtering folders, but none of them appear in any read
+(`?with=` rejects them; `/settings`, `/spam` and `/filters` do not exist), so they could not be
+previewed, diffed or confirmed — `ik` does not expose them. `has_responder` is excluded for a
+second reason: enabling it would auto-reply to every incoming sender with content this API does not
+expose. A test drives every write command and asserts the requests only ever carry supported
+fields. Mailbox creation and deletion are likewise out of scope.
+
 Remaining unimplemented admin surface: user creation/deletion, invitations, DNS, sieve filters,
 auto-reply, signature templates and uploads, and every bulk operation.
 
