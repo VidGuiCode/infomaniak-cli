@@ -270,3 +270,40 @@ def test_every_dry_run_that_reports_notified_reports_false():
             assert '"notified": False' in line, (
                 f"a dry run must never claim it notified anyone: {line.strip()}"
             )
+
+
+def test_no_command_group_claims_read_only_while_exposing_writes():
+    """Help text must not understate what a group can do.
+
+    Calling a group "read-only" when it exposes protected writes is not a
+    cosmetic slip: a reader deciding whether a command is safe to run in
+    automation would be misled about the safety posture.
+    """
+    parser = cli.build_parser()
+    top_level = {
+        name: sub
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+        for name, sub in action.choices.items()
+    }
+
+    # each group's own help string, as printed by `ik --help`
+    help_by_name: dict[str, str] = {}
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for choice in action._choices_actions:
+                help_by_name[choice.dest] = choice.help or ""
+
+    offenders = []
+    for name, group in top_level.items():
+        writes = [
+            path
+            for path, sub in _walk_subcommands(group, name)
+            if "--yes" in _option_strings(sub) and not _is_local_only(path)
+        ]
+        if writes and "read-only" in help_by_name.get(name, "").casefold():
+            offenders.append((name, writes))
+
+    assert offenders == [], (
+        "these groups are described as read-only but expose protected writes: " f"{offenders}"
+    )

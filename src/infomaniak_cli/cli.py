@@ -5519,7 +5519,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_services.add_argument("--raw", action="store_true", help="With --json, emit the full raw service payload.")
     account_services.set_defaults(func=cmd_account_services)
 
-    drive = sub.add_parser("drive", help="Use kDrive as the selected profile")
+    drive = sub.add_parser("drive", help="kDrive reads and protected file writes")
     drive_sub = drive.add_subparsers(dest="drive_command", required=True)
     drive_list = drive_sub.add_parser("list", help="List kDrive files and folders")
     drive_list.add_argument("--drive-id", help="kDrive ID. Defaults to the selected profile default kDrive.")
@@ -6013,7 +6013,7 @@ def build_parser() -> argparse.ArgumentParser:
     mail_drafts_delete.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_drafts_delete.set_defaults(func=cmd_mail_draft_delete)
 
-    contacts = sub.add_parser("contacts", help="CardDAV contacts commands")
+    contacts = sub.add_parser("contacts", help="CardDAV contacts reads and protected contact writes")
     contacts_sub = contacts.add_subparsers(dest="contacts_command", required=True)
     contacts_list = contacts_sub.add_parser("list", help="List contacts")
     contacts_list.add_argument("--limit", type=int, help="Maximum contacts to fetch.")
@@ -6141,7 +6141,7 @@ def build_parser() -> argparse.ArgumentParser:
     contacts_ab_repair.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     contacts_ab_repair.set_defaults(func=cmd_contacts_addressbook_repair)
 
-    calendar = sub.add_parser("calendar", help="Read-only CalDAV calendar commands")
+    calendar = sub.add_parser("calendar", help="CalDAV calendar reads and protected event writes")
     calendar_sub = calendar.add_subparsers(dest="calendar_command", required=True)
     calendar_list = calendar_sub.add_parser("list", help="List calendars")
     calendar_list.add_argument("--json", action="store_true")
@@ -6375,7 +6375,7 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_delete.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     calendar_delete.set_defaults(func=cmd_calendar_delete)
 
-    chat = sub.add_parser("chat", help="Read-only kChat discovery commands")
+    chat = sub.add_parser("chat", help="kChat reads and protected post/reaction writes")
     chat_sub = chat.add_subparsers(dest="chat_command", required=True)
     chat_teams = chat_sub.add_parser("teams", help="List kChat teams")
     chat_teams.add_argument("--json", action="store_true")

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.21] - 2026-07-30
+### Fixed
+- **Top-level `ik --help` described Calendar and kChat as "read-only"** even though both expose
+  protected writes (`calendar create/update/cancel/delete/create-series/repair`, `chat
+  post/reply/react/unreact/edit/delete`). Understating what a group can do is not cosmetic: someone
+  deciding whether a command is safe to run unattended would be misled about the safety posture.
+  The group descriptions now state both halves, matching the wording Mail already used:
+
+  | Group | Before | After |
+  | --- | --- | --- |
+  | `calendar` | Read-only CalDAV calendar commands | CalDAV calendar reads and protected event writes |
+  | `chat` | Read-only kChat discovery commands | kChat reads and protected post/reaction writes |
+  | `contacts` | CardDAV contacts commands | CardDAV contacts reads and protected contact writes |
+  | `drive` | Use kDrive as the selected profile | kDrive reads and protected file writes |
+
+- A new contract test fails if any command group is described as "read-only" while exposing a
+  subcommand that accepts `--yes`, so this cannot drift again. Per-subcommand "(read-only)" labels
+  were already accurate and are unchanged.
+
 ## [0.2.20] - 2026-07-30
 ### Added
 - **Opt-in DAV credential reuse.** `ik auth contacts --reuse-from calendar` and
