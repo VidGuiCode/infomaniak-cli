@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.3.2] - 2026-07-30
+### Added
+- **`ik admin mailbox forwarding show|add|remove|set|disable`** — read and change where a mailbox
+  forwards its mail. `show` is read-only; the four writes carry the protected-write contract
+  (preview, confirmation, `--dry-run`, explicit-profile-gated `--yes`, `changed` diff,
+  `notified: false`, post-write readback with a warning when the readback disagrees).
+- Guardrails specific to this endpoint, which is unusually easy to misuse:
+  - **The API is a full replace, not a patch.** `add`/`remove` are read-modify-write and always
+    send the complete configuration, so no field is ever blanked by omission.
+  - **Dropping every address is destructive and guarded by effect, not by command name.**
+    Infomaniak drops every stored address when forwarding is turned off, and this CLI cannot
+    restore them. Any change emptying a non-empty list — `disable`, or `set` with no `--address` —
+    refuses unless `--i-understand-addresses-are-dropped` is passed. `--dry-run` always previews
+    and lists what would be lost. `remove` is exempt: it names the one address it drops.
+  - **Forwarding can never end in a mail black hole.** If a change leaves no addresses, keeping a
+    local copy is forced back on — otherwise "no forwarding target and no local delivery" would
+    silently discard incoming mail.
+  - Removing the last address is called out, because forwarding then stops entirely.
+  - A readback that disagrees with the requested state exits non-zero instead of reporting success.
+  - `--keep-copy`/`--no-keep-copy` and `--forward-spam`/`--no-forward-spam` are mutually exclusive
+    at parse time rather than resolving silently, and address lists are deduplicated
+    case-insensitively and capped at the documented maximum.
+  - Output states effects rather than flag names: `keeps_local_copy` instead of the API's inverted
+    `has_dont_deliver`, plus `forwards_spam`.
+  - The read returns `redirect_adresses` (single `d`) as objects while the write takes
+    `redirect_addresses` as plain strings; the mapping is handled and pinned by tests.
+- Full destination addresses are required (a typo silently misroutes mail); add/remove are
+  idempotent and match case-insensitively.
+
+### Notes
+- **No forwarding write was exercised against a live mailbox for this release**, deliberately. The
+  test mailbox was configured "forwarding enabled, no addresses, no local copy", so adding a probe
+  address would have forwarded real incoming mail without keeping a copy for the duration of the
+  test — and the new black-hole guard would then have prevented restoring that exact flag
+  combination. Read and `--dry-run` paths were verified live (previews, warnings, gates and the
+  no-conditional-write notice all behaved correctly against real state, which was byte-identical
+  before and after). The write path is covered by 22 offline tests against a stateful fake that
+  mirrors the endpoint's read/write field asymmetry.
+
 ## [0.3.1] - 2026-07-30
 ### Added
 - **`ik admin mailbox alias add|remove <mailbox> <alias>` — the first admin write**, shipped with

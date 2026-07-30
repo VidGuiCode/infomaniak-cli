@@ -28,6 +28,9 @@ from .services.admin import (
     add_mailbox_alias,
     alias_local_part,
     delete_mailbox_alias,
+    forwarding_address,
+    forwarding_addresses,
+    set_mailbox_forwarding,
     get_account_admin,
     get_mailbox_admin,
     get_mailbox_aliases,
@@ -5805,6 +5808,341 @@ def _admin_alias_change(args: argparse.Namespace, action: str) -> int:
     return 0
 
 
+# Documented API ceiling for redirect_addresses; some plans allow only 1.
+MAX_FORWARDING_ADDRESSES = 100
+
+
+def _forwarding_state(client: Any, hosting_id: str, mailbox_name: str) -> dict[str, Any]:
+    """Read the complete forwarding configuration in CLI-facing shape."""
+    raw = get_mailbox_forwarding(client, hosting_id, mailbox_name)
+    return {
+        "enabled": bool(raw.get("is_enabled")),
+        "addresses": forwarding_addresses(raw),
+        "keeps_local_copy": not bool(raw.get("has_dont_deliver")),
+        "forwards_spam": bool(raw.get("has_forward_spam")),
+    }
+
+
+def _print_forwarding_state(state: Mapping[str, Any], *, label: str) -> None:
+    addresses = state["addresses"]
+    print(f"{label}: {'enabled' if state['enabled'] else 'disabled'}")
+    print(f"  Forwards to: {', '.join(addresses) if addresses else '(no addresses)'}")
+    print(f"  Keeps a copy in this mailbox: {'yes' if state['keeps_local_copy'] else 'no'}")
+    print(f"  Forwards spam: {'yes' if state['forwards_spam'] else 'no'}")
+
+
+def cmd_admin_mailbox_forwarding_show(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hosting_id = _admin_hosting_id_or_error(args, profile, client)
+    mailbox_name = mailbox_key(args.mailbox_name)
+    state = _forwarding_state(client, hosting_id, mailbox_name)
+
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "mail_hosting_id": hosting_id,
+                "mailbox_name": mailbox_name,
+                "forwarding": state,
+            },
+            args,
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Mail hosting ID: {hosting_id}")
+        _print_forwarding_state(state, label=f"Forwarding for {mailbox_name}")
+    return 0
+
+
+def _require_drop_acknowledgement(
+    args: argparse.Namespace, before: Mapping[str, Any], after: Mapping[str, Any]
+) -> None:
+    """Refuse to drop every stored forwarding address without acknowledgement.
+
+    Keyed on the *effect*, not the subcommand: `set` with no addresses sends a
+    byte-identical body to `disable`, so guarding only the command that names
+    itself would leave the acknowledgement decorative. `remove` is exempt
+    because it names the one address it drops. A dry run passes through so the
+    preview can show exactly what would be lost.
+    """
+    if not before["addresses"] or after["addresses"]:
+        return
+    if getattr(args, "dry_run", False) or getattr(args, "i_understand_addresses_are_dropped", False):
+        return
+    raise ValueError(
+        "This drops every stored forwarding address and this CLI cannot restore them "
+        f"({len(before['addresses'])} configured). Re-run with "
+        "--i-understand-addresses-are-dropped, preview it with --dry-run, or use "
+        "`forwarding remove` to drop them one at a time."
+    )
+
+
+def _admin_forwarding_write(
+    args: argparse.Namespace,
+    action: str,
+    *,
+    plan: Callable[[dict[str, Any]], dict[str, Any] | None],
+    describe: Callable[[dict[str, Any], dict[str, Any]], list[str]],
+    names_its_target: bool = False,
+) -> int:
+    """Shared read-modify-write path for every forwarding change.
+
+    The endpoint is a full replace with no ETag, so every write recomputes the
+    complete body from a fresh read. `plan` returns the desired state, or None
+    when there is nothing to do (reported as an idempotent no-op).
+    `names_its_target` exempts a command that drops one named address from the
+    wholesale-drop acknowledgement.
+    """
+    _validate_output_modes(args)
+    _require_explicit_profile_for_yes(args, f"change mailbox forwarding ({action})")
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hosting_id = _admin_hosting_id_or_error(args, profile, client)
+    mailbox_name = mailbox_key(args.mailbox_name)
+
+    hosting_label = None
+    try:
+        hosting = slim_admin_hosting(_unwrap_success_data(client.get(f"/1/mail_hostings/{hosting_id}")))
+        hosting_label = hosting.get("customer_name") or hosting.get("main_fqdn")
+    except InformaniakAPIError:
+        hosting_label = None
+
+    before = _forwarding_state(client, hosting_id, mailbox_name)
+    after = plan(before)
+
+    domain_note = None
+    if "@" in str(args.mailbox_name):
+        ignored = str(args.mailbox_name).split("@", 1)[1]
+        domain_note = (
+            f"domain part '{ignored}' ignored; targeting mailbox '{mailbox_name}' on "
+            f"hosting {hosting_id}" + (f" ({hosting_label})" if hosting_label else "")
+        )
+
+    result: dict[str, Any] = {
+        "profile": profile.name,
+        "mail_hosting_id": hosting_id,
+        "mail_hosting_name": hosting_label,
+        "mailbox_name": mailbox_name,
+        "action": f"forwarding {action}",
+        "before": before,
+        "after": before,
+        "changed": {},
+        "confirmed": None,
+        "conditional_write": False,
+        "notified": False,
+    }
+    if domain_note:
+        result["note"] = domain_note
+
+    if after is not None:
+        # An empty address list with no local copy would leave mail nowhere to
+        # go, so keeping a copy is forced whenever forwarding ends up off.
+        if not after["addresses"]:
+            after = {**after, "keeps_local_copy": True}
+        if not names_its_target:
+            _require_drop_acknowledgement(args, before, after)
+
+    if after is None or after == before:
+        result.update({"updated": False, "dry_run": bool(args.dry_run)})
+        if _machine_output(args):
+            print_machine(result, args)
+        else:
+            prefix = "[dry-run] " if args.dry_run else ""
+            print(f"{prefix}Forwarding already in the requested state for {mailbox_name} (nothing to do).")
+        return 0
+
+    result["after"] = after
+    result["changed"] = _diff_fields(before, after)
+
+    if args.dry_run:
+        result.update({"updated": False, "dry_run": True})
+        if _machine_output(args):
+            print_machine(result, args)
+        else:
+            where = f"hosting {hosting_id}" + (f" ({hosting_label})" if hosting_label else "")
+            print(f"[dry-run] Would change forwarding for {mailbox_name} ({where}).")
+            if domain_note:
+                print(f"Note: {domain_note}")
+            _print_forwarding_state(before, label="Before")
+            _print_forwarding_state(after, label="After")
+            for line in describe(before, after):
+                print(line)
+            if before["addresses"] and not after["addresses"] and not names_its_target:
+                print("These addresses cannot be restored by this CLI once dropped.")
+        return 0
+
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Mail hosting: {hosting_id}" + (f" ({hosting_label})" if hosting_label else ""))
+        print(f"Mailbox: {mailbox_name}")
+        if domain_note:
+            print(f"Note: {domain_note}")
+        _print_forwarding_state(before, label="Before")
+        _print_forwarding_state(after, label="After")
+        for line in describe(before, after):
+            print(line)
+        print(
+            "Note: this endpoint replaces the whole configuration and supports no conditional "
+            "write, so a change made elsewhere since this preview would be overwritten."
+        )
+    if not _confirm(args, "Apply this forwarding change? [y/N] ", action=f"admin mailbox forwarding {action}"):
+        print("Forwarding change cancelled.")
+        return 2
+
+    set_mailbox_forwarding(
+        client,
+        hosting_id,
+        mailbox_name,
+        addresses=after["addresses"],
+        is_enabled=after["enabled"],
+        has_dont_deliver=not after["keeps_local_copy"],
+        has_forward_spam=after["forwards_spam"],
+    )
+
+    readback = _forwarding_state(client, hosting_id, mailbox_name)
+    confirmed = readback == after
+    result.update({
+        "updated": True,
+        "dry_run": False,
+        "after": readback,
+        "confirmed": confirmed,
+    })
+    result["changed"] = _diff_fields(before, readback)
+
+    if not confirmed:
+        # Mail routing: "accepted but not what you asked for" must not read as
+        # success to automation, so this exits non-zero unlike other writes.
+        print(
+            f"warning: the server accepted the change but the readback differs from what was "
+            f"requested; check `ik admin mailbox forwarding show {mailbox_name}`.",
+            file=sys.stderr,
+        )
+        if _machine_output(args):
+            print_machine(result, args)
+        else:
+            print(f"Forwarding for {mailbox_name} is NOT in the requested state.")
+            _print_forwarding_state(readback, label="Now")
+        return 1
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Updated forwarding for {mailbox_name} (confirmed: {confirmed}).")
+        _print_forwarding_state(readback, label="Now")
+    return 0
+
+
+def cmd_admin_mailbox_forwarding_add(args: argparse.Namespace) -> int:
+    address = forwarding_address(args.address)
+
+    def plan(before: dict[str, Any]) -> dict[str, Any] | None:
+        if any(a.lower() == address.lower() for a in before["addresses"]):
+            return None
+        if len(before["addresses"]) >= MAX_FORWARDING_ADDRESSES:
+            raise ValueError(
+                f"This mailbox already has {len(before['addresses'])} forwarding addresses, the "
+                f"documented maximum ({MAX_FORWARDING_ADDRESSES})."
+            )
+        return {**before, "addresses": [*before["addresses"], address], "enabled": True}
+
+    def describe(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+        lines = [f"Mail sent to this mailbox will also be delivered to {address}."]
+        if not before["enabled"]:
+            lines.append("This enables forwarding, which is currently off.")
+        if not after["keeps_local_copy"]:
+            lines.append("Warning: this mailbox does NOT keep a local copy — mail is forwarded only.")
+        return lines
+
+    return _admin_forwarding_write(args, "add", plan=plan, describe=describe)
+
+
+def cmd_admin_mailbox_forwarding_remove(args: argparse.Namespace) -> int:
+    address = forwarding_address(args.address)
+
+    def plan(before: dict[str, Any]) -> dict[str, Any] | None:
+        # Case-insensitive on both sides: a stored case-variant duplicate must
+        # not survive a removal the user believes succeeded.
+        remaining = [a for a in before["addresses"] if a.lower() != address.lower()]
+        if len(remaining) == len(before["addresses"]):
+            return None
+        return {**before, "addresses": remaining, "enabled": bool(remaining) and before["enabled"]}
+
+    def describe(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+        lines = [f"Mail will no longer be forwarded to {address}."]
+        if not after["addresses"]:
+            lines.append("This removes the last address, so forwarding will stop entirely.")
+            if not before["keeps_local_copy"]:
+                lines.append(
+                    "This mailbox kept no local copy, so a copy will be kept again — otherwise "
+                    "mail would have nowhere to go."
+                )
+        return lines
+
+    return _admin_forwarding_write(args, "remove", plan=plan, describe=describe, names_its_target=True)
+
+
+def cmd_admin_mailbox_forwarding_set(args: argparse.Namespace) -> int:
+    addresses: list[str] = []
+    for value in args.address or []:
+        candidate = forwarding_address(value)
+        if not any(candidate.lower() == existing.lower() for existing in addresses):
+            addresses.append(candidate)
+    if len(addresses) > MAX_FORWARDING_ADDRESSES:
+        raise ValueError(
+            f"Too many forwarding addresses: {len(addresses)} (the API accepts at most "
+            f"{MAX_FORWARDING_ADDRESSES}; some plans allow only 1)."
+        )
+
+    def plan(before: dict[str, Any]) -> dict[str, Any] | None:
+        keeps_copy = before["keeps_local_copy"]
+        if args.keep_copy:
+            keeps_copy = True
+        elif args.no_keep_copy:
+            keeps_copy = False
+        spam = before["forwards_spam"]
+        if args.forward_spam:
+            spam = True
+        elif args.no_forward_spam:
+            spam = False
+        return {
+            "enabled": bool(addresses),
+            "addresses": addresses,
+            "keeps_local_copy": keeps_copy,
+            "forwards_spam": spam,
+        }
+
+    def describe(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+        lines = []
+        dropped = [a for a in before["addresses"] if a.lower() not in {x.lower() for x in after["addresses"]}]
+        if dropped:
+            lines.append(f"These addresses will stop receiving forwarded mail: {', '.join(dropped)}.")
+        if not after["addresses"]:
+            lines.append("No addresses remain, so forwarding will be off.")
+        if not after["keeps_local_copy"]:
+            lines.append("Warning: no local copy will be kept — mail is forwarded only.")
+        return lines
+
+    return _admin_forwarding_write(args, "set", plan=plan, describe=describe)
+
+
+def cmd_admin_mailbox_forwarding_disable(args: argparse.Namespace) -> int:
+    """Disable forwarding. Documented as DROPPING every stored address."""
+
+    def plan(before: dict[str, Any]) -> dict[str, Any] | None:
+        if not before["enabled"] and not before["addresses"]:
+            return None
+        # The wholesale-drop acknowledgement is enforced centrally, on the
+        # effect, so `set` with no addresses cannot bypass it.
+        return {**before, "enabled": False, "addresses": []}
+
+    def describe(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+        lines = ["Disabling forwarding drops the stored addresses; this CLI cannot restore them."]
+        if before["addresses"]:
+            lines.append(f"Addresses that will be lost: {', '.join(before['addresses'])}.")
+        return lines
+
+    return _admin_forwarding_write(args, "disable", plan=plan, describe=describe)
+
+
 def cmd_admin_mailbox_alias_add(args: argparse.Namespace) -> int:
     return _admin_alias_change(args, "add")
 
@@ -5984,6 +6322,77 @@ def build_parser() -> argparse.ArgumentParser:
         _alias_parser.add_argument("--json", action="store_true")
         _alias_parser.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
         _alias_parser.set_defaults(func=_alias_handler)
+
+    admin_fwd = admin_mailbox_sub.add_parser(
+        "forwarding", help="Show or change where a mailbox forwards its mail (protected writes)"
+    )
+    admin_fwd_sub = admin_fwd.add_subparsers(dest="admin_forwarding_command", required=True)
+
+    def _fwd_common(parser_obj: argparse.ArgumentParser, *, write: bool, address_help: str | None = None) -> None:
+        # Positionals bind in declaration order, so mailbox_name must come first.
+        parser_obj.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+        if address_help:
+            parser_obj.add_argument("address", help=address_help)
+        parser_obj.add_argument(
+            "--hosting-id",
+            help="Mail hosting ID. Defaults to the profile's mail hosting, else a single discovered one.",
+        )
+        if write:
+            parser_obj.add_argument("--dry-run", action="store_true", help="Preview the change without writing.")
+            parser_obj.add_argument(
+                "--yes", "-y", action="store_true",
+                help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+            )
+            parser_obj.add_argument(
+                "--i-understand-addresses-are-dropped", action="store_true",
+                help="Required acknowledgement when a change would drop every stored address.",
+            )
+        parser_obj.add_argument("--json", action="store_true")
+        parser_obj.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+
+    admin_fwd_show = admin_fwd_sub.add_parser(
+        "show", help="Show the current forwarding configuration (read-only)"
+    )
+    _fwd_common(admin_fwd_show, write=False)
+    admin_fwd_show.set_defaults(func=cmd_admin_mailbox_forwarding_show)
+
+    admin_fwd_add = admin_fwd_sub.add_parser(
+        "add", help="Forward this mailbox to one more address (changes mail delivery)"
+    )
+    _fwd_common(admin_fwd_add, write=True, address_help="Full destination address, e.g. person@example.com")
+    admin_fwd_add.set_defaults(func=cmd_admin_mailbox_forwarding_add)
+
+    admin_fwd_remove = admin_fwd_sub.add_parser(
+        "remove", help="Stop forwarding this mailbox to one address"
+    )
+    _fwd_common(admin_fwd_remove, write=True, address_help="Full destination address to stop forwarding to")
+    admin_fwd_remove.set_defaults(func=cmd_admin_mailbox_forwarding_remove)
+
+    admin_fwd_set = admin_fwd_sub.add_parser(
+        "set", help="Replace the whole forwarding configuration (the API is a full replace)"
+    )
+    admin_fwd_set.add_argument(
+        "--address", action="append",
+        help="Destination address. Repeat for several. Omit to clear all addresses.",
+    )
+    # Mutually exclusive: silent precedence on a field that decides whether mail
+    # stays in the mailbox would be a trap.
+    _copy_group = admin_fwd_set.add_mutually_exclusive_group()
+    _copy_group.add_argument("--keep-copy", action="store_true", help="Keep a copy in this mailbox.")
+    _copy_group.add_argument(
+        "--no-keep-copy", action="store_true", help="Do NOT keep a copy; mail is forwarded only."
+    )
+    _spam_group = admin_fwd_set.add_mutually_exclusive_group()
+    _spam_group.add_argument("--forward-spam", action="store_true", help="Also forward mail classified as spam.")
+    _spam_group.add_argument("--no-forward-spam", action="store_true", help="Do not forward spam.")
+    _fwd_common(admin_fwd_set, write=True)
+    admin_fwd_set.set_defaults(func=cmd_admin_mailbox_forwarding_set)
+
+    admin_fwd_disable = admin_fwd_sub.add_parser(
+        "disable", help="Turn forwarding off — DROPS every stored address (not recoverable here)"
+    )
+    _fwd_common(admin_fwd_disable, write=True)
+    admin_fwd_disable.set_defaults(func=cmd_admin_mailbox_forwarding_disable)
 
     drive = sub.add_parser("drive", help="kDrive reads and protected file writes")
     drive_sub = drive.add_subparsers(dest="drive_command", required=True)

@@ -106,8 +106,10 @@ have reads plus protected-write lifecycles.
 - **`0.3.1` — Mailbox alias add/remove (shipped):** the first admin write, reversible and
   single-resource, with maintainer sign-off, the full protected-write contract, idempotent
   re-runs, and post-write readback.
-- **`0.3.2` — Forwarding read/toggle (next):** requires maintainer-approved live verification
-  because forwarding changes mail routing.
+- **`0.3.2` — Mailbox forwarding (shipped):** read plus protected add/remove/set/disable. The
+  endpoint is a full replace with no conditional write, and disabling forwarding drops every
+  stored address, so the destructive path requires an explicit acknowledgement flag and the
+  previews state the effect in plain language.
 - **`0.3.3+`** — read-only admin polish (teams, per-product rights), then signature and mailbox
   settings writes, each gated the same way.
 - User creation/deletion, invitations, DNS, filters, auto-reply, and every bulk or recursive admin

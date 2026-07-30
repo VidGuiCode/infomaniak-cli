@@ -154,6 +154,69 @@ def slim_admin_mailbox(item: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def set_mailbox_forwarding(
+    client: Any,
+    mail_hosting_id: str,
+    mailbox_name: str,
+    *,
+    addresses: list[str],
+    is_enabled: bool,
+    has_dont_deliver: bool,
+    has_forward_spam: bool,
+) -> Any:
+    """PUT the COMPLETE forwarding configuration for one mailbox.
+
+    The endpoint is a full replace, not a patch, so every field is always sent:
+    omitting one would blank it. Note the write takes `redirect_addresses`
+    (correct spelling, plain strings) while the read returns `redirect_adresses`
+    (single d, objects) — see context/LIVE_API_FINDINGS.md.
+    """
+    return client.request(
+        "PUT",
+        f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes/{_quote(mailbox_name)}/forwarding_addresses",
+        json={
+            "redirect_addresses": list(addresses),
+            "is_enabled": bool(is_enabled),
+            "has_dont_deliver": bool(has_dont_deliver),
+            "has_forward_spam": bool(has_forward_spam),
+        },
+    )
+
+
+def forwarding_addresses(item: Mapping[str, Any]) -> list[str]:
+    """Map the read's `redirect_adresses` objects to plain address strings."""
+    raw = item.get("redirect_adresses")
+    if raw is None:
+        raw = item.get("redirect_addresses")
+    if not isinstance(raw, list):
+        return []
+    addresses = []
+    for entry in raw:
+        if isinstance(entry, Mapping):
+            value = entry.get("email") or entry.get("email_idn")
+        else:
+            value = entry
+        if value:
+            addresses.append(str(value))
+    return addresses
+
+
+_FORWARDING_ADDRESS_RE = re.compile(r"^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$")
+
+
+def forwarding_address(value: str) -> str:
+    """Validate a forwarding target: a full address, since a typo misroutes mail."""
+    address = str(value).strip()
+    if not address:
+        raise ValueError("Forwarding address is required")
+    if not _FORWARDING_ADDRESS_RE.match(address):
+        raise ValueError(
+            f"Not a valid forwarding address: {address}. "
+            "Pass a full address such as person@example.com."
+        )
+    return address
+
+
 def slim_aliases(item: Mapping[str, Any]) -> dict[str, Any]:
     aliases = item.get("aliases")
     normalized = []

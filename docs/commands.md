@@ -9,7 +9,7 @@ Use these command layers consistently:
 - `setup` / `bootstrap` / `whoami` / `doctor`: configure and diagnose the local profile.
 - `account`: discover the logged-in user's accessible Informaniak environment.
 - `mail`, `drive`, `chat`, `meet`, `calendar`, `contacts`: use a service as the selected profile.
-- `admin`: Manager/company-admin inventory reads and protected mailbox-alias writes.
+- `admin`: Manager/company-admin inventory reads and protected mailbox alias/forwarding writes.
 
 Important naming rule:
 
@@ -191,9 +191,41 @@ Rules (unchanged for the rest of the `0.3.x` line):
 - protect all future writes with confirmation, `--dry-run`, and explicit-profile-gated `--yes`;
 - do not use `admin` for generic bootstrap/discovery commands.
 
-The only admin **write** is the single-alias add/remove above. User creation/deletion,
-invitations, forwarding changes, DNS, sieve filters, and auto-reply are not available in this
-release.
+### Mailbox forwarding
+
+```bash
+ik admin mailbox forwarding show <mailbox> --json                       # read-only
+ik --profile work admin mailbox forwarding add <mailbox> person@example.com --dry-run
+ik --profile work admin mailbox forwarding remove <mailbox> person@example.com --dry-run
+ik --profile work admin mailbox forwarding set <mailbox> --address a@example.com --no-keep-copy --dry-run
+ik --profile work admin mailbox forwarding disable <mailbox> --dry-run
+```
+
+Forwarding decides where a mailbox's mail goes, so these carry the protected-write contract plus
+extra guardrails specific to this endpoint:
+
+- **The API is a full replace, not a patch.** `add`/`remove` are implemented read-modify-write and
+  always send the complete configuration, so no field is ever blanked by omission. There is no
+  conditional-write header on this endpoint, so a change made elsewhere between the read and the
+  write would be overwritten — the confirmation says so, and the JSON reports
+  `conditional_write: false`.
+- **Dropping every address is destructive and guarded by effect, not by command name.** Infomaniak
+  drops every stored address when forwarding is turned off, and this CLI cannot restore them. Any
+  change that would empty a non-empty address list — `disable`, or `set` with no `--address` —
+  refuses unless `--i-understand-addresses-are-dropped` is passed. `--dry-run` always previews and
+  lists exactly what would be lost, without needing the flag. `remove` is exempt because it names
+  the single address it drops.
+- **Forwarding never ends in a mail black hole.** If a change leaves no addresses, a local copy is
+  forced back on, since "no forwarding target and no local delivery" would discard incoming mail.
+- If the post-write readback does not match what was requested, the command exits non-zero rather
+  than reporting success — an accepted-but-wrong mail-routing change is not a success.
+- Output states effects, not flag names: `keeps_local_copy` (whether mail still lands in the
+  mailbox) rather than the API's inverted `has_dont_deliver`, and `forwards_spam`.
+- Removing the last address is called out in the preview, because forwarding then stops entirely.
+- Addresses must be full addresses; add/remove are idempotent and match case-insensitively.
+
+Remaining unimplemented admin surface: user creation/deletion, invitations, DNS, sieve filters,
+auto-reply, signature writes, and every bulk operation.
 
 ## Mail
 
