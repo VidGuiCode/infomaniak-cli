@@ -36,9 +36,12 @@ from .services.admin import (
     get_mailbox_aliases,
     get_mailbox_forwarding,
     get_mailbox_signatures,
+    list_account_teams,
     list_account_users,
     list_mail_hostings_admin,
+    list_mailboxes_paged,
     mailbox_key,
+    slim_admin_team,
     slim_account_overview,
     slim_admin_hosting,
     slim_admin_mailbox,
@@ -5449,7 +5452,7 @@ def _admin_hosting_id_or_error(args: argparse.Namespace, profile: Any, client: A
         return str(args.hosting_id)
     if profile.mail_hosting_id:
         return str(profile.mail_hosting_id)
-    hostings = list_mail_hostings_admin(client)
+    hostings, _ = list_mail_hostings_admin(client)
     if not hostings:
         raise ValueError(
             f"No mail hosting visible to this token for profile: {profile.name}. "
@@ -5469,6 +5472,74 @@ def _admin_hosting_id_or_error(args: argparse.Namespace, profile: Any, client: A
     )
 
 
+def _as_total(value: Any) -> int | None:
+    """Coerce a server-reported total, or None when it is absent/unusable.
+
+    A list command must never traceback on a field it merely reports.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _count_fields(items: list[Any], pages: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Uniform count reporting: what was returned, and what the server says exists.
+
+    A first-page count presented as the whole inventory is the same class of
+    dishonesty as a silent first-match, so `total` and `complete` are explicit.
+    """
+    total = _as_total((pages or {}).get("total"))
+    pages_count = _as_total((pages or {}).get("pages"))
+    complete = (total is None or len(items) >= total) and (pages_count is None or pages_count <= 1)
+    return {"count": len(items), "total": total, "complete": complete}
+
+
+def _print_incomplete_note(items: list[Any], pages: Mapping[str, Any] | None, noun: str) -> None:
+    fields = _count_fields(items, pages)
+    if fields["complete"]:
+        return
+    known = fields["total"] if fields["total"] is not None else "more"
+    print(f"Showing {len(items)} of {known} {noun}: this endpoint paginates and ik reads one page.")
+
+
+def cmd_admin_teams(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    account_id = _account_id_or_error(args, profile)
+    teams, pages = list_account_teams(client, account_id)
+    slim_teams = [slim_admin_team(team) for team in teams]
+
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "account_id": account_id,
+                **_count_fields(teams, pages),
+                "teams": teams if _raw_output(args) else slim_teams,
+            },
+            args,
+        )
+    elif getattr(args, "table", False):
+        print(render_table(slim_teams, [
+            ("id", "ID"),
+            ("name", "Team"),
+            ("parent_id", "Parent"),
+            ("children", "Children"),
+            ("description", "Description"),
+        ]))
+        _print_incomplete_note(teams, pages, "teams")
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Account ID: {account_id}")
+        print(f"Teams: {len(teams)}")
+        for team in slim_teams:
+            parent = f", parent {team['parent_id']}" if team.get("parent_id") else ""
+            print(f"- {team.get('id')}: {team.get('name')} ({team.get('children')} children{parent})")
+        _print_incomplete_note(teams, pages, "teams")
+    return 0
+
+
 def cmd_admin_status(args: argparse.Namespace) -> int:
     _validate_output_modes(args)
     profile, client = _profile_and_client(args.profile, args.base_url)
@@ -5484,12 +5555,20 @@ def cmd_admin_status(args: argparse.Namespace) -> int:
         account_error = exc.status_code
 
     try:
-        users_section: dict[str, Any] = {"readable": True, "count": len(list_account_users(client, account_id))}
+        _status_users, _status_user_pages = list_account_users(client, account_id)
+        users_section: dict[str, Any] = {
+            "readable": True,
+            **{k: v for k, v in _count_fields(_status_users, _status_user_pages).items() if k != "complete"},
+        }
     except InformaniakAPIError as exc:
         users_section = {"readable": False, "error_status": exc.status_code}
 
     try:
-        hostings_section: dict[str, Any] = {"readable": True, "count": len(list_mail_hostings_admin(client))}
+        _status_hostings, _status_hosting_pages = list_mail_hostings_admin(client)
+        hostings_section: dict[str, Any] = {
+            "readable": True,
+            **{k: v for k, v in _count_fields(_status_hostings, _status_hosting_pages).items() if k != "complete"},
+        }
     except InformaniakAPIError as exc:
         hostings_section = {"readable": False, "error_status": exc.status_code}
 
@@ -5528,7 +5607,7 @@ def cmd_admin_users(args: argparse.Namespace) -> int:
     _validate_output_modes(args)
     profile, client = _profile_and_client(args.profile, args.base_url)
     account_id = _account_id_or_error(args, profile)
-    users = list_account_users(client, account_id)
+    users, user_pages = list_account_users(client, account_id)
     slim_users_list = [slim_admin_user(user) for user in users]
 
     if _machine_output(args):
@@ -5536,7 +5615,7 @@ def cmd_admin_users(args: argparse.Namespace) -> int:
             {
                 "profile": profile.name,
                 "account_id": account_id,
-                "count": len(users),
+                **_count_fields(users, user_pages),
                 "users": users if _raw_output(args) else slim_users_list,
             },
             args,
@@ -5561,14 +5640,14 @@ def cmd_admin_users(args: argparse.Namespace) -> int:
 def cmd_admin_hostings(args: argparse.Namespace) -> int:
     _validate_output_modes(args)
     profile, client = _profile_and_client(args.profile, args.base_url)
-    hostings = list_mail_hostings_admin(client)
+    hostings, hosting_pages = list_mail_hostings_admin(client)
     slim_hostings = [slim_admin_hosting(hosting) for hosting in hostings]
 
     if _machine_output(args):
         print_machine(
             {
                 "profile": profile.name,
-                "count": len(hostings),
+                **_count_fields(hostings, hosting_pages),
                 "hostings": hostings if _raw_output(args) else slim_hostings,
             },
             args,
@@ -5593,7 +5672,7 @@ def cmd_admin_mailbox_list(args: argparse.Namespace) -> int:
     _validate_output_modes(args)
     profile, client = _profile_and_client(args.profile, args.base_url)
     hosting_id = _admin_hosting_id_or_error(args, profile, client)
-    mailboxes = list_mailboxes(client, hosting_id)
+    mailboxes, pages = list_mailboxes_paged(client, hosting_id)
     slim_mailboxes = [slim_admin_mailbox(mailbox) for mailbox in mailboxes]
 
     if _machine_output(args):
@@ -5601,7 +5680,7 @@ def cmd_admin_mailbox_list(args: argparse.Namespace) -> int:
             {
                 "profile": profile.name,
                 "mail_hosting_id": hosting_id,
-                "count": len(mailboxes),
+                **_count_fields(mailboxes, pages),
                 "mailboxes": mailboxes if _raw_output(args) else slim_mailboxes,
             },
             args,
@@ -5614,12 +5693,14 @@ def cmd_admin_mailbox_list(args: argparse.Namespace) -> int:
             ("is_limited", "Limited"),
             ("is_used_for_account", "Account mailbox"),
         ]))
+        _print_incomplete_note(mailboxes, pages, "mailboxes")
     else:
         print(f"Profile: {profile.name}")
         print(f"Mail hosting ID: {hosting_id}")
         print(f"Mailboxes: {len(mailboxes)}")
         for mailbox in slim_mailboxes:
             print(f"- {mailbox.get('mailbox')} (name: {mailbox.get('mailbox_name')})")
+        _print_incomplete_note(mailboxes, pages, "mailboxes")
     return 0
 
 
@@ -6275,6 +6356,13 @@ def build_parser() -> argparse.ArgumentParser:
     admin_hostings.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
     admin_hostings.add_argument("--raw", action="store_true", help="With --json, emit the full raw hosting payload.")
     admin_hostings.set_defaults(func=cmd_admin_hostings)
+    admin_teams = admin_sub.add_parser("teams", help="List account teams/workgroups (read-only)")
+    admin_teams.add_argument("--account-id", help="Account ID. Defaults to the selected profile account.")
+    admin_teams.add_argument("--json", action="store_true")
+    admin_teams.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    admin_teams.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
+    admin_teams.add_argument("--raw", action="store_true", help="With --json, emit the full raw team payload.")
+    admin_teams.set_defaults(func=cmd_admin_teams)
     admin_mailbox = admin_sub.add_parser("mailbox", help="Inspect mailboxes at the hosting level (read-only)")
     admin_mailbox_sub = admin_mailbox.add_subparsers(dest="admin_mailbox_command", required=True)
     admin_mailbox_list = admin_mailbox_sub.add_parser("list", help="List mailboxes on a mail hosting (read-only)")

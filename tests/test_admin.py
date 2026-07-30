@@ -109,8 +109,10 @@ def test_service_functions_hit_the_confirmed_endpoints():
     )
 
     assert get_account_admin(api, "42") == {"id": 42, "name": "Example Co", "nb_users": 3}
-    assert list_account_users(api, "42") == [RAW_USER]
-    assert list_mail_hostings_admin(api) == [RAW_HOSTING]
+    # Both list fetchers return (items, page_info) so `complete` stays truthful
+    # if these endpoints ever start paginating.
+    assert list_account_users(api, "42")[0] == [RAW_USER]
+    assert list_mail_hostings_admin(api)[0] == [RAW_HOSTING]
     assert get_mailbox_admin(api, "111", "user") == RAW_MAILBOX
     assert api.calls == [
         ("/1/accounts/42", None),
@@ -284,8 +286,8 @@ def test_cli_admin_status_reports_readable_admin_surfaces(tmp_path, monkeypatch,
 
     output = json.loads(capsys.readouterr().out)
     assert output["admin_read_access"] is True
-    assert output["users"] == {"readable": True, "count": 1}
-    assert output["mail_hostings"] == {"readable": True, "count": 1}
+    assert output["users"] == {"readable": True, "count": 1, "total": None}
+    assert output["mail_hostings"] == {"readable": True, "count": 1, "total": None}
     assert output["account"] == {"id": 42, "name": "Example Co", "nb_users": 3}
     assert output["writes"] == "none"
 

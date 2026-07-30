@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.3] - 2026-07-30
+### Added
+- **`ik admin teams`** — list account teams/workgroups (id, name, description, parent, child
+  count, owner, position) with `--table`, `--raw`, `--json`/`--compact`. Read-only.
+
+### Fixed
+- **List counts no longer present one page as the whole inventory.** `admin mailbox list` (and the
+  new `admin teams`) read a paginated endpoint but reported `count: <len(first page)>` with no
+  indication more existed — the same class of quiet dishonesty as a silent first-match. Every admin
+  list now reports `count` (items returned), `total` (the server's figure, `null` when the endpoint
+  does not paginate) and `complete`; when `count < total` the human output prints
+  "Showing N of TOTAL … this endpoint paginates and ik reads one page."
+
+### Changed
+- The JSON from `admin users`, `admin hostings` and `admin mailbox list` gains `total` and
+  `complete` alongside the existing `count`. Existing keys are unchanged, so this is additive.
+
+### Notes
+- Multi-page fetching is deliberately **not** implemented: reporting the truth fixes the
+  dishonesty, while auto-paging changes request volume against a rate-limited API. A `--all-pages`
+  flag can follow if a real account needs it.
+- Discovery closed an open question: there is **no per-user detail endpoint** — it 404s even with a
+  valid user id — so `ik admin users` is the only source of user information. The docs now say so
+  instead of leaving it open.
+
 ## [0.3.2] - 2026-07-30
 ### Added
 - **`ik admin mailbox forwarding show|add|remove|set|disable`** — read and change where a mailbox

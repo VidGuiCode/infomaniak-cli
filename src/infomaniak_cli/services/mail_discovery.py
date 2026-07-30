@@ -11,8 +11,14 @@ def list_mail_hostings(client: Any, account_id: str) -> list[Mapping[str, Any]]:
 
 
 def list_mailboxes(client: Any, mail_hosting_id: str) -> list[Mapping[str, Any]]:
-    """Return mailboxes from the confirmed mail hosting mailbox endpoint."""
-    return _items(_unwrap(client.get(f"/1/mail_hostings/{mail_hosting_id}/mailboxes")))
+    """Return mailboxes from the confirmed mail hosting mailbox endpoint.
+
+    Delegates to the admin fetcher so one endpoint has one implementation: that
+    one percent-encodes the hosting id and keeps the pagination envelope.
+    """
+    from .admin import list_mailboxes_paged
+
+    return list(list_mailboxes_paged(client, mail_hosting_id)[0])
 
 
 def slim_mail_hosting(item: Mapping[str, Any]) -> dict[str, Any]:

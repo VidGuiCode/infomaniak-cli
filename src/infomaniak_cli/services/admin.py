@@ -13,13 +13,53 @@ import urllib.parse
 from typing import Any, Mapping
 
 
-def list_account_users(client: Any, account_id: str) -> list[Mapping[str, Any]]:
-    """Return the Manager user list for one account (v2 endpoint; v1 is 404)."""
-    return _items(_unwrap(client.get(f"/2/accounts/{account_id}/users")))
+def list_account_users(client: Any, account_id: str) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """Return (users, page_info) for one account (v2 endpoint; v1 is 404).
+
+    This endpoint does not paginate today, but the envelope is returned anyway
+    so `complete` stays truthful if that ever changes.
+    """
+    payload = client.get(f"/2/accounts/{_quote(account_id)}/users")
+    return _items(_unwrap(payload)), page_info(payload)
+
+
+def list_account_teams(client: Any, account_id: str) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """Return (teams, page_info). This endpoint paginates."""
+    payload = client.get(f"/1/accounts/{_quote(account_id)}/teams")
+    return _items(_unwrap(payload)), page_info(payload)
+
+
+def page_info(payload: Any) -> dict[str, Any]:
+    """Extract the server's pagination figures, or nulls when absent.
+
+    Reporting `count` from one page as if it were the whole inventory is the
+    same class of dishonesty as a silent first-match, so callers need `total`.
+    """
+    if not isinstance(payload, Mapping):
+        return {"total": None, "page": None, "pages": None, "items_per_page": None}
+    return {
+        "total": payload.get("total"),
+        "page": payload.get("page"),
+        "pages": payload.get("pages"),
+        "items_per_page": payload.get("items_per_page"),
+    }
+
+
+def slim_admin_team(item: Mapping[str, Any]) -> dict[str, Any]:
+    children = item.get("children")
+    return {
+        "id": item.get("id"),
+        "name": item.get("name"),
+        "description": item.get("description"),
+        "parent_id": item.get("parent_id"),
+        "children": len(children) if isinstance(children, list) else 0,
+        "owned_by_id": item.get("owned_by_id"),
+        "position": item.get("position"),
+    }
 
 
 def get_account_admin(client: Any, account_id: str) -> Mapping[str, Any]:
-    return _mapping(_unwrap(client.get(f"/1/accounts/{account_id}")))
+    return _mapping(_unwrap(client.get(f"/1/accounts/{_quote(account_id)}")))
 
 
 def mailbox_key(value: str) -> str:
@@ -41,9 +81,16 @@ def _quote(segment: Any) -> str:
     return urllib.parse.quote(text, safe="")
 
 
-def list_mail_hostings_admin(client: Any) -> list[Mapping[str, Any]]:
-    """Return every mail hosting visible to the token, with admin fields."""
-    return _items(_unwrap(client.get("/1/mail_hostings")))
+def list_mail_hostings_admin(client: Any) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """Return (hostings, page_info) for every mail hosting visible to the token."""
+    payload = client.get("/1/mail_hostings")
+    return _items(_unwrap(payload)), page_info(payload)
+
+
+def list_mailboxes_paged(client: Any, mail_hosting_id: str) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """Return (mailboxes, page_info). This endpoint paginates."""
+    payload = client.get(f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes")
+    return _items(_unwrap(payload)), page_info(payload)
 
 
 def get_mailbox_admin(client: Any, mail_hosting_id: str, mailbox_name: str) -> Mapping[str, Any]:

@@ -110,8 +110,11 @@ have reads plus protected-write lifecycles.
   endpoint is a full replace with no conditional write, and disabling forwarding drops every
   stored address, so the destructive path requires an explicit acknowledgement flag and the
   previews state the effect in plain language.
-- **`0.3.3+`** — read-only admin polish (teams, per-product rights), then signature and mailbox
-  settings writes, each gated the same way.
+- **`0.3.3` — Read-only admin polish (shipped):** `ik admin teams`, and honest counts on
+  paginated endpoints (`count`/`total`/`complete`) so a first page is never reported as the whole
+  inventory.
+- **`0.3.4`–`0.3.5`** — signature and mailbox-settings writes, gated the same way, subject to
+  endpoint discovery.
 - User creation/deletion, invitations, DNS, filters, auto-reply, and every bulk or recursive admin
   operation remain excluded until individually designed and explicitly approved.
 

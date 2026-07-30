@@ -158,6 +158,7 @@ surfaces are unreadable instead of failing.
 ```bash
 ik admin status --json                 # can this token read Manager surfaces at all?
 ik admin users --table                 # account users with roles and state
+ik admin teams --table                 # account teams/workgroups
 ik admin hostings --json               # mail hostings with lock/DNS state
 ik admin mailbox list --json           # mailboxes on the selected mail hosting
 ik admin mailbox show <name> --json    # one mailbox + aliases, forwarding, signature summary
@@ -175,6 +176,12 @@ request. Aliases are the local part only (the hosting's domains define the rest)
 Behavior notes:
 
 - Every command prints the active profile and resolved account/hosting context first.
+- **Counts are honest about pagination.** Every list reports `count` (items returned) and `total`
+  (the server's figure, `null` when the endpoint does not paginate), plus `complete`. `ik` reads a
+  single page, so when more exist the human output says "Showing N of TOTAL …" and the JSON carries
+  `complete: false` — a first-page count is never presented as the whole inventory.
+- There is **no per-user detail endpoint** (confirmed: it 404s even with a valid user id), so
+  `ik admin users` is the only source of user information.
 - `admin mailbox list|show` resolve the mail hosting from `--hosting-id`, else the profile's
   configured mail hosting, else a **single** discovered hosting. With several hostings and no
   explicit choice, they refuse and list the candidates — never first-match.
