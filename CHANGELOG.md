@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.3.4] - 2026-07-30
+### Added
+- **`ik admin mailbox signature list|show|create|update|set-default|delete`** — manage the
+  signatures applied to a mailbox's outgoing mail. `list`/`show` are read-only; the four writes
+  carry the protected-write contract (preview, confirmation, `--dry-run`, explicit-profile-gated
+  `--yes`, `changed` diff, `notified: false`, post-write readback with a non-zero exit when the
+  readback disagrees).
+- `--content-file` reads a signature body from a file, since signatures are usually multi-line HTML.
+
+### Safety
+- **`update` is a genuine partial update.** Only the fields passed are sent (the API's PATCH
+  supports this, unlike the forwarding PUT), so renaming a signature cannot clobber its body.
+  Passing no field is refused instead of sending an empty request.
+- **`delete` is irreversible** and previews the entire body that will be lost — the one place a
+  signature body is printed by default. Deleting a signature that is currently a default requires
+  `--force-default`, because it silently changes every future outgoing mail.
+- **Bodies are omitted from `list`.** Signatures routinely carry names, phone numbers and postal
+  addresses, so the list reports a character count; `show` and `--raw` expose the content.
+- `set-default` validates each id against the mailbox's own signatures rather than trusting input,
+  and requires at least one of `--send`/`--reply`.
+- A forced signature policy (`is_forced`) is surfaced in reads and previews, since an admin policy
+  may override what is set.
+- Readbacks tolerate server-side normalization. Identifying a newly created signature by name would
+  have reported a successful create as failed whenever the server trimmed or truncated the name, so
+  it is identified by id; update comparisons accept a wrapped body or a boolean echoed as `0`/`1`.
+  A readback that genuinely disagrees now prints a `warning:` to stderr as well as exiting non-zero.
+- `create --set-default` verifies the default actually moved and warns when the server ignored it,
+  rather than claiming an effect it did not check. `set-default` also verifies that the pointer it
+  did *not* set survived, since the API's behaviour for an omitted pointer is undocumented.
+
 ## [0.3.3] - 2026-07-30
 ### Added
 - **`ik admin teams`** — list account teams/workgroups (id, name, description, parent, child

@@ -113,8 +113,10 @@ have reads plus protected-write lifecycles.
 - **`0.3.3` — Read-only admin polish (shipped):** `ik admin teams`, and honest counts on
   paginated endpoints (`count`/`total`/`complete`) so a first page is never reported as the whole
   inventory.
-- **`0.3.4`–`0.3.5`** — signature and mailbox-settings writes, gated the same way, subject to
-  endpoint discovery.
+- **`0.3.4` — Mailbox signatures (shipped):** read plus protected create/update/set-default/delete.
+  The update is a genuine partial update; delete is irreversible and guarded when the signature is
+  a current default; bodies stay out of list output because they carry personal data.
+- **`0.3.5`** — mailbox settings writes, gated the same way, subject to endpoint discovery.
 - User creation/deletion, invitations, DNS, filters, auto-reply, and every bulk or recursive admin
   operation remain excluded until individually designed and explicitly approved.
 

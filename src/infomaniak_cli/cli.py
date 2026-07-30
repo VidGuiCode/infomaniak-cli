@@ -28,9 +28,15 @@ from .services.admin import (
     add_mailbox_alias,
     alias_local_part,
     delete_mailbox_alias,
+    create_signature,
+    delete_signature,
     forwarding_address,
     forwarding_addresses,
+    set_default_signatures,
     set_mailbox_forwarding,
+    signature_items,
+    slim_signature,
+    update_signature,
     get_account_admin,
     get_mailbox_admin,
     get_mailbox_aliases,
@@ -6224,6 +6230,483 @@ def cmd_admin_mailbox_forwarding_disable(args: argparse.Namespace) -> int:
     return _admin_forwarding_write(args, "disable", plan=plan, describe=describe)
 
 
+def _signature_context(args: argparse.Namespace) -> tuple[Any, Any, str, str, Mapping[str, Any]]:
+    """Resolve profile/client/hosting/mailbox and read the signature payload."""
+    profile, client = _profile_and_client(args.profile, args.base_url)
+    hosting_id = _admin_hosting_id_or_error(args, profile, client)
+    mailbox_name = mailbox_key(args.mailbox_name)
+    payload = get_mailbox_signatures(client, hosting_id, mailbox_name)
+    return profile, client, hosting_id, mailbox_name, payload
+
+
+def _resolve_signature(payload: Mapping[str, Any], signature_id: Any) -> Mapping[str, Any]:
+    """Exact-id resolution only — never a first match by name."""
+    for item in signature_items(payload):
+        if str(item.get("id")) == str(signature_id):
+            return item
+    raise ValueError(
+        f"No signature with id {signature_id} on this mailbox. "
+        "Run `ik admin mailbox signature list <mailbox>` to see the ids."
+    )
+
+
+def _slim_signature_list(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        slim_signature(
+            item,
+            default_signature_id=payload.get("default_signature_id"),
+            default_reply_signature_id=payload.get("default_reply_signature_id"),
+        )
+        for item in signature_items(payload)
+    ]
+
+
+def cmd_admin_signature_list(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, _client, hosting_id, mailbox_name, payload = _signature_context(args)
+    items = signature_items(payload)
+    slim_items = _slim_signature_list(payload)
+
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "mail_hosting_id": hosting_id,
+                "mailbox_name": mailbox_name,
+                **_count_fields(items),
+                "is_forced": payload.get("is_forced"),
+                "default_signature_id": payload.get("default_signature_id"),
+                "default_reply_signature_id": payload.get("default_reply_signature_id"),
+                "signatures": items if _raw_output(args) else slim_items,
+            },
+            args,
+        )
+    elif getattr(args, "table", False):
+        print(render_table(slim_items, [
+            ("id", "ID"),
+            ("name", "Name"),
+            ("position", "Position"),
+            ("content_length", "Chars"),
+            ("is_default_send", "Default send"),
+            ("is_default_reply", "Default reply"),
+        ]))
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Mailbox: {mailbox_name} (hosting {hosting_id})")
+        print(f"Signatures: {len(items)}")
+        for item in slim_items:
+            flags = []
+            if item["is_default_send"]:
+                flags.append("default send")
+            if item["is_default_reply"]:
+                flags.append("default reply")
+            suffix = f" [{', '.join(flags)}]" if flags else ""
+            print(f"- {item['id']}: {item['name']} ({item['content_length']} chars){suffix}")
+        if payload.get("is_forced"):
+            print("Note: this mailbox has a forced signature policy; admin settings may override edits.")
+    return 0
+
+
+def cmd_admin_signature_show(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    profile, _client, hosting_id, mailbox_name, payload = _signature_context(args)
+    item = _resolve_signature(payload, args.signature_id)
+
+    if _machine_output(args):
+        print_machine(
+            {
+                "profile": profile.name,
+                "mail_hosting_id": hosting_id,
+                "mailbox_name": mailbox_name,
+                "signature": dict(item) if _raw_output(args) else {
+                    **slim_signature(
+                        item,
+                        default_signature_id=payload.get("default_signature_id"),
+                        default_reply_signature_id=payload.get("default_reply_signature_id"),
+                    ),
+                    "content": item.get("content"),
+                },
+            },
+            args,
+        )
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Mailbox: {mailbox_name} (hosting {hosting_id})")
+        print(f"Signature {item.get('id')}: {item.get('name')}")
+        print(f"Position: {item.get('position')}")
+        print("Content:")
+        print(item.get("content") or "(empty)")
+    return 0
+
+
+def _signature_content(args: argparse.Namespace) -> str | None:
+    """Content from --content or --content-file (signatures are usually multi-line)."""
+    content_file = getattr(args, "content_file", None)
+    if content_file is not None:
+        if not str(content_file).strip():
+            raise ValueError("--content-file needs a path.")
+        path = Path(normalize_local_path(content_file))
+        if not path.is_file():
+            raise ValueError(f"Signature content file not found: {content_file}")
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(f"Could not read signature content file {content_file}: {exc}") from exc
+    return getattr(args, "content", None)
+
+
+def _values_match(sent: Any, stored: Any) -> bool:
+    """Compare a sent field against what the server stored, tolerating normalization.
+
+    Servers routinely echo booleans as 0/1/"true" and normalize case, so a strict
+    equality check would report a successful write as unconfirmed.
+    """
+    if isinstance(sent, bool):
+        return str(stored).strip().lower() in ({"true", "1"} if sent else {"false", "0", "none", ""})
+    return str(sent).strip().casefold() == str(stored).strip().casefold()
+
+
+def _content_preview(content: str | None) -> str:
+    if not content:
+        return "(empty)"
+    first_line = content.splitlines()[0] if content.splitlines() else ""
+    return f"{len(content)} chars, starts: {first_line[:60]}"
+
+
+def cmd_admin_signature_create(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    _require_explicit_profile_for_yes(args, "create a mailbox signature")
+    profile, client, hosting_id, mailbox_name, payload = _signature_context(args)
+    content = _signature_content(args)
+
+    fields: dict[str, Any] = {"name": args.name}
+    if content is not None:
+        fields["content"] = content
+    if args.position:
+        fields["position"] = args.position
+    if args.set_default:
+        fields["is_default"] = True
+
+    result: dict[str, Any] = {
+        "profile": profile.name,
+        "mail_hosting_id": hosting_id,
+        "mailbox_name": mailbox_name,
+        "action": "signature create",
+        "name": args.name,
+        "position": args.position,
+        "content_length": len(content) if content else 0,
+        "set_default": bool(args.set_default),
+        "notified": False,
+    }
+
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Mailbox: {mailbox_name} (hosting {hosting_id})")
+        print(f"Create signature: {args.name}")
+        print(f"Content: {_content_preview(content)}")
+        if args.set_default:
+            print("This will become the mailbox's default signature for new mail.")
+        if payload.get("is_forced"):
+            print("Note: this mailbox has a forced signature policy; the result may be overridden.")
+    if args.dry_run:
+        result.update({"created": False, "dry_run": True})
+        print_machine(result, args) if _machine_output(args) else print("[dry-run] No signature was created.")
+        return 0
+    if not _confirm(args, "Create this signature? [y/N] ", action="admin mailbox signature create"):
+        print("Signature creation cancelled.")
+        return 2
+
+    response = create_signature(client, hosting_id, mailbox_name, fields)
+    after = get_mailbox_signatures(client, hosting_id, mailbox_name)
+
+    # Identify by id, never by name: the server may trim or truncate a name, and
+    # a name mismatch would then report a successful create as failed.
+    before_ids = {str(item.get("id")) for item in signature_items(payload)}
+    new_items = [item for item in signature_items(after) if str(item.get("id")) not in before_ids]
+    created_id = _unwrap_success_data(response)
+    if isinstance(created_id, Mapping):
+        created_id = created_id.get("id")
+    if created_id is None and len(new_items) == 1:
+        created_id = new_items[0].get("id")
+    elif created_id is None and new_items:
+        match = next((item for item in new_items if item.get("name") == args.name), None)
+        created_id = match.get("id") if match else None
+
+    default_moved = None
+    if args.set_default and created_id is not None:
+        default_moved = str(after.get("default_signature_id")) == str(created_id)
+
+    confirmed = created_id is not None
+    result.update({
+        "created": True,
+        "dry_run": False,
+        "signature_id": created_id,
+        "confirmed": confirmed,
+        "default_confirmed": default_moved,
+    })
+    if not confirmed:
+        print(
+            "warning: the server accepted the create but the new signature was not found on "
+            f"readback; check `ik admin mailbox signature list {mailbox_name}`.",
+            file=sys.stderr,
+        )
+    elif args.set_default and default_moved is False:
+        print(
+            "warning: the signature was created but it did not become the default; set it with "
+            f"`ik admin mailbox signature set-default {mailbox_name} --send {created_id}`.",
+            file=sys.stderr,
+        )
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Created signature {created_id} (confirmed: {confirmed}).")
+    return 0 if confirmed else 1
+
+
+def cmd_admin_signature_update(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    _require_explicit_profile_for_yes(args, "update a mailbox signature")
+    profile, client, hosting_id, mailbox_name, payload = _signature_context(args)
+    before = _resolve_signature(payload, args.signature_id)
+    content = _signature_content(args)
+
+    # PATCH is a genuine partial update, so only the given fields are sent.
+    fields: dict[str, Any] = {}
+    if args.name is not None:
+        fields["name"] = args.name
+    if content is not None:
+        fields["content"] = content
+    if args.position:
+        fields["position"] = args.position
+    if args.footer:
+        fields["has_infomaniak_footer"] = True
+    elif args.no_footer:
+        fields["has_infomaniak_footer"] = False
+    if not fields:
+        raise ValueError(
+            "Nothing to update. Pass at least one of --name, --content/--content-file, "
+            "--position, --footer/--no-footer."
+        )
+
+    before_slim = slim_signature(
+        before,
+        default_signature_id=payload.get("default_signature_id"),
+        default_reply_signature_id=payload.get("default_reply_signature_id"),
+    )
+    after_preview = {**before_slim, **{k: v for k, v in fields.items() if k != "content"}}
+    if "content" in fields:
+        after_preview["content_length"] = len(fields["content"])
+    result: dict[str, Any] = {
+        "profile": profile.name,
+        "mail_hosting_id": hosting_id,
+        "mailbox_name": mailbox_name,
+        "action": "signature update",
+        "signature_id": before.get("id"),
+        "before": before_slim,
+        "changed": _diff_fields(before_slim, after_preview),
+        "fields_sent": sorted(fields),
+        "notified": False,
+    }
+
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Mailbox: {mailbox_name} (hosting {hosting_id})")
+        print(f"Update signature {before.get('id')}: {before.get('name')}")
+        print(f"Fields sent: {', '.join(sorted(fields))}")
+        if "content" in fields:
+            print(f"New content: {_content_preview(fields['content'])}")
+        if payload.get("is_forced"):
+            print("Note: this mailbox has a forced signature policy; the result may be overridden.")
+    if args.dry_run:
+        result.update({"updated": False, "dry_run": True})
+        print_machine(result, args) if _machine_output(args) else print("[dry-run] Nothing was changed.")
+        return 0
+    if not _confirm(args, "Apply this signature update? [y/N] ", action="admin mailbox signature update"):
+        print("Signature update cancelled.")
+        return 2
+
+    update_signature(client, hosting_id, mailbox_name, before.get("id"), fields)
+    after_payload = get_mailbox_signatures(client, hosting_id, mailbox_name)
+    after_item = _resolve_signature(after_payload, before.get("id"))
+    after_slim = slim_signature(
+        after_item,
+        default_signature_id=after_payload.get("default_signature_id"),
+        default_reply_signature_id=after_payload.get("default_reply_signature_id"),
+    )
+    # Tolerate server-side normalization: a body may be wrapped or a boolean
+    # echoed as 0/1, and a strict check would call a good write unconfirmed.
+    confirmed = all(
+        (after_item.get("content") != before.get("content")) if key == "content"
+        else _values_match(value, after_item.get(key))
+        for key, value in fields.items()
+    )
+    result.update({
+        "updated": True,
+        "dry_run": False,
+        "after": after_slim,
+        "changed": _diff_fields(before_slim, after_slim),
+        "confirmed": confirmed,
+    })
+    if not confirmed:
+        print(
+            "warning: the server accepted the update but the readback does not reflect it; "
+            f"check `ik admin mailbox signature show {mailbox_name} {before.get('id')}`.",
+            file=sys.stderr,
+        )
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Updated signature {before.get('id')} (confirmed: {confirmed}).")
+    return 0 if confirmed else 1
+
+
+def cmd_admin_signature_set_default(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    _require_explicit_profile_for_yes(args, "set the default mailbox signature")
+    profile, client, hosting_id, mailbox_name, payload = _signature_context(args)
+    if args.send is None and args.reply is None:
+        raise ValueError("Pass --send <id> and/or --reply <id> to say which default to set.")
+
+    def _numeric_id(raw: Any) -> Any:
+        # The API documents numeric ids; pass anything else through untouched
+        # rather than crashing on int().
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return raw
+
+    fields: dict[str, Any] = {}
+    if args.send is not None:
+        fields["default_signature_id"] = _numeric_id(_resolve_signature(payload, args.send).get("id"))
+    if args.reply is not None:
+        fields["default_reply_signature_id"] = _numeric_id(_resolve_signature(payload, args.reply).get("id"))
+
+    before = {
+        "default_signature_id": payload.get("default_signature_id"),
+        "default_reply_signature_id": payload.get("default_reply_signature_id"),
+    }
+    after_preview = {**before, **fields}
+    result: dict[str, Any] = {
+        "profile": profile.name,
+        "mail_hosting_id": hosting_id,
+        "mailbox_name": mailbox_name,
+        "action": "signature set-default",
+        "before": before,
+        "changed": _diff_fields(before, after_preview),
+        "notified": False,
+    }
+
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Mailbox: {mailbox_name} (hosting {hosting_id})")
+        print(f"Default for new mail: {before['default_signature_id']} -> {after_preview['default_signature_id']}")
+        print(f"Default for replies:  {before['default_reply_signature_id']} -> {after_preview['default_reply_signature_id']}")
+        print("This changes the signature applied to future outgoing mail from this mailbox.")
+    if args.dry_run:
+        result.update({"updated": False, "dry_run": True})
+        print_machine(result, args) if _machine_output(args) else print("[dry-run] Defaults unchanged.")
+        return 0
+    if not _confirm(args, "Set these defaults? [y/N] ", action="admin mailbox signature set-default"):
+        print("Default change cancelled.")
+        return 2
+
+    set_default_signatures(client, hosting_id, mailbox_name, fields)
+    after_payload = get_mailbox_signatures(client, hosting_id, mailbox_name)
+    after = {
+        "default_signature_id": after_payload.get("default_signature_id"),
+        "default_reply_signature_id": after_payload.get("default_reply_signature_id"),
+    }
+    confirmed = all(str(after.get(key)) == str(value) for key, value in fields.items())
+    # The API's behaviour for an omitted pointer is undocumented, so verify the
+    # one we did not send is still where it was rather than assuming.
+    untouched_kept = all(
+        str(after.get(key)) == str(before.get(key)) for key in before if key not in fields
+    )
+    result.update({
+        "updated": True,
+        "dry_run": False,
+        "after": after,
+        "changed": _diff_fields(before, after),
+        "confirmed": confirmed,
+        "untouched_defaults_kept": untouched_kept,
+    })
+    if not confirmed:
+        print(
+            "warning: the server accepted the change but the readback shows different defaults; "
+            f"check `ik admin mailbox signature list {mailbox_name}`.",
+            file=sys.stderr,
+        )
+    elif not untouched_kept:
+        print(
+            "warning: a default you did not set also changed; the API appears to clear omitted "
+            "pointers. Pass both --send and --reply to control them together.",
+            file=sys.stderr,
+        )
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Defaults updated (confirmed: {confirmed}).")
+    return 0 if confirmed and untouched_kept else 1
+
+
+def cmd_admin_signature_delete(args: argparse.Namespace) -> int:
+    _validate_output_modes(args)
+    _require_explicit_profile_for_yes(args, "delete a mailbox signature")
+    profile, client, hosting_id, mailbox_name, payload = _signature_context(args)
+    item = _resolve_signature(payload, args.signature_id)
+    slim_item = slim_signature(
+        item,
+        default_signature_id=payload.get("default_signature_id"),
+        default_reply_signature_id=payload.get("default_reply_signature_id"),
+    )
+
+    is_default = slim_item["is_default_send"] or slim_item["is_default_reply"]
+    if is_default and not args.force_default:
+        raise ValueError(
+            f"Signature {item.get('id')} is currently a default for this mailbox, so deleting it "
+            "changes every future outgoing mail. Re-run with --force-default if that is intended, "
+            "or move the default first with `signature set-default`."
+        )
+
+    result: dict[str, Any] = {
+        "profile": profile.name,
+        "mail_hosting_id": hosting_id,
+        "mailbox_name": mailbox_name,
+        "action": "signature delete",
+        "signature": slim_item,
+        "was_default": is_default,
+        "notified": False,
+    }
+
+    if not _machine_output(args):
+        print(f"Profile: {profile.name}")
+        print(f"Mailbox: {mailbox_name} (hosting {hosting_id})")
+        print(f"Delete signature {item.get('id')}: {item.get('name')}")
+        # The one place the full body is shown by default: it is about to be lost.
+        print("Content that will be lost:")
+        print(item.get("content") or "(empty)")
+        if is_default:
+            print("WARNING: this is a current default; future mail will use a different signature.")
+        print("Deleting a signature cannot be undone by this CLI.")
+    if args.dry_run:
+        result.update({"deleted": False, "dry_run": True})
+        print_machine(result, args) if _machine_output(args) else print("[dry-run] Nothing was deleted.")
+        return 0
+    if not _confirm(args, "Delete this signature? [y/N] ", action="admin mailbox signature delete"):
+        print("Signature deletion cancelled.")
+        return 2
+
+    delete_signature(client, hosting_id, mailbox_name, item.get("id"))
+    after_payload = get_mailbox_signatures(client, hosting_id, mailbox_name)
+    gone = all(str(entry.get("id")) != str(item.get("id")) for entry in signature_items(after_payload))
+    result.update({"deleted": True, "dry_run": False, "confirmed_gone": gone})
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Deleted signature {item.get('id')} (confirmed gone: {gone}).")
+    return 0 if gone else 1
+
+
 def cmd_admin_mailbox_alias_add(args: argparse.Namespace) -> int:
     return _admin_alias_change(args, "add")
 
@@ -6481,6 +6964,95 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _fwd_common(admin_fwd_disable, write=True)
     admin_fwd_disable.set_defaults(func=cmd_admin_mailbox_forwarding_disable)
+
+    admin_sig = admin_mailbox_sub.add_parser(
+        "signature", help="Read and manage one mailbox's signatures (protected writes)"
+    )
+    admin_sig_sub = admin_sig.add_subparsers(dest="admin_signature_command", required=True)
+
+    def _sig_common(parser_obj: argparse.ArgumentParser, *, write: bool) -> None:
+        parser_obj.add_argument(
+            "--hosting-id",
+            help="Mail hosting ID. Defaults to the profile's mail hosting, else a single discovered one.",
+        )
+        if write:
+            parser_obj.add_argument("--dry-run", action="store_true", help="Preview the change without writing.")
+            parser_obj.add_argument(
+                "--yes", "-y", action="store_true",
+                help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+            )
+        parser_obj.add_argument("--json", action="store_true")
+        parser_obj.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+
+    admin_sig_list = admin_sig_sub.add_parser(
+        "list", help="List a mailbox's signatures (read-only; bodies shown as a length)"
+    )
+    admin_sig_list.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    admin_sig_list.add_argument("--table", action="store_true", help="Emit a dense human-readable table.")
+    admin_sig_list.add_argument("--raw", action="store_true", help="With --json, emit the full raw payload.")
+    _sig_common(admin_sig_list, write=False)
+    admin_sig_list.set_defaults(func=cmd_admin_signature_list)
+
+    admin_sig_show = admin_sig_sub.add_parser(
+        "show", help="Show one signature including its content (read-only)"
+    )
+    admin_sig_show.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    admin_sig_show.add_argument("signature_id", help="Signature ID from `signature list`")
+    admin_sig_show.add_argument("--raw", action="store_true", help="With --json, emit the full raw payload.")
+    _sig_common(admin_sig_show, write=False)
+    admin_sig_show.set_defaults(func=cmd_admin_signature_show)
+
+    admin_sig_create = admin_sig_sub.add_parser(
+        "create", help="Create a signature on one mailbox (affects outgoing mail)"
+    )
+    admin_sig_create.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    admin_sig_create.add_argument("--name", required=True, help="Signature name (max 255 characters).")
+    _sig_content_group = admin_sig_create.add_mutually_exclusive_group()
+    _sig_content_group.add_argument("--content", help="Signature body.")
+    _sig_content_group.add_argument("--content-file", help="Read the signature body from a file.")
+    admin_sig_create.add_argument("--position", choices=["top", "bottom"], help="Where the signature is placed.")
+    admin_sig_create.add_argument(
+        "--set-default", action="store_true", help="Also make this the mailbox's default signature."
+    )
+    _sig_common(admin_sig_create, write=True)
+    admin_sig_create.set_defaults(func=cmd_admin_signature_create)
+
+    admin_sig_update = admin_sig_sub.add_parser(
+        "update", help="Update one signature; only the fields you pass are sent"
+    )
+    admin_sig_update.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    admin_sig_update.add_argument("signature_id", help="Signature ID from `signature list`")
+    admin_sig_update.add_argument("--name", help="New signature name.")
+    _sig_update_content = admin_sig_update.add_mutually_exclusive_group()
+    _sig_update_content.add_argument("--content", help="New signature body.")
+    _sig_update_content.add_argument("--content-file", help="Read the new signature body from a file.")
+    admin_sig_update.add_argument("--position", choices=["top", "bottom"], help="Where the signature is placed.")
+    _sig_footer_group = admin_sig_update.add_mutually_exclusive_group()
+    _sig_footer_group.add_argument("--footer", action="store_true", help="Enable the Infomaniak footer.")
+    _sig_footer_group.add_argument("--no-footer", action="store_true", help="Disable the Infomaniak footer.")
+    _sig_common(admin_sig_update, write=True)
+    admin_sig_update.set_defaults(func=cmd_admin_signature_update)
+
+    admin_sig_default = admin_sig_sub.add_parser(
+        "set-default", help="Set which signature is used for new mail and/or replies"
+    )
+    admin_sig_default.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    admin_sig_default.add_argument("--send", help="Signature ID to use for new mail.")
+    admin_sig_default.add_argument("--reply", help="Signature ID to use for replies.")
+    _sig_common(admin_sig_default, write=True)
+    admin_sig_default.set_defaults(func=cmd_admin_signature_set_default)
+
+    admin_sig_delete = admin_sig_sub.add_parser(
+        "delete", help="Delete one signature — irreversible"
+    )
+    admin_sig_delete.add_argument("mailbox_name", help="Mailbox name (local part) or full address")
+    admin_sig_delete.add_argument("signature_id", help="Signature ID from `signature list`")
+    admin_sig_delete.add_argument(
+        "--force-default", action="store_true",
+        help="Required to delete a signature that is currently a default.",
+    )
+    _sig_common(admin_sig_delete, write=True)
+    admin_sig_delete.set_defaults(func=cmd_admin_signature_delete)
 
     drive = sub.add_parser("drive", help="kDrive reads and protected file writes")
     drive_sub = drive.add_subparsers(dest="drive_command", required=True)

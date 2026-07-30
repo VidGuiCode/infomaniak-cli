@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.3.3-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.4-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -260,7 +260,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | Contacts | `contacts list`, `contacts search`, `contacts show`, `contacts export`, `contacts duplicates`, `contacts create`, `contacts update`, `contacts merge`, `contacts import`, `contacts delete`, `contacts addressbook list/use/repair` |
 | Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`, `calendar export`, `calendar create`, `calendar create-series`, `calendar update`, `calendar cancel`, `calendar delete`, `calendar repair` |
 | kChat | `chat teams`, `chat channels`, `chat users`, `chat search`, `chat thread`, `chat post`, `chat reply`, `chat react/unreact`, `chat edit`, `chat delete` |
-| Admin | `admin status`, `admin users`, `admin teams`, `admin hostings`, `admin mailbox list`, `admin mailbox show`, `admin mailbox alias add/remove`, `admin mailbox forwarding show/add/remove/set/disable` |
+| Admin | `admin status`, `admin users`, `admin teams`, `admin hostings`, `admin mailbox list`, `admin mailbox show`, `admin mailbox alias add/remove`, `admin mailbox forwarding show/add/remove/set/disable`, `admin mailbox signature list/show/create/update/set-default/delete` |
 
 Run `ik <command> --help` for full options on any command.
 

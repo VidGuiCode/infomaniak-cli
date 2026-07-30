@@ -231,8 +231,34 @@ extra guardrails specific to this endpoint:
 - Removing the last address is called out in the preview, because forwarding then stops entirely.
 - Addresses must be full addresses; add/remove are idempotent and match case-insensitively.
 
+### Mailbox signatures
+
+```bash
+ik admin mailbox signature list <mailbox> --table                 # read-only
+ik admin mailbox signature show <mailbox> <id> --json             # read-only, includes content
+ik --profile work admin mailbox signature create <mailbox> --name "Work" --content-file sig.html --dry-run
+ik --profile work admin mailbox signature update <mailbox> <id> --name "Renamed" --dry-run
+ik --profile work admin mailbox signature set-default <mailbox> --send <id> --reply <id> --dry-run
+ik --profile work admin mailbox signature delete <mailbox> <id> --dry-run
+```
+
+A signature changes how outgoing mail from a mailbox looks. It does not redirect or discard mail,
+so the guardrails are lighter than forwarding — but still the full protected-write contract, plus:
+
+- **`update` is a genuine partial update.** Only the fields you pass are sent, so editing a name
+  cannot clobber the body. Passing no field at all is refused rather than sending an empty request.
+- **`delete` is irreversible** and previews the entire content that will be lost — the one place a
+  body is printed by default. Deleting a signature that is currently a default requires
+  `--force-default`, because it silently changes every future outgoing mail.
+- **Bodies are not shown in `list`.** Signatures routinely carry names, phone numbers and
+  addresses, so the list reports a character count; `show` and `--raw` expose the content itself.
+- `--content-file` reads a body from a file (signatures are usually multi-line HTML), and
+  `set-default` validates each id against the mailbox's own signatures rather than trusting input.
+- When the mailbox has a forced signature policy (`is_forced`), reads and previews say so, since an
+  admin policy may override what you set.
+
 Remaining unimplemented admin surface: user creation/deletion, invitations, DNS, sieve filters,
-auto-reply, signature writes, and every bulk operation.
+auto-reply, signature templates and uploads, and every bulk operation.
 
 ## Mail
 

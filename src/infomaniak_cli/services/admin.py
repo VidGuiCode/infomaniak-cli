@@ -264,6 +264,73 @@ def forwarding_address(value: str) -> str:
     return address
 
 
+def _signatures_path(mail_hosting_id: str, mailbox_name: str) -> str:
+    return f"/1/mail_hostings/{_quote(mail_hosting_id)}/mailboxes/{_quote(mailbox_name)}/signatures"
+
+
+def create_signature(client: Any, mail_hosting_id: str, mailbox_name: str, fields: Mapping[str, Any]) -> Any:
+    """POST a new signature. Only `name` is required by the API."""
+    return client.post(_signatures_path(mail_hosting_id, mailbox_name), json=dict(fields))
+
+
+def update_signature(
+    client: Any, mail_hosting_id: str, mailbox_name: str, signature_id: Any, fields: Mapping[str, Any]
+) -> Any:
+    """PATCH one signature. A genuine partial update: only given fields are sent."""
+    return client.request(
+        "PATCH",
+        f"{_signatures_path(mail_hosting_id, mailbox_name)}/{_quote(signature_id)}",
+        json=dict(fields),
+    )
+
+
+def delete_signature(client: Any, mail_hosting_id: str, mailbox_name: str, signature_id: Any) -> Any:
+    return client.delete(f"{_signatures_path(mail_hosting_id, mailbox_name)}/{_quote(signature_id)}")
+
+
+def set_default_signatures(
+    client: Any, mail_hosting_id: str, mailbox_name: str, fields: Mapping[str, Any]
+) -> Any:
+    """POST the mailbox-level default send/reply signature pointers."""
+    return client.post(f"{_signatures_path(mail_hosting_id, mailbox_name)}/set_defaults", json=dict(fields))
+
+
+def signature_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    signatures = payload.get("signatures")
+    return [item for item in signatures if isinstance(item, Mapping)] if isinstance(signatures, list) else []
+
+
+def slim_signature(
+    item: Mapping[str, Any],
+    *,
+    default_signature_id: Any = None,
+    default_reply_signature_id: Any = None,
+) -> dict[str, Any]:
+    """Project one signature. Content is reported as a length, not a body.
+
+    Signature bodies routinely carry names, phone numbers and addresses, so the
+    list view reports size and `--raw`/`show` expose the content itself.
+    """
+    content = item.get("content")
+    signature_id = item.get("id")
+    return {
+        "id": signature_id,
+        "name": item.get("name"),
+        "fullname": item.get("fullname") or item.get("full_name"),
+        "position": item.get("position"),
+        "content_length": len(content) if isinstance(content, str) else 0,
+        "has_infomaniak_footer": item.get("has_infomaniak_footer"),
+        "is_default_send": _same_id(signature_id, default_signature_id),
+        "is_default_reply": _same_id(signature_id, default_reply_signature_id),
+    }
+
+
+def _same_id(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return False
+    return str(left) == str(right)
+
+
 def slim_aliases(item: Mapping[str, Any]) -> dict[str, Any]:
     aliases = item.get("aliases")
     normalized = []
