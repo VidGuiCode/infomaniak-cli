@@ -897,11 +897,76 @@ def cmd_auth_mail(args: argparse.Namespace) -> int:
     return 0
 
 
+def _dav_password_stores() -> dict[str, Any]:
+    """The two DAV credential stores, by the name used on --reuse-from."""
+    return {"calendar": CalendarPasswordStore(), "contacts": ContactsPasswordStore()}
+
+
+def _reused_dav_password(profile_name: str, source: str, target: str) -> str:
+    """Copy a DAV secret store-to-store, in memory, without ever printing it.
+
+    Infomaniak's CalDAV and CardDAV sync passwords are generated in the same
+    place and are commonly identical, so retyping one is pure friction. This
+    still never *assumes* they match: reuse happens only when explicitly asked.
+    Only the credential moves — URL, username and connectivity checks stay
+    independent per service.
+    """
+    stores = _dav_password_stores()
+    if source not in stores:
+        raise ValueError(f"--reuse-from must be one of {sorted(stores)}; got {source!r}")
+    if source == target:
+        raise ValueError(f"--reuse-from {source} cannot reuse from the service being configured.")
+    store = stores[source]
+    if not store.has_password(profile_name):
+        raise ValueError(
+            f"No {source} password is stored for profile {profile_name}, so there is nothing to "
+            f"reuse. Run `ik --profile {profile_name} auth {source} --stdin` first."
+        )
+    return store.load_password(profile_name)
+
+
+def _offer_dav_password_reuse(
+    args: argparse.Namespace, profile_name: str, *, source: str, target: str
+) -> None:
+    """After configuring one DAV service, offer the same secret to the other.
+
+    Only when the other service has nothing stored, only interactively, and only
+    as an explicit yes. Never in machine or non-interactive mode.
+    """
+    if getattr(args, "no_reuse_prompt", False) or _is_non_interactive(args):
+        return
+    stores = _dav_password_stores()
+    if stores[target].has_password(profile_name):
+        return
+    if not stores[source].has_password(profile_name):
+        return
+    answer = input(
+        f"Reuse this sync password for {target} as well? "
+        f"({target} URL and username stay separate) [y/N] "
+    ).strip().lower()
+    if answer not in {"y", "yes"}:
+        print(f"Not reused. Run `ik --profile {profile_name} auth {target}` when you want to set it.")
+        return
+    stores[target].save_password(profile_name, stores[source].load_password(profile_name))
+    print(
+        f"Sync password also stored for {target}. "
+        f"Run `ik --profile {profile_name} auth {target} --username <sync-username>` "
+        f"to resolve its collection."
+    )
+
+
 def cmd_auth_contacts(args: argparse.Namespace) -> int:
     manager = ProfileManager()
     name = _resolve_profile_name(manager, args.profile)
     if args.stdin and args.password:
         print("error: use either --password or --stdin, not both", file=sys.stderr)
+        return 2
+    if getattr(args, "reuse_from", None) and (args.stdin or args.password):
+        # Ambiguous: --reuse-from already supplies the credential.
+        print(
+            "error: --reuse-from cannot be combined with --password or --stdin",
+            file=sys.stderr,
+        )
         return 2
 
     profile = manager.get(name)
@@ -911,7 +976,9 @@ def cmd_auth_contacts(args: argparse.Namespace) -> int:
         print("error: --username is required for contacts; use your Infomaniak sync username, e.g. VG00000", file=sys.stderr)
         return 2
 
-    if args.stdin:
+    if getattr(args, "reuse_from", None):
+        password = _reused_dav_password(name, args.reuse_from, "contacts")
+    elif args.stdin:
         password = sys.stdin.read().strip()
     elif args.password:
         password = args.password.strip()
@@ -934,7 +1001,11 @@ def cmd_auth_contacts(args: argparse.Namespace) -> int:
     )
     manager.create_or_update(name, contacts_url=resolved_url, contacts_username=contacts_username)
 
-    print(f"Contacts password saved for profile: {name}")
+    if getattr(args, "reuse_from", None):
+        print(f"Contacts password reused from {args.reuse_from} for profile: {name}")
+    else:
+        print(f"Contacts password saved for profile: {name}")
+        _offer_dav_password_reuse(args, name, source="contacts", target="calendar")
     return 0
 
 
@@ -944,6 +1015,13 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
     if args.stdin and args.password:
         print("error: use either --password or --stdin, not both", file=sys.stderr)
         return 2
+    if getattr(args, "reuse_from", None) and (args.stdin or args.password):
+        # Ambiguous: --reuse-from already supplies the credential.
+        print(
+            "error: --reuse-from cannot be combined with --password or --stdin",
+            file=sys.stderr,
+        )
+        return 2
 
     profile = manager.get(name)
     calendar_url = (args.url or profile.calendar_url or DEFAULT_DAV_URL).strip()
@@ -952,7 +1030,9 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
         print("error: --username is required for calendar; use your Infomaniak sync username, e.g. VG00000", file=sys.stderr)
         return 2
 
-    if args.stdin:
+    if getattr(args, "reuse_from", None):
+        password = _reused_dav_password(name, args.reuse_from, "calendar")
+    elif args.stdin:
         password = sys.stdin.read().strip()
     elif args.password:
         password = args.password.strip()
@@ -975,7 +1055,11 @@ def cmd_auth_calendar(args: argparse.Namespace) -> int:
     )
     manager.create_or_update(name, calendar_url=resolved_url, calendar_username=calendar_username)
 
-    print(f"Calendar password saved for profile: {name}")
+    if getattr(args, "reuse_from", None):
+        print(f"Calendar password reused from {args.reuse_from} for profile: {name}")
+    else:
+        print(f"Calendar password saved for profile: {name}")
+        _offer_dav_password_reuse(args, name, source="calendar", target="contacts")
     return 0
 
 
@@ -1294,6 +1378,37 @@ def cmd_calendar_repair(args: argparse.Namespace) -> int:
     password = store.load_password(name)
 
     current = profile.calendar_url
+
+    if getattr(args, "list_only", False):
+        # Read-only counterpart of `contacts addressbook list`.
+        try:
+            collections = discover_calendars(current, profile.calendar_username, password)
+        except DavDiscoveryError as exc:
+            raise ValueError(
+                "Calendar discovery failed: "
+                f"{redact_secret(str(exc), secrets=[password])}."
+            ) from exc
+        items = [
+            {"name": str(item.get("name") or ""), "url": str(item.get("url") or "")}
+            for item in collections
+        ]
+        payload = {
+            "profile": profile.name,
+            "current": current,
+            "count": len(items),
+            "calendars": items,
+        }
+        if _machine_output(args):
+            print_machine(payload, args)
+        else:
+            print(f"Profile: {profile.name}")
+            print(f"Current: {current}")
+            print(f"Calendars: {len(items)}")
+            for item in items:
+                marker = "*" if item["url"] == current else " "
+                print(f" {marker} {item['name'] or '-'}: {item['url']}")
+        return 0
+
     if args.url:
         resolved = args.url.strip()
     else:
@@ -3583,6 +3698,140 @@ def _contacts_write_gate(args: argparse.Namespace, action: str) -> None:
     _require_explicit_profile_for_yes(args, action)
 
 
+def _contacts_dav_credentials(args: argparse.Namespace) -> tuple[Any, Any, str, str]:
+    """Resolve the profile and CardDAV credentials without building a client."""
+    manager = ProfileManager()
+    name = _resolve_profile_name(manager, args.profile)
+    profile = manager.get(name)
+    if not profile.contacts_url or not profile.contacts_username:
+        raise ValueError(
+            f"No contacts configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth contacts --username <sync-username> --stdin` first."
+        )
+    store = ContactsPasswordStore()
+    if not store.has_password(name):
+        raise ValueError(
+            f"No contacts password configured for profile: {profile.name}. "
+            f"Run `ik --profile {profile.name} auth contacts --stdin` first."
+        )
+    return manager, profile, name, store.load_password(name)
+
+
+def cmd_contacts_addressbook_list(args: argparse.Namespace) -> int:
+    """Read-only discovery of the address books this credential can see."""
+    _manager, profile, _name, password = _contacts_dav_credentials(args)
+    try:
+        collections = discover_addressbooks(profile.contacts_url, profile.contacts_username, password)
+    except DavDiscoveryError as exc:
+        raise ValueError(
+            "Address-book discovery failed: "
+            f"{redact_secret(str(exc), secrets=[password])}. "
+            "Pass an explicit collection URL to `ik contacts addressbook use <url>`."
+        ) from exc
+
+    items = [
+        {"name": str(item.get("name") or ""), "url": str(item.get("url") or "")}
+        for item in collections
+    ]
+    payload = {
+        "profile": profile.name,
+        "current": profile.contacts_url,
+        "count": len(items),
+        "addressbooks": items,
+    }
+    if _machine_output(args):
+        print_machine(payload, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Current: {profile.contacts_url}")
+        print(f"Address books: {len(items)}")
+        for item in items:
+            marker = "*" if item["url"] == profile.contacts_url else " "
+            print(f" {marker} {item['name'] or '-'}: {item['url']}")
+    return 0
+
+
+def _persist_contacts_collection(
+    args: argparse.Namespace, manager: Any, profile: Any, name: str, resolved: str
+) -> int:
+    """Shared preview/confirm/save for address-book selection (local config only)."""
+    plan = {
+        "profile": profile.name,
+        "before": profile.contacts_url,
+        "after": resolved,
+        "changed": resolved != profile.contacts_url,
+        "writes": "local profile config only",
+    }
+
+    def _preview() -> None:
+        print(f"Profile: {profile.name}")
+        print(f"Before: {plan['before']}")
+        print(f"After: {plan['after']}")
+        print("(This only updates local profile config; no contact data is changed.)")
+
+    if getattr(args, "dry_run", False):
+        if _machine_output(args):
+            print_machine({**plan, "dry_run": True, "saved": False}, args)
+        else:
+            _preview()
+            print("Dry run: the profile was not changed.")
+        return 0
+
+    _require_explicit_profile_for_yes(args, "change the address book")
+    if not _machine_output(args):
+        _preview()
+    if not _confirm(args, "Save this address book? [y/N] ", action="contacts addressbook"):
+        print("Address-book change cancelled.")
+        return 2
+
+    manager.create_or_update(name, contacts_url=resolved)
+    readback = manager.get(name).contacts_url
+    if _machine_output(args):
+        print_machine({**plan, "saved": True, "readback": readback}, args)
+    else:
+        print(f"Saved address book for profile {profile.name}.")
+    return 0
+
+
+def cmd_contacts_addressbook_use(args: argparse.Namespace) -> int:
+    """Select an address book by explicit collection URL, without re-authenticating."""
+    manager, profile, name, _password = _contacts_dav_credentials(args)
+    resolved = args.url.strip()
+    if not resolved:
+        raise ValueError("Address-book collection URL must not be empty.")
+    return _persist_contacts_collection(args, manager, profile, name, resolved)
+
+
+def cmd_contacts_addressbook_repair(args: argparse.Namespace) -> int:
+    """Rediscover the address book when the saved URL is only the service root."""
+    manager, profile, name, password = _contacts_dav_credentials(args)
+    try:
+        collections = discover_addressbooks(profile.contacts_url, profile.contacts_username, password)
+    except DavDiscoveryError as exc:
+        raise ValueError(
+            "Address-book discovery failed: "
+            f"{redact_secret(str(exc), secrets=[password])}. "
+            "Use `ik contacts addressbook use <collection-url>` to set it explicitly."
+        ) from exc
+    if not collections:
+        raise ValueError(
+            f"No address book was discovered from {profile.contacts_url}. "
+            "Use `ik contacts addressbook use <collection-url>` to set it explicitly."
+        )
+    if len(collections) > 1:
+        # Never silently pick a first match on a write, even a config one.
+        choices = "\n".join(
+            f"  {item.get('name') or '-'}: {item.get('url')}" for item in collections
+        )
+        raise ValueError(
+            f"{len(collections)} address books were discovered; refusing to guess.\n"
+            f"{choices}\n"
+            "Re-run with `ik contacts addressbook use <collection-url>` to choose one."
+        )
+    resolved = str(collections[0].get("url") or profile.contacts_url)
+    return _persist_contacts_collection(args, manager, profile, name, resolved)
+
+
 def cmd_contacts_export(args: argparse.Namespace) -> int:
     """Read-only export of the address book, preserving full vCard data."""
     profile, client = _contacts_profile_and_client(args)
@@ -5510,6 +5759,15 @@ def build_parser() -> argparse.ArgumentParser:
     auth_contacts.add_argument("--password", help="CardDAV password. Omit to prompt.")
     auth_contacts.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
     auth_contacts.add_argument("--no-discover", action="store_true", help="Skip CardDAV discovery and save --url verbatim.")
+    auth_contacts.add_argument(
+        "--reuse-from", dest="reuse_from", choices=("calendar",), metavar="calendar",
+        help="Reuse the stored calendar sync password instead of entering it again. "
+             "Only the credential is reused; URL and username stay separate.",
+    )
+    auth_contacts.add_argument(
+        "--no-reuse-prompt", dest="no_reuse_prompt", action="store_true",
+        help="Do not offer to reuse this password for calendar.",
+    )
     auth_contacts.set_defaults(func=cmd_auth_contacts)
     auth_calendar = auth_sub.add_parser("calendar", help="Store CalDAV calendar credentials for a profile")
     auth_calendar.add_argument("--url", help=f"CalDAV DAV URL. Defaults to {DEFAULT_DAV_URL}.")
@@ -5517,6 +5775,15 @@ def build_parser() -> argparse.ArgumentParser:
     auth_calendar.add_argument("--password", help="CalDAV password. Omit to prompt.")
     auth_calendar.add_argument("--stdin", action="store_true", help="Read the password from standard input.")
     auth_calendar.add_argument("--no-discover", action="store_true", help="Skip CalDAV discovery and save --url verbatim.")
+    auth_calendar.add_argument(
+        "--reuse-from", dest="reuse_from", choices=("contacts",), metavar="contacts",
+        help="Reuse the stored contacts sync password instead of entering it again. "
+             "Only the credential is reused; URL and username stay separate.",
+    )
+    auth_calendar.add_argument(
+        "--no-reuse-prompt", dest="no_reuse_prompt", action="store_true",
+        help="Do not offer to reuse this password for contacts.",
+    )
     auth_calendar.set_defaults(func=cmd_auth_calendar)
     auth_chat = auth_sub.add_parser("chat", help="Store kChat/Mattermost connection settings for a profile")
     auth_chat.add_argument("--url", help="kChat base URL.")
@@ -5841,6 +6108,39 @@ def build_parser() -> argparse.ArgumentParser:
     contacts_delete.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     contacts_delete.set_defaults(func=cmd_contacts_delete)
 
+    contacts_ab = contacts_sub.add_parser(
+        "addressbook", help="List or select the address book (local profile config only)"
+    )
+    contacts_ab_sub = contacts_ab.add_subparsers(dest="contacts_addressbook_command", required=True)
+
+    contacts_ab_list = contacts_ab_sub.add_parser("list", help="List discoverable address books (read-only)")
+    contacts_ab_list.add_argument("--json", action="store_true")
+    contacts_ab_list.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_ab_list.set_defaults(func=cmd_contacts_addressbook_list)
+
+    contacts_ab_use = contacts_ab_sub.add_parser("use", help="Select an address book by collection URL")
+    contacts_ab_use.add_argument("url", help="Exact CardDAV collection URL.")
+    contacts_ab_use.add_argument("--dry-run", action="store_true", help="Show the change without saving it.")
+    contacts_ab_use.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    contacts_ab_use.add_argument("--json", action="store_true")
+    contacts_ab_use.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_ab_use.set_defaults(func=cmd_contacts_addressbook_use)
+
+    contacts_ab_repair = contacts_ab_sub.add_parser(
+        "repair", help="Rediscover and save the real address-book collection URL"
+    )
+    contacts_ab_repair.add_argument("--dry-run", action="store_true", help="Show the change without saving it.")
+    contacts_ab_repair.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation. Requires an explicit --profile (or IK_PROFILE).",
+    )
+    contacts_ab_repair.add_argument("--json", action="store_true")
+    contacts_ab_repair.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    contacts_ab_repair.set_defaults(func=cmd_contacts_addressbook_repair)
+
     calendar = sub.add_parser("calendar", help="Read-only CalDAV calendar commands")
     calendar_sub = calendar.add_subparsers(dest="calendar_command", required=True)
     calendar_list = calendar_sub.add_parser("list", help="List calendars")
@@ -5935,6 +6235,7 @@ def build_parser() -> argparse.ArgumentParser:
         "repair", help="Resolve and save the profile's real CalDAV collection URL (local config only)"
     )
     calendar_repair.add_argument("--url", help="Set this collection URL explicitly instead of discovering it.")
+    calendar_repair.add_argument("--list", dest="list_only", action="store_true", help="List discoverable calendars without changing anything.")
     calendar_repair.add_argument("--dry-run", action="store_true", help="Show the change without saving it.")
     calendar_repair.add_argument(
         "--yes", "-y", action="store_true",

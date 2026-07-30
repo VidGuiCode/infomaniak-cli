@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.2.20] - 2026-07-30
+### Added
+- **Opt-in DAV credential reuse.** `ik auth contacts --reuse-from calendar` and
+  `ik auth calendar --reuse-from contacts` take the sync password already stored for the other
+  service instead of asking for it again. Infomaniak generates both sync passwords in the same
+  place and they are commonly identical, so retyping one was pure friction. The secret is copied
+  store-to-store in memory — never printed, never passed on a command line, never written anywhere
+  but the secure store. **Only the credential is reused:** URL, username and connectivity checks
+  stay independent per service, so reuse never implies a shared collection.
+- After configuring one DAV service interactively, `ik` offers to reuse the same password for the
+  other **only** when the other has none stored. Declining stores nothing. The offer never appears
+  under `--non-interactive`, `IK_NO_INTERACTIVE`, a non-TTY stdin, or `--no-reuse-prompt`, so
+  automation can never block on it.
+- `--reuse-from` is refused together with `--password` or `--stdin`, since two sources for one
+  secret is ambiguous.
+- **`ik contacts addressbook`** — switch address book without going back through authentication:
+  `list` (read-only discovery, marking the current selection), `use <collection-url>` (persist an
+  explicit collection), and `repair` (rediscover when the saved URL is only the service root,
+  refusing to guess between several and listing them). This closes an asymmetry from `0.2.13`, which
+  gave Calendar `repair --url` but left Contacts with no equivalent.
+- `ik calendar repair --list` for the matching read-only enumeration, so both DAV services expose
+  collections the same way.
+
+### Notes
+- The address-book commands change **local profile config only** and say so in their output. They
+  keep the protected-write contract: preview, confirmation by default, `--dry-run`,
+  explicit-profile-gated `--yes`, structured output.
+- This release addresses findings 2 and 3 of the v0.2.19 usage report. Finding 1 (calendar attendees
+  and invitations) remains gated on the live notification probe; finding 4 (`ik admin` for users,
+  aliases, forwarding, filters and DNS) is the `0.3.x` line, which needs Manager rights.
+
 ## [0.2.19] - 2026-07-29
 ### Fixed
 - **`ik bootstrap` silently picked the first drive** when discovery returned several, carrying a

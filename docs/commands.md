@@ -99,6 +99,8 @@ ik auth mail --mailbox user@example.com --password <mailbox-device-password>
 ik auth contacts --username <sync-username> --stdin
 ik auth calendar --username <sync-username> --stdin
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
+ik auth contacts --username <sync-username> --reuse-from calendar
+ik auth calendar --username <sync-username> --reuse-from contacts
 ```
 
 `auth token` stores the selected profile's main Informaniak API token. `auth check` verifies that token with a read-only authenticated API request.
@@ -108,6 +110,15 @@ ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 `auth contacts` stores CardDAV contacts credentials. From the default DAV base `https://sync.infomaniak.com/`, it auto-discovers the address-book collection via standard CardDAV principal/home-set discovery and saves it; with multiple address books it picks a sensible default and prints the rest. Pass `--url <collection-url>` to set a collection explicitly, or `--no-discover` to save the URL verbatim. Use the Infomaniak sync username.
 
 `auth calendar` stores CalDAV calendar credentials. From the default DAV base `https://sync.infomaniak.com/`, it auto-discovers the calendar collection and saves it; with multiple calendars it picks a default and lists the rest. Pass `--url <collection-url>` to set a collection explicitly, or `--no-discover` to save the URL verbatim. Use the Infomaniak sync username.
+
+`--reuse-from` reuses the sync password already stored for the other DAV service instead of asking
+for it again, since Infomaniak generates both in the same place and they are commonly identical. The
+secret is taken straight from the secure store — never printed, never passed on a command line.
+**Only the credential is reused:** URL, username and connectivity checks stay independent, so reuse
+never implies a shared collection. It cannot be combined with `--password` or `--stdin`. After
+configuring one DAV service interactively, `ik` also offers to reuse it for the other when the other
+has none stored; the offer never appears under `--non-interactive`, `IK_NO_INTERACTIVE`, a piped
+stdin, or `--no-reuse-prompt`.
 
 `auth chat` stores kChat/Mattermost-compatible connection settings. It accepts either the kSuite browser URL or a direct trusted API base. For kSuite URLs like `https://ksuite.infomaniak.com/<account_id>/kchat/<workspace>/channels/<channel>`, the CLI parses the account ID, workspace slug, and optional channel slug, derives `https://<workspace>.kchat.infomaniak.com`, and confirms it with read-only `GET /api/v4/users/me/teams` when a main Informaniak API token exists. The main token is never sent to arbitrary user-provided hosts.
 
@@ -423,6 +434,9 @@ ik contacts show <contact_id> --json --raw
 ik contacts export --output backup.vcf
 ik contacts export --format json --json
 ik contacts duplicates --json
+ik contacts addressbook list --json
+ik contacts addressbook use <collection_url> --dry-run
+ik contacts addressbook repair --dry-run
 ```
 
 `ik contacts list`, `ik contacts search`, and `ik contacts show` use the configured CardDAV collection URL. `ik auth contacts` auto-discovers that collection from the default DAV base `https://sync.infomaniak.com/`; pass `--url` to override or `--no-discover` to save a URL verbatim. JSON output defaults to a stable slim contact schema. Add `--raw` with `--json` to include the full parsed contact payload, including the raw vCard text when available.
@@ -459,6 +473,14 @@ already written.
 `If-Match: <etag>`, so a contact changed remotely since it was resolved is never removed. The
 preview shows the display name, emails, phones and organization, states plainly that the deletion
 is irreversible, and the result reports whether removal was confirmed.
+
+`ik contacts addressbook` switches address book without going back through authentication:
+`list` discovers what the credential can see and marks the current selection, `use <collection-url>`
+persists an explicit collection, and `repair` rediscovers when the saved URL is only the service root
+— refusing to guess between several and listing them so `use` can pick one. `ik calendar repair
+--list` is the matching read-only enumeration for calendars. All of these change **local profile
+config only**; no contact or calendar data is touched, and they keep the usual preview, confirmation,
+`--dry-run` and explicit-profile-gated `--yes`.
 
 Still excluded: silent merge, bulk delete, and destructive address-book sync.
 

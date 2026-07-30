@@ -679,6 +679,8 @@ def test_contacts_parser_exposes_only_protected_write_commands():
     assert set(choices) == {
         "list", "search", "show", "create", "update",
         "export", "duplicates", "merge", "import", "delete",
+        # 0.2.20: address-book selection without re-authenticating
+        "addressbook",
     }
     # destructive whole-collection operations stay out
     assert not {"sync", "purge", "delete-all", "empty"} & set(choices)

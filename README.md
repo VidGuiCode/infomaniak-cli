@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.2.19-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.20-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -90,6 +90,7 @@ ik completion bash > ~/.bash_completion.d/ik
 ik auth mail --mailbox user@example.com --password <app-password>
 ik auth contacts --username <sync-username> --stdin
 ik auth calendar --username <sync-username> --stdin
+ik auth contacts --username <sync-username> --reuse-from calendar
 ik auth chat --url <kchat-base-url> --token <kchat-token> --team-id <team_id>
 
 ik account list
@@ -256,7 +257,7 @@ The CLI never sends the main API token to arbitrary kChat URLs. Use `--stdin` or
 | Discovery | `account list`, `products`, `services` |
 | kDrive | `drive list`, `drive folders`, `drive tree`, `drive recent`, `drive shared`, `drive search`, `drive info`, `drive mkdir`, `drive download`, `drive upload`, `drive move`, `drive rename`, `drive rm`, `drive trash list/show/restore`, `drive share-state` |
 | Mail | `mail mailboxes/accounts`, `mail hostings`, `mail folders/labels`, `mail list`, `mail unread`, `mail search`, `mail read`, `mail threads`, `mail attachments`, `mail attachment-save`, `mail draft`, `mail drafts list/delete`, `mail send`, `mail reply`, `mail forward`, `mail mark-read/mark-unread`, `mail flag/unflag`, `mail move` |
-| Contacts | `contacts list`, `contacts search`, `contacts show`, `contacts export`, `contacts duplicates`, `contacts create`, `contacts update`, `contacts merge`, `contacts import`, `contacts delete` |
+| Contacts | `contacts list`, `contacts search`, `contacts show`, `contacts export`, `contacts duplicates`, `contacts create`, `contacts update`, `contacts merge`, `contacts import`, `contacts delete`, `contacts addressbook list/use/repair` |
 | Calendar | `calendar list`, `calendar upcoming`, `calendar today`, `calendar search`, `calendar show`, `calendar export`, `calendar create`, `calendar create-series`, `calendar update`, `calendar cancel`, `calendar delete`, `calendar repair` |
 | kChat | `chat teams`, `chat channels`, `chat users`, `chat search`, `chat thread`, `chat post`, `chat reply`, `chat react/unreact`, `chat edit`, `chat delete` |
 

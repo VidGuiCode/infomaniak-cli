@@ -140,8 +140,9 @@ If `IK_PROFILE` names a profile that does not exist, commands fail clearly inste
 
 ## The four credentials
 
-A fully configured profile can hold **four distinct secrets**. They are not interchangeable, they
-are stored separately, and `ik` never copies one into another.
+A fully configured profile can hold **four distinct secrets**. They are not interchangeable and are
+stored separately. `ik` never copies one into another on its own — the only exception is the
+explicit `--reuse-from` between the two DAV sync passwords, described below.
 
 | Credential | Set with | Used for |
 | --- | --- | --- |
@@ -161,10 +162,26 @@ Where they come from:
   account app password will not authenticate a CalDAV or CardDAV request.
 
 **Does one sync password cover both CardDAV and CalDAV?** The two passwords are generated in the
-same place and, in practice, the same generated sync password can be supplied to both
-`ik auth contacts` and `ik auth calendar`. `ik` does not assume this: it stores a Contacts password
-and a Calendar password independently, so setting one never changes the other, and rotating one
-does not silently break the other. If you use one sync password for both, run both commands.
+same place and, in practice, the same generated sync password usually works for both. `ik` still
+does not *assume* this: it stores a Contacts password and a Calendar password independently, so
+setting one never changes the other and rotating one does not silently break the other.
+
+Since 0.2.20 you can reuse one explicitly instead of typing it twice:
+
+```bash
+ik auth calendar --username <sync-username> --stdin
+ik auth contacts --username <sync-username> --reuse-from calendar
+```
+
+`--reuse-from` takes the secret straight from the other service's secure store — it is never
+printed, never passed on a command line, and never stored anywhere else. **Only the credential is
+reused.** The URL, username and connectivity check remain independent, so reuse never implies the
+two services share a collection.
+
+When you configure one DAV service interactively and the other has no password yet, `ik` also offers
+to reuse it. Declining stores nothing, and the offer never appears under `--non-interactive`,
+`IK_NO_INTERACTIVE`, a piped stdin, or `--no-reuse-prompt`. `--reuse-from` cannot be combined with
+`--password` or `--stdin`.
 
 Every secret is stored in the OS keyring when one is available, and otherwise in an owner-only
 file under the profile's `tokens/` directory. `ik doctor` reports which credentials are configured
@@ -178,6 +195,17 @@ If a profile's calendar URL was never resolved past the sync service root, calen
 auto-discover a usable collection for that run and print a note. Run `ik calendar repair` to
 resolve and save the real collection to the profile; pass `--url <collection-url>` when several
 calendars exist and repair refuses to guess.
+
+Both DAV services can enumerate and switch collections without re-authenticating:
+
+```bash
+ik calendar repair --list                       # read-only
+ik contacts addressbook list                    # read-only, marks the current selection
+ik contacts addressbook use <collection-url>     # switch address book
+ik contacts addressbook repair                   # rediscover; refuses to guess between several
+```
+
+These change local profile config only — no contact or calendar data is touched.
 
 ## Bootstrap/autodiscovery
 
