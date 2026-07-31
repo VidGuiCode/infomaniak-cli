@@ -8,6 +8,7 @@ from . import pathcheck
 from .auth import CalendarPasswordStore, ChatTokenStore, ContactsPasswordStore, MailPasswordStore, TokenStore
 from .config_paths import get_config_dir
 from .profiles import ProfileManager
+from .services.mail import DEFAULT_SMTP_HOST, DEFAULT_SMTP_PORT, DEFAULT_SMTP_SECURITY
 from .readiness import build_readiness
 from .update import detect_install_method
 
@@ -70,6 +71,9 @@ def run_doctor(
         readiness = build_readiness(profile, main_token_configured=checks["token_configured"])
         checks["account_selected"] = bool(profile.account_id or profile.account_name)
         checks["default_mailbox_selected"] = bool(profile.default_mailbox)
+        checks["smtp_host"] = profile.smtp_host or DEFAULT_SMTP_HOST
+        checks["smtp_port"] = profile.smtp_port or DEFAULT_SMTP_PORT
+        checks["smtp_security"] = profile.smtp_security or DEFAULT_SMTP_SECURITY
         checks["mail_password_configured"] = bool(selected and MailPasswordStore().has_password(selected))
         checks["mail_imap_ready"] = bool(checks["default_mailbox_selected"] and checks["mail_password_configured"])
         checks["mail_rest_discovery_ready"] = bool(
@@ -161,8 +165,16 @@ def build_write_capabilities(
         chat_missing.append(f"ik --profile {label} auth chat --stdin")
 
     mail_ready = bool(checks.get("mail_imap_ready"))
+    mail_send = entry(mail_ready, mail_missing)
+    # Local inspection only: report the transport that WOULD be used, never
+    # open a connection (`ik mail doctor` is the command that probes).
+    mail_send.update({
+        "smtp_host": checks.get("smtp_host"),
+        "smtp_port": checks.get("smtp_port"),
+        "smtp_security": checks.get("smtp_security"),
+    })
     return {
-        "mail.send": entry(mail_ready, mail_missing),
+        "mail.send": mail_send,
         "mail.attachments": entry(mail_ready, mail_missing),
         "drive.write": entry(
             bool(checks.get("token_configured") and checks.get("default_drive_selected")),

@@ -344,8 +344,47 @@ ik mail drafts delete <uid> --dry-run --profile work
 
 Both commands preview profile, mailbox/from, recipients, subject, and body; confirm by default;
 support `--json`/`--compact`; and permit `--yes` only with explicit `--profile` or `IK_PROFILE`.
-`--to`, `--cc`, and `--bcc` are repeatable. Drafts use IMAP APPEND with `\Draft`; sends use
-authenticated SMTP SSL on port 465.
+`--to`, `--cc`, and `--bcc` are repeatable. Drafts use IMAP APPEND with `\Draft`.
+
+### SMTP submission
+
+Sends use authenticated **SMTP submission over STARTTLS on port 587** — Infomaniak's recommended
+configuration and the default since `0.3.6`. Implicit TLS on port 465 remains available.
+
+SMTP is configured independently of IMAP (they are different services, and before `0.3.6` the CLI
+reused the IMAP host for sending, which misrouted mail on any profile with a custom IMAP host).
+Each setting resolves flag → profile → default:
+
+| Setting | Profile field | Flag | Default |
+| --- | --- | --- | --- |
+| Host | `smtp_host` | `--smtp-host` | `mail.infomaniak.com` |
+| Port | `smtp_port` | `--smtp-port` | `587` |
+| Transport | `smtp_security` | `--smtp-security` | `starttls` (`ssl` for 465) |
+
+```bash
+ik mail send --to recipient@example.com --subject "Test" --body "Body" \
+  --smtp-host mail.infomaniak.com --smtp-port 587 --smtp-security starttls \
+  --dry-run --profile work
+```
+
+A send that times out is **never retried automatically**: if the server accepted the message but
+the reply was lost, retrying would deliver it twice.
+
+### Diagnosing send failures
+
+```bash
+ik mail doctor --json --profile work        # read-only; sends nothing
+ik mail doctor --smtp-auth --profile work   # also try logging in (still sends nothing)
+```
+
+`ik mail doctor` checks DNS, IMAP reachability, SMTP reachability and TLS/STARTTLS negotiation, and
+reports `configured`, `reachable` and `authenticated` separately — so a blocked port is never
+reported as a bad password. Authentication is only attempted with `--smtp-auth`.
+
+This matters because IMAP and SMTP take different network paths: port 993 being open does **not**
+mean 587 is. If SMTP is unreachable, the problem is outbound network access from that host or
+container, and no credential change will fix it. `ik doctor --json` also reports the resolved SMTP
+transport under `capabilities.mail.send`, by local inspection only.
 
 ### Attachments
 

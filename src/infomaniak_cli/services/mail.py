@@ -17,8 +17,12 @@ import imaplib
 import mimetypes
 import re
 import smtplib
+import socket
+import ssl
 from pathlib import Path
 from typing import Any
+
+from ..api import redact_secret
 
 
 _SPECIAL_USE_ROLES: dict[str, str] = {
@@ -729,8 +733,19 @@ class IMAPClient:
         self.close()
 
 
+SMTP_SECURITY_MODES = ("starttls", "ssl")
+DEFAULT_SMTP_HOST = "mail.infomaniak.com"
+DEFAULT_SMTP_PORT = 587
+DEFAULT_SMTP_SECURITY = "starttls"
+DEFAULT_SMTP_TIMEOUT = 30
+
+
 class SMTPClient:
-    """Injectable authenticated SMTP-over-SSL client for one-message sends."""
+    """Injectable authenticated SMTP client for one-message sends.
+
+    Supports both submission transports: STARTTLS on 587 (Infomaniak's
+    recommended configuration, and the default) and implicit TLS on 465.
+    """
 
     def __init__(
         self,
@@ -739,27 +754,49 @@ class SMTPClient:
         username: str,
         password: str,
         *,
+        security: str = DEFAULT_SMTP_SECURITY,
+        timeout: int = DEFAULT_SMTP_TIMEOUT,
         smtp_factory: Any = None,
+        smtp_ssl_factory: Any = None,
     ) -> None:
+        mode = (security or DEFAULT_SMTP_SECURITY).strip().lower()
+        if mode not in SMTP_SECURITY_MODES:
+            raise MailError(
+                f"Unknown SMTP security mode: {security!r}. Use one of: {', '.join(SMTP_SECURITY_MODES)}."
+            )
         self.host = host
-        self.port = port
+        self.port = int(port)
         self.username = username
         self.password = password
-        self._smtp_factory = smtp_factory or smtplib.SMTP_SSL
+        self.security = mode
+        self.timeout = timeout
+        self._smtp_factory = smtp_factory or smtplib.SMTP
+        self._smtp_ssl_factory = smtp_ssl_factory or smtplib.SMTP_SSL
+
+    def _connect(self) -> Any:
+        if self.security == "ssl":
+            return self._smtp_ssl_factory(self.host, self.port, timeout=self.timeout)
+        connection = self._smtp_factory(self.host, self.port, timeout=self.timeout)
+        connection.ehlo()
+        connection.starttls(context=ssl.create_default_context())
+        # A second EHLO is required after STARTTLS: the server's advertised
+        # capabilities (notably AUTH) change once the channel is encrypted.
+        connection.ehlo()
+        return connection
 
     def send_message(self, message: email.message.EmailMessage) -> dict[str, str]:
+        """Send exactly one message. Never retries — see _describe_failure."""
         connection = None
         try:
-            connection = self._smtp_factory(self.host, self.port)
+            connection = self._connect()
             connection.login(self.username, self.password)
             refused = connection.send_message(message)
             if refused:
                 raise MailError(f"SMTP refused {len(refused)} recipient(s)")
+        except MailError:
+            raise
         except Exception as exc:
-            if isinstance(exc, MailError):
-                raise
-            detail = str(exc).replace(self.password, "***")
-            raise MailError(f"SMTP send failed: {detail}") from exc
+            raise MailError(self._describe_failure(exc)) from exc
         finally:
             if connection is not None:
                 try:
@@ -767,6 +804,69 @@ class SMTPClient:
                 except Exception:
                     pass
         return {"status": "sent"}
+
+    def _describe_failure(self, exc: Exception) -> str:
+        """Turn a transport failure into an accurate, actionable message.
+
+        A blocked port and a wrong password are completely different problems;
+        reporting one as the other sends people hunting the wrong bug.
+        """
+        detail = redact_secret(str(exc), secrets=[self.password])
+        where = f"{self.host}:{self.port} using {self.security.upper()}"
+
+        if isinstance(exc, smtplib.SMTPAuthenticationError):
+            return (
+                f"SMTP connection to {where} succeeded, but authentication failed ({detail}). "
+                "Verify the mailbox address and the mail device password generated at "
+                "https://config.infomaniak.com/."
+            )
+        if isinstance(exc, (socket.timeout, TimeoutError)):
+            return (
+                f"SMTP connection timed out connecting to {where}. "
+                "Check outbound TCP access to that port from this host or container. "
+                "This is a network problem, not an authentication problem."
+            )
+        if isinstance(exc, (smtplib.SMTPNotSupportedError, ssl.SSLError)):
+            return (
+                f"SMTP STARTTLS negotiation failed with {where} ({detail}). "
+                "If this server only offers implicit TLS, use --smtp-security ssl (port 465)."
+            )
+        if isinstance(exc, socket.gaierror):
+            return (
+                f"Could not resolve the SMTP host {self.host} ({detail}). "
+                "Check the hostname and this machine's DNS."
+            )
+        if isinstance(exc, (ConnectionRefusedError, OSError)) and not isinstance(exc, smtplib.SMTPException):
+            return (
+                f"Could not connect to {where} ({detail}). "
+                "Check outbound TCP access to that port from this host or container."
+            )
+        return f"SMTP send failed against {where}: {detail}"
+
+
+def probe_connectivity(
+    host: str,
+    port: int,
+    *,
+    timeout: int = 5,
+    connect: Any = None,
+) -> dict[str, Any]:
+    """Read-only TCP reachability probe for one host:port. Sends nothing."""
+    opener = connect or socket.create_connection
+    result: dict[str, Any] = {"host": host, "port": port, "reachable": False, "error": None}
+    sock = None
+    try:
+        sock = opener((host, port), timeout)
+        result["reachable"] = True
+    except Exception as exc:  # noqa: BLE001 - every failure is reported, not raised
+        result["error"] = redact_secret(str(exc)) or exc.__class__.__name__
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+    return result
 
 
 def _decode_header_value(value: str | None) -> str | None:

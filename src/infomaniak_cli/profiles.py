@@ -24,6 +24,11 @@ class Profile:
     default_mailbox: str | None = None
     imap_host: str | None = None
     imap_port: int | None = None
+    # SMTP is configured separately from IMAP: they are different services and
+    # may live on different hosts/ports even when Infomaniak collocates them.
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_security: str | None = None
     default_drive_id: str | None = None
     default_drive_name: str | None = None
     contacts_url: str | None = None

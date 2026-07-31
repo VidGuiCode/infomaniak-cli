@@ -5,6 +5,7 @@ import datetime
 import email
 import email.utils
 import os
+import socket
 import sys
 import urllib.parse
 import uuid
@@ -141,6 +142,11 @@ from .services.drive import (
     upload_file,
 )
 from .services.mail import (
+    DEFAULT_SMTP_HOST,
+    DEFAULT_SMTP_PORT,
+    DEFAULT_SMTP_SECURITY,
+    SMTP_SECURITY_MODES,
+    probe_connectivity,
     IMAPClient,
     MailError,
     SMTPClient,
@@ -2015,8 +2021,7 @@ def cmd_mail_send(args: argparse.Namespace) -> int:
         print("Mail send cancelled.")
         return 2
 
-    smtp_host = profile.imap_host or "mail.infomaniak.com"
-    client = SMTPClient(smtp_host, 465, profile.default_mailbox, _mail_password(profile))
+    client = _smtp_client(profile, args)
     result = client.send_message(message)
     if _machine_output(args):
         print_machine({**plan, "sent": True, "notified": True, "result": result}, args)
@@ -2029,6 +2034,118 @@ def _imap_client(profile: Any) -> Any:
     host = profile.imap_host or "mail.infomaniak.com"
     port = profile.imap_port or 993
     return IMAPClient(host, port, profile.default_mailbox, _mail_password(profile))
+
+
+def _smtp_settings(profile: Any, args: argparse.Namespace | None = None) -> dict[str, Any]:
+    """Resolve SMTP transport: explicit flag → profile → default.
+
+    SMTP is resolved independently of IMAP. Reusing `imap_host` for sending (as
+    releases before 0.3.6 did) silently routes mail through the wrong server
+    whenever a profile sets a custom IMAP host.
+    """
+    host = getattr(args, "smtp_host", None) or profile.smtp_host or DEFAULT_SMTP_HOST
+    port = getattr(args, "smtp_port", None) or profile.smtp_port or DEFAULT_SMTP_PORT
+    security = (
+        getattr(args, "smtp_security", None) or profile.smtp_security or DEFAULT_SMTP_SECURITY
+    )
+    return {"smtp_host": host, "smtp_port": int(port), "smtp_security": str(security).lower()}
+
+
+def cmd_mail_doctor(args: argparse.Namespace) -> int:
+    """Read-only mail connectivity diagnostic. Sends no message.
+
+    Reports `configured`, `reachable` and `authenticated` separately so a
+    blocked port can never be rendered as an authentication failure.
+    """
+    _validate_output_modes(args)
+    profile = _mail_profile(args)
+    settings = _smtp_settings(profile, args)
+    imap_host = profile.imap_host or "mail.infomaniak.com"
+    imap_port = profile.imap_port or 993
+
+    dns: dict[str, Any] = {"host": settings["smtp_host"], "resolved": False, "error": None}
+    try:
+        socket.getaddrinfo(settings["smtp_host"], None)
+        dns["resolved"] = True
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        dns["error"] = str(exc)
+
+    imap_check = probe_connectivity(imap_host, imap_port)
+    smtp_check = probe_connectivity(settings["smtp_host"], settings["smtp_port"])
+
+    tls: dict[str, Any] = {"attempted": False, "negotiated": False, "error": None}
+    auth: dict[str, Any] = {"attempted": False, "authenticated": False, "error": None}
+    password_configured = MailPasswordStore().has_password(profile.name)
+
+    if smtp_check["reachable"]:
+        tls["attempted"] = True
+        try:
+            client = _smtp_client(profile, args)
+            connection = client._connect()
+            tls["negotiated"] = True
+            if args.smtp_auth:
+                auth["attempted"] = True
+                if not password_configured:
+                    auth["error"] = "no mail password stored; run `ik auth mail`"
+                else:
+                    try:
+                        connection.login(client.username, client.password)
+                        auth["authenticated"] = True
+                    except Exception as exc:  # noqa: BLE001
+                        auth["error"] = redact(str(exc))
+            try:
+                connection.quit()
+            except Exception:
+                pass
+        except Exception as exc:  # noqa: BLE001
+            tls["error"] = redact(str(exc))
+
+    result = {
+        "profile": profile.name,
+        "mailbox": profile.default_mailbox,
+        "password_configured": password_configured,
+        "dns": dns,
+        "imap": {**imap_check, "configured": True},
+        "smtp": {**smtp_check, **settings, "configured": True},
+        "tls": tls,
+        "auth": auth,
+        "sends_mail": False,
+    }
+
+    if _machine_output(args):
+        print_machine(result, args)
+    else:
+        print(f"Profile: {profile.name}")
+        print(f"Mailbox: {profile.default_mailbox or '(not set)'}")
+        print(f"Mail password stored: {'yes' if password_configured else 'no'}")
+        print(f"DNS for {dns['host']}: {'resolved' if dns['resolved'] else 'FAILED — ' + str(dns['error'])}")
+        print(f"IMAP {imap_host}:{imap_port}: {'reachable' if imap_check['reachable'] else 'UNREACHABLE — ' + str(imap_check['error'])}")
+        smtp_where = f"{settings['smtp_host']}:{settings['smtp_port']} ({settings['smtp_security']})"
+        print(f"SMTP {smtp_where}: {'reachable' if smtp_check['reachable'] else 'UNREACHABLE — ' + str(smtp_check['error'])}")
+        if tls["attempted"]:
+            print(f"TLS negotiation: {'ok' if tls['negotiated'] else 'FAILED — ' + str(tls['error'])}")
+        if auth["attempted"]:
+            print(f"SMTP authentication: {'ok' if auth['authenticated'] else 'FAILED — ' + str(auth['error'])}")
+        elif not args.smtp_auth:
+            print("SMTP authentication: not tested (pass --smtp-auth to try logging in)")
+        if not smtp_check["reachable"]:
+            print(
+                "\nSMTP is unreachable from this host. That is a network problem, not a credential "
+                "problem: allow outbound TCP "
+                f"{settings['smtp_port']} to {settings['smtp_host']} from this host or container."
+            )
+    return 0
+
+
+def _smtp_client(profile: Any, args: argparse.Namespace | None = None) -> Any:
+    settings = _smtp_settings(profile, args)
+    return SMTPClient(
+        settings["smtp_host"],
+        settings["smtp_port"],
+        profile.default_mailbox,
+        _mail_password(profile),
+        security=settings["smtp_security"],
+    )
 
 
 def _fetch_raw_message(client: Any, uid: str, folder: str) -> Any:
@@ -2182,8 +2299,7 @@ def _mail_reply_forward(args: argparse.Namespace, *, forward: bool) -> int:
         print("Send cancelled.")
         return 2
 
-    smtp_host = profile.imap_host or "mail.infomaniak.com"
-    smtp = SMTPClient(smtp_host, 465, profile.default_mailbox, _mail_password(profile))
+    smtp = _smtp_client(profile, args)
     result = smtp.send_message(message)
     if _machine_output(args):
         print_machine({**plan, "sent": True, "notified": True, "result": result}, args)
@@ -7750,6 +7866,30 @@ def build_parser() -> argparse.ArgumentParser:
     mail_forward.add_argument("--json", action="store_true")
     mail_forward.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
     mail_forward.set_defaults(func=cmd_mail_forward)
+
+    # SMTP transport overrides on every sending command. Default (and the
+    # Infomaniak recommendation) is STARTTLS on 587; `ssl` selects implicit TLS.
+    for _send_parser in (mail_send, mail_reply, mail_forward):
+        _send_parser.add_argument("--smtp-host", help="SMTP host. Defaults to the profile value, else mail.infomaniak.com.")
+        _send_parser.add_argument("--smtp-port", type=int, help="SMTP port. Defaults to the profile value, else 587.")
+        _send_parser.add_argument(
+            "--smtp-security", choices=list(SMTP_SECURITY_MODES),
+            help="SMTP transport. Defaults to the profile value, else starttls (587). Use ssl for 465.",
+        )
+
+    mail_doctor = mail_sub.add_parser(
+        "doctor", help="Diagnose mail connectivity: DNS, IMAP, SMTP, TLS (read-only, sends nothing)"
+    )
+    mail_doctor.add_argument(
+        "--smtp-auth", action="store_true",
+        help="Also attempt an SMTP login. Sends no message. Off by default.",
+    )
+    mail_doctor.add_argument("--smtp-host", help="Override the SMTP host to test.")
+    mail_doctor.add_argument("--smtp-port", type=int, help="Override the SMTP port to test.")
+    mail_doctor.add_argument("--smtp-security", choices=list(SMTP_SECURITY_MODES), help="Override the SMTP transport.")
+    mail_doctor.add_argument("--json", action="store_true")
+    mail_doctor.add_argument("--compact", action="store_true", help="Emit compact machine-readable JSON.")
+    mail_doctor.set_defaults(func=cmd_mail_doctor)
 
     for name, helptext, handler in (
         ("mark-read", "Mark one message read (protected write)", cmd_mail_mark_read),

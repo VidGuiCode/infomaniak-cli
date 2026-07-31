@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.3.6] - 2026-07-31
+### Fixed
+- **Sending used SMTP-over-SSL on port 465, which is not Infomaniak's recommended submission
+  transport.** The port was a literal in both send paths. Sending now uses **STARTTLS on port 587**
+  by default, with `ssl` (implicit TLS, 465) still available.
+- **The SMTP host was taken from `imap_host`.** For Infomaniak both are `mail.infomaniak.com`, so
+  this was invisible — but any profile with a custom IMAP host silently sent through the wrong
+  server. SMTP is now configured independently.
+- **A blocked port reported like a generic failure and could hang.** Connections now carry an
+  explicit timeout, and failures are classified: a timeout or refused connection names the host,
+  port and transport and says to check outbound TCP access; an authentication failure says the
+  connection succeeded and points at the mail device password; a STARTTLS failure names the
+  negotiation and suggests `--smtp-security ssl`. A network block is never worded as a credential
+  problem.
+
+### Added
+- Profile fields `smtp_host`, `smtp_port`, `smtp_security`, plus `--smtp-host`, `--smtp-port` and
+  `--smtp-security` on `mail send`, `mail reply` and `mail forward` (flag → profile → default).
+- **`ik mail doctor`** — read-only connectivity diagnostic that sends nothing: DNS resolution, IMAP
+  TCP, SMTP TCP, TLS/STARTTLS negotiation, and an optional authenticated login behind `--smtp-auth`.
+  `configured`, `reachable` and `authenticated` are reported separately, so a timeout cannot be
+  rendered as an auth failure.
+- `ik doctor --json` reports the SMTP transport under `capabilities.mail.send` (local inspection
+  only — doctor still opens no connection).
+
+### Changed
+- **Existing profiles migrate to port 587 STARTTLS**, since none of them carry SMTP settings yet.
+  Set `smtp_security: ssl` and `smtp_port: 465` on a profile to keep the previous transport.
+
+### Notes
+- A send that times out is **never retried automatically**: if the server accepted the message but
+  the reply was lost, a retry would deliver it twice. A test asserts exactly one connection attempt.
+- This release fixes the transport and the diagnostics. It cannot open a blocked network path — a
+  runtime that cannot reach `mail.infomaniak.com:587` still needs outbound SMTP allowed by its
+  container or firewall. `ik mail doctor` now says so explicitly instead of failing ambiguously.
+
 ## [0.3.5] - 2026-07-30
 ### Added
 - **`ik admin mailbox settings show|set`** — read a mailbox's admin note and sender lists, and set

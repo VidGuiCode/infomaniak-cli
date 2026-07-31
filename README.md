@@ -1,6 +1,6 @@
 # infomaniak-cli
 
-![version](https://img.shields.io/badge/version-0.3.5-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.6-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-%3E%3D3.11-blue) ![platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20mac-lightgrey)
 
 **Unofficial CLI for [Informaniak](https://www.infomaniak.com) — manage your kSuite accounts, kDrive, mail, and services from any terminal or IDE.**
 
@@ -176,6 +176,7 @@ actual write confirms interactively, while unattended `--yes` requires an explic
 ```bash
 ik mail draft --to recipient@example.com --subject "Review" --body "Draft body" --dry-run --profile work
 ik mail send --to recipient@example.com --subject "Hello" --body "Message body" --dry-run --profile work
+ik mail doctor --json --profile work   # diagnose IMAP/SMTP connectivity (sends nothing)
 ```
 
 Drafts are appended over IMAP with the `\Draft` flag. Sends use authenticated SMTP-over-SSL on

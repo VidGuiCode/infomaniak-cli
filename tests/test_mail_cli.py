@@ -1551,8 +1551,8 @@ def test_mail_send_explicit_yes_sends_once(tmp_path, monkeypatch, capsys):
     calls = []
 
     class SendClient:
-        def __init__(self, host, port, username, password):
-            calls.append(("init", host, port, username, password))
+        def __init__(self, host, port, username, password, **kwargs):
+            calls.append(("init", host, port, username, password, kwargs.get("security")))
 
         def send_message(self, message):
             calls.append(("send_message", message))
@@ -1572,6 +1572,9 @@ def test_mail_send_explicit_yes_sends_once(tmp_path, monkeypatch, capsys):
     send_calls = [call for call in calls if call[0] == "send_message"]
     assert len(send_calls) == 1
     assert send_calls[0][1]["Bcc"] == "blind@example.com"
+    # 0.3.6: submission defaults to STARTTLS on 587, not implicit TLS on 465.
+    init = next(call for call in calls if call[0] == "init")
+    assert init[1:] == ("mail.infomaniak.com", 587, "sender@example.com", "mail-password", "starttls")
 
 
 @pytest.mark.parametrize("command", ["draft", "send"])

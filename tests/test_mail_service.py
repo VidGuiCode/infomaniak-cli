@@ -212,7 +212,8 @@ def test_smtp_client_logs_in_and_sends_one_message():
     fake = FakeSMTP()
     client = SMTPClient(
         "mail.infomaniak.com", 465, "sender@example.com", "app-password",
-        smtp_factory=lambda host, port: fake,
+        security="ssl",
+        smtp_ssl_factory=lambda host, port, timeout=None: fake,
     )
     message = build_mail_message(
         sender="sender@example.com", to=["recipient@example.com"], subject="Send", body="Body",
@@ -230,7 +231,8 @@ def test_smtp_client_redacts_password_from_transport_errors():
     password = "top-secret-mail-password"
     client = SMTPClient(
         "mail.infomaniak.com", 465, "sender@example.com", password,
-        smtp_factory=lambda host, port: FakeSMTP(fail_login=True),
+        security="ssl",
+        smtp_ssl_factory=lambda host, port, timeout=None: FakeSMTP(fail_login=True),
     )
     message = build_mail_message(
         sender="sender@example.com", to=["recipient@example.com"], subject="Send", body="Body",
